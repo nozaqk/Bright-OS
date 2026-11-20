@@ -58,6 +58,28 @@ for mod in $EXEC_MODULES; do
 done
 pass "$(echo "$EXEC_MODULES" | wc -w) exec modules defined"
 
+# Verify LUKS module ordering
+echo ""
+echo "--- LUKS module ordering ---"
+luks_idx=0; initramfscfg_idx=0; initramfs_idx=0; grubcfg_idx=0; bootloader_idx=0; packages_idx=0
+i=0
+for mod in $EXEC_MODULES; do
+    i=$((i+1))
+    case "$mod" in
+        packages) packages_idx=$i ;;
+        luksbootkeyfile) luks_idx=$i ;;
+        initramfscfg) initramfscfg_idx=$i ;;
+        initramfs) initramfs_idx=$i ;;
+        grubcfg) grubcfg_idx=$i ;;
+        bootloader) bootloader_idx=$i ;;
+    esac
+done
+if [ $luks_idx -gt 0 ] && [ $initramfscfg_idx -gt $luks_idx ] && [ $initramfs_idx -gt $initramfscfg_idx ] && [ $grubcfg_idx -gt $initramfs_idx ]; then
+    pass "LUKS module order correct: packages -> luksbootkeyfile -> initramfscfg -> initramfs -> grubcfg -> bootloader"
+else
+    fail "LUKS module ordering incorrect (pkgs=$packages_idx luks=$luks_idx ifscfg=$initramfscfg_idx initrd=$initramfs_idx grub=$grubcfg_idx bl=$bootloader_idx)"
+fi
+
 echo ""
 echo "--- Instance definitions ---"
 if [ -n "$INSTANCE_IDS" ]; then

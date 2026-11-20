@@ -17,10 +17,12 @@ NC='\033[0m'
 PASS=0
 FAIL=0
 WARN=0
+INCONCLUSIVE=0
 
 pass() { echo -e "${GREEN}[PASS]${NC} $*"; PASS=$((PASS+1)); }
 fail() { echo -e "${RED}[FAIL]${NC} $*"; FAIL=$((FAIL+1)); }
 warn() { echo -e "${YELLOW}[WARN]${NC} $*"; WARN=$((WARN+1)); }
+inconclusive() { echo -e "${BLUE}[INCONCLUSIVE]${NC} $*"; INCONCLUSIVE=$((INCONCLUSIVE+1)); }
 
 usage() {
     cat <<EOF
@@ -134,7 +136,7 @@ if $HAVE_FILE; then
         warn "May not be hybrid ISO (USB bootability uncertain)"
     fi
 else
-    warn "'file' command not available; skipping ISO type detection"
+    inconclusive "Cannot verify ISO type ('file' command not available)"
 fi
 
 echo ""
@@ -154,7 +156,7 @@ elif $HAVE_DD; then
     if [ "$SIG" = "55aa" ]; then
         pass "MBR boot signature 0x55AA present (BIOS bootable)"
     else
-        warn "Cannot reliably verify MBR signature without xxd or od"
+        inconclusive "Cannot verify MBR boot signature (dd/xxd/od tools needed)"
     fi
 else
     warn "'dd' not available; skipping MBR boot signature check"
@@ -221,17 +223,18 @@ if $HAVE_ISOINFO; then
         fail "Cannot read ISO9660 filesystem with isoinfo"
     fi
 else
-    warn "'isoinfo' (from genisoimage package) not available; skipping content checks"
-    echo "  Install with: sudo apt-get install -y genisoimage"
+    inconclusive "Cannot verify ISO contents (isoinfo/xorriso not available)"
+    echo "  Install with: sudo apt-get install -y genisoimage xorriso"
 fi
 
 # --- Report ---
 echo ""
 echo "========================================"
 echo "  Validation Results"
-echo "  Passed:   $PASS"
-echo "  Warnings: $WARN"
-echo "  Failed:   $FAIL"
+echo "  Passed:       $PASS"
+echo "  Warnings:     $WARN"
+echo "  Failed:       $FAIL"
+echo "  Inconclusive: $INCONCLUSIVE"
 echo "========================================"
 
 if [ "$FAIL" -gt 0 ]; then
@@ -239,6 +242,14 @@ if [ "$FAIL" -gt 0 ]; then
     echo -e "${RED}Validation FAILED: $FAIL critical check(s) failed.${NC}"
     echo "The ISO is likely not bootable or is corrupt."
     exit 1
+elif [ "$INCONCLUSIVE" -gt 0 ]; then
+    echo ""
+    echo -e "${YELLOW}Validation INCONCLUSIVE: $INCONCLUSIVE check(s) could not be performed.${NC}"
+    echo "Install missing tools (isoinfo, file, xorriso) and re-run for complete results."
+    echo ""
+    echo "IMPORTANT: Passing validation does NOT prove the OS boots correctly."
+    echo "Actual boot testing (QEMU or real hardware) is required to confirm bootability."
+    exit 2
 else
     echo ""
     echo -e "${GREEN}Validation PASSED.${NC}"

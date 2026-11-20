@@ -1,6 +1,17 @@
 #!/bin/sh
 # Bright OS live-build auto/config
 # Configures lb for building Bright OS ISOs
+#
+# Uses only options verified to exist in live-build for Debian 13 Trixie.
+# Reference: lb_config(1) from Debian trixie manpages.
+#
+# Key corrections:
+# - --bootloader (singular) -> removed; live-build auto-selects correct
+#   bootloaders for iso-hybrid images. For explicit BIOS+UEFI dual boot,
+#   use --bootloaders grub-pc,grub-efi (plural).
+# - --efi-boot-partition-size removed (not a valid live-build option).
+# - --swap-file-size removed (not needed for live systems).
+# - --binary-images corrected to --binary-image (per manpage).
 
 set -e
 
@@ -18,18 +29,12 @@ if [ -z "${EDITION}" ] || [ -z "${ARCH}" ] || [ -z "${CODENAME}" ]; then
     exit 1
 fi
 
-# Security mirror URL depends on codename
-case "${CODENAME}" in
-    trixie|forky)
-        SECURITY_URL="http://security.debian.org/debian-security"
-        ;;
-    bookworm)
-        SECURITY_URL="http://security.debian.org/debian-security"
-        ;;
-    *)
-        SECURITY_URL="http://security.debian.org/debian-security"
-        ;;
-esac
+# Security mirror URL
+SECURITY_URL="http://security.debian.org/debian-security"
+
+echo "Running: lb config noauto \\"
+echo "  --distribution ${CODENAME} --architecture ${ARCH} --binary-image iso-hybrid \\"
+echo "  --bootloaders grub-pc,grub-efi --uefi-secure-boot auto"
 
 lb config noauto \
   --distribution "${CODENAME}" \
@@ -43,21 +48,21 @@ lb config noauto \
   --mirror-binary-security "${SECURITY_URL}" \
   --apt-recommends true \
   --apt-options "--yes --option Acquire::Retries=3" \
-  --binary-images iso-hybrid \
+  --binary-image iso-hybrid \
+  --bootloaders grub-pc,grub-efi \
+  --uefi-secure-boot auto \
+  --checksums sha256 \
   --iso-application "Bright OS" \
   --iso-publisher "Bright OS Project <https://github.com/nozaqk/Bright-OS>" \
   --iso-volume "Bright OS ${VERSION} ${EDITION}" \
   --iso-preparer "Bright OS live-build" \
-  --checksums sha256 \
-  --bootloader grub-efi \
-  --efi-boot-partition-size 64 \
   --memtest none \
   --firmware-binary true \
   --firmware-chroot true \
   --win32-loader false \
   --zsync false \
   --debian-installer false \
-  --swap-file-size 0 \
+  --initsystem systemd \
   "${@}"
 
 echo "=== Configuration complete for ${EDITION} edition (Debian ${CODENAME}) ==="

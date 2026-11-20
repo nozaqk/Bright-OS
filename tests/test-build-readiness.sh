@@ -202,7 +202,7 @@ echo "--- 6. Calamares Module Configs ---"
 MISSING_CAL=0
 for mod in welcome.conf locale.conf keyboard.conf partition.conf users.conf summary.conf finished.conf \
            mount.conf unpackfs.conf machineid.conf fstab.conf localecfg.conf networkcfg.conf hwclock.conf \
-           services-systemd.conf bootloader.conf luksbootkeyfile.conf grubcfg.conf initramfs.conf \
+           services-systemd.conf packages.conf luksbootkeyfile.conf initramfscfg.conf initramfs.conf grubcfg.conf bootloader.conf \
            shellprocess-post.conf postcfg.sh exclude-list; do
     if [ -f "installer/calamares/modules/${mod}" ]; then
         PASS=$((PASS+1))

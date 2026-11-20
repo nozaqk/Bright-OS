@@ -41,11 +41,15 @@ sudo apt-get install -y \
     squashfs-tools \
     xorriso \
     isolinux \
+    syslinux-common \
     syslinux-efi \
     grub-pc-bin \
     grub-efi-amd64-bin \
+    grub-efi-amd64-signed \
+    shim-signed \
     mtools \
-    dosfstools
+    dosfstools \
+    genisoimage
 ```
 
 For UEFI boot testing in QEMU, also install:

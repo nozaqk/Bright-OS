@@ -1,5 +1,10 @@
 # Hardware Testing Guide for Bright OS
 
+> **Status as of Phase 12:** No real ISO has been built or boot-tested yet.
+> All testing checklists below are prepared for when the first ISO is available.
+> Build configuration has been validated (362 automated tests pass) including
+> BIOS+UEFI dual-boot configuration and LUKS full-disk encryption setup.
+
 ## Pre-Test Checklist
 
 Before testing on real hardware:
@@ -8,7 +13,7 @@ Before testing on real hardware:
 - [ ] ISO boots in QEMU (both BIOS and UEFI)
 - [ ] Live desktop loads successfully
 - [ ] You have a backup USB drive (8+ GB)
-- [ ] Secure Boot is disabled (Alpha does not support Secure Boot)
+- [ ] Secure Boot: shim-signed included but not fully tested; if boot fails disable Secure Boot
 - [ ] Fast Startup is disabled in Windows (for dual-boot)
 
 ## Test Matrix

@@ -143,6 +143,13 @@ else
     fail "Does not warn that validation ≠ boot success"
 fi
 
+# Verify INCONCLUSIVE status exists for missing tools
+if grep -q "INCONCLUSIVE" "$VAL_SCRIPT"; then
+    pass "Has INCONCLUSIVE status for uncheckable items"
+else
+    fail "Missing INCONCLUSIVE status (should mark untestable items)"
+fi
+
 # Verify script syntax
 if bash -n "$VAL_SCRIPT"; then
     pass "Script syntax valid"
