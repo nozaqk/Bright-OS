@@ -233,7 +233,7 @@ check_dependencies() {
     done
 
     local boot_missing=()
-    for pkg in isolinux mtools dosfstools; do
+    for pkg in isolinux syslinux-common syslinux-efi mtools dosfstools genisoimage; do
         if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"; then
             boot_missing+=("$pkg")
         fi
@@ -245,6 +245,10 @@ check_dependencies() {
                 boot_missing+=("$pkg")
             fi
         done
+        # shim-signed is recommended for Secure Boot but not strictly required
+        if ! dpkg-query -W -f='${Status}' shim-signed 2>/dev/null | grep -q "install ok installed"; then
+            log_warn "shim-signed is not installed; Secure Boot support may be limited"
+        fi
     fi
 
     if [ ${#missing[@]} -gt 0 ] || [ ${#boot_missing[@]} -gt 0 ]; then
@@ -253,8 +257,8 @@ check_dependencies() {
         log_info ""
         log_info "Install all dependencies with:"
         log_info "  sudo apt-get install -y live-build debootstrap squashfs-tools xorriso \\"
-        log_info "    isolinux syslinux-common mtools dosfstools \\"
-        log_info "    grub-pc-bin grub-efi-amd64-bin"
+        log_info "    isolinux syslinux-common syslinux-efi mtools dosfstools genisoimage \\"
+        log_info "    grub-pc-bin grub-efi-amd64-bin shim-signed"
         exit 1
     fi
     log_ok "All required build tools found"
@@ -536,6 +540,47 @@ fi
 log_info "Generating SHA256 checksum..."
 sha256sum "${ISO_NAME}" > "${ISO_NAME}.sha256"
 
+# --- Automatic ISO validation ---
+# Run validate-iso.sh automatically.
+# This checks ISO9660 filesystem, kernel, initrd, squashfs, BIOS/UEFI boot
+# structures, GRUB, isolinux, and checksum.
+# Exit codes: 0=PASS, 1=FAIL (critical), 2=INCONCLUSIVE (missing tools).
+# We treat 1 as failure and 2 as a warning (tools unavailable but build completed).
+# Set BRIGHT_SKIP_VALIDATION=1 to skip (e.g. in mock testing environments
+# where real ISO inspection tools are not available or ISO is a dummy file).
+VALIDATION_STATUS=0
+VALIDATE_SCRIPT="${PROJECT_ROOT}/build/scripts/validate-iso.sh"
+
+if [ "${BRIGHT_SKIP_VALIDATION:-0}" = "1" ]; then
+    log_warn "Skipping ISO validation (BRIGHT_SKIP_VALIDATION=1 set)"
+else
+    log_info "Running ISO validation..."
+    echo ""
+    set +e
+    bash "${VALIDATE_SCRIPT}" "${ISO_NAME}"
+    VALIDATION_STATUS=$?
+    set -e
+    echo ""
+
+    if [ "${VALIDATION_STATUS}" -eq 1 ]; then
+        log_error "========================================"
+        log_error "  ISO VALIDATION FAILED"
+        log_error "  The ISO was built but failed structural validation."
+        log_error "  ISO preserved at: ${ISO_PATH}"
+        log_error "  Build log:        ${BUILD_DIR}/${BUILD_LOG}"
+        log_error "  Review the validation output above for specific failures."
+        log_error "========================================"
+        exit 1
+    elif [ "${VALIDATION_STATUS}" -eq 2 ]; then
+        log_warn "ISO validation was INCONCLUSIVE (some tools missing)."
+        log_warn "The ISO was built but could not be fully validated."
+        log_warn "Install genisoimage, xorriso, and file for complete validation."
+        log_warn "Run manually: ${VALIDATE_SCRIPT} ${ISO_PATH}"
+    else
+        log_ok "ISO validation passed"
+    fi
+fi  # end BRIGHT_SKIP_VALIDATION check
+
 # --- Report ---
 ISO_SIZE=$(du -h "${ISO_NAME}" | cut -f1)
 SHA256=$(cut -d' ' -f1 "${ISO_NAME}.sha256")
@@ -548,11 +593,18 @@ log_ok "  ISO:       ${ISO_PATH}"
 log_ok "  Size:      ${ISO_SIZE}"
 log_ok "  SHA256:    ${SHA256}"
 log_ok "  Log:       ${BUILD_DIR}/${BUILD_LOG}"
+if [ "${VALIDATION_STATUS}" -eq 0 ]; then
+log_ok "  Validation: PASSED"
+elif [ "${VALIDATION_STATUS}" -eq 2 ]; then
+log_warn "  Validation: INCONCLUSIVE (tools missing)"
+fi
 log_ok "========================================"
 echo ""
-log_info "To validate the ISO:"
-log_info "  ${PROJECT_ROOT}/build/scripts/validate-iso.sh ${ISO_PATH}"
+if [ "${VALIDATION_STATUS}" -ne 0 ]; then
+log_info "To fully validate the ISO, install missing tools and run:"
+log_info "  ${VALIDATE_SCRIPT} ${ISO_PATH}"
 echo ""
+fi
 log_info "To test in QEMU:"
 log_info "  ${PROJECT_ROOT}/build/scripts/test-in-qemu.sh ${ISO_PATH}"
 echo ""

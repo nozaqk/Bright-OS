@@ -260,6 +260,154 @@ else
 fi
 
 echo ""
+echo "--- Automatic validation in build.sh ---"
+# build.sh should call validate-iso.sh automatically
+if grep -q "validate-iso.sh" build/scripts/build.sh; then
+    pass "build.sh automatically runs validate-iso.sh after ISO generation"
+else
+    fail "build.sh should run validate-iso.sh automatically"
+fi
+
+# build.sh should not report BUILD SUCCESSFUL if validation fails
+if grep -q "VALIDATION FAILED" build/scripts/build.sh; then
+    pass "build.sh reports VALIDATION FAILED when validation fails"
+else
+    fail "build.sh should report validation failure"
+fi
+
+# build.sh should treat exit code 1 from validate as failure
+if grep -q "VALIDATION_STATUS.*-eq 1" build/scripts/build.sh || grep -q 'exit.*VALIDATION' build/scripts/build.sh; then
+    pass "build.sh treats validation exit code 1 as failure"
+else
+    fail "build.sh should exit non-zero on validation failure"
+fi
+
+# INCONCLUSIVE validation should be a warning, not a failure
+if grep -q "INCONCLUSIVE" build/scripts/build.sh; then
+    pass "build.sh treats INCONCLUSIVE validation as warning (not failure)"
+else
+    fail "build.sh should warn on inconclusive validation"
+fi
+
+echo ""
+echo "--- Build-all validation integration ---"
+if grep -q "built and validated" build/scripts/build-all.sh; then
+    pass "build-all.sh reports both build and validation status"
+else
+    fail "build-all.sh should reflect validation in success message"
+fi
+
+if grep -q "build or validation failed" build/scripts/build-all.sh; then
+    pass "build-all.sh treats validation failure as edition failure"
+else
+    fail "build-all.sh should count validation failures"
+fi
+
+echo ""
+echo "--- Release validation ---"
+# publish-release.sh should run validate-iso.sh
+if grep -q "validate-iso.sh" build/scripts/publish-release.sh; then
+    pass "publish-release.sh runs ISO validation before publishing"
+else
+    fail "publish-release.sh should validate ISOs before publishing"
+fi
+
+# publish-release.sh should reject failed validation
+if grep -q "VALIDATION_FAILS\|Refusing to publish" build/scripts/publish-release.sh; then
+    pass "publish-release.sh refuses to publish invalid ISOs"
+else
+    fail "publish-release.sh should refuse to publish on validation failure"
+fi
+
+# publish-release.sh should check for checksum files
+if grep -q "Missing checksum" build/scripts/publish-release.sh; then
+    pass "publish-release.sh checks for missing checksum files"
+else
+    fail "publish-release.sh should check for checksum files"
+fi
+
+# publish-release.sh should verify checksums
+if grep -q "sha256sum -c" build/scripts/publish-release.sh; then
+    pass "publish-release.sh verifies SHA256 checksums"
+else
+    fail "publish-release.sh should verify checksums"
+fi
+
+# publish-release.sh should enforce 2 GiB limit
+if grep -q "2147483648\|2 GiB" build/scripts/publish-release.sh; then
+    pass "publish-release.sh enforces 2 GiB file size limit"
+else
+    fail "publish-release.sh should check file size limit"
+fi
+
+echo ""
+echo "--- Build error messages ---"
+# build.sh should show build log tail on failure
+if grep -q "tail.*build.log\|Last.*lines.*build.log" build/scripts/build.sh; then
+    pass "build.sh shows build log tail on failure"
+else
+    fail "build.sh should show log tail on failure"
+fi
+
+# build.sh should preserve ISO and logs on failure (not clean them)
+if grep -q "ISO preserved" build/scripts/build.sh; then
+    pass "build.sh preserves ISO and logs when validation fails"
+else
+    fail "build.sh should preserve artifacts on failure for investigation"
+fi
+
+echo ""
+echo "--- Documentation consistency ---"
+# README should reference Debian 13 Trixie as recommended
+if grep -q "Debian 13\|Trixie" README.md; then
+    pass "README mentions Debian 13 Trixie"
+else
+    fail "README should mention Debian 13 Trixie"
+fi
+
+# BUILDING.md should mention automatic validation
+if grep -q "automatic.*validat\|Validation runs.*automatic" docs/BUILDING.md; then
+    pass "BUILDING.md documents automatic ISO validation"
+else
+    fail "BUILDING.md should mention automatic validation"
+fi
+
+# BUILDING.md should mention publish step includes validation
+if grep -q "Runs ISO validation" docs/BUILDING.md || grep -q "validation on all three" docs/BUILDING.md; then
+    pass "BUILDING.md documents validation during publish"
+else
+    fail "BUILDING.md should mention validation in publish step"
+fi
+
+# RAM requirement should be consistent (4 GB minimum everywhere)
+if grep -q "4 GB minimum\|4 GB+" README.md && grep -q "4 GB" docs/BUILDING.md | head -1; then
+    pass "RAM requirement consistent (4 GB minimum)"
+else
+    fail "RAM requirement mismatch between README and BUILDING.md"
+fi
+
+# Disk space should be 20 GB minimum (not 15)
+if grep -q "20 GB" README.md && grep -q "20 GB" docs/BUILDING.md; then
+    pass "Disk space requirement consistent (20 GB minimum)"
+else
+    fail "Disk space requirement should be 20 GB everywhere"
+fi
+
+# No fake/mock ISO language
+if ! grep -qi "mock\|dummy\|placeholder" README.md docs/BUILDING.md; then
+    pass "No mock/placeholder language in documentation"
+else
+    fail "Documentation should not reference mock or placeholder ISOs"
+fi
+
+# Should mention Windows is not directly supported
+if grep -qi "windows.*not.*support\|not.*support.*windows\|virtual machine" README.md; then
+    pass "README notes Windows requires virtual machine"
+else
+    fail "README should note Windows is not directly supported"
+fi
+
+echo ""
 echo "============================================"
 echo "  Results: $PASS passed, $FAIL failed"
 echo "============================================"

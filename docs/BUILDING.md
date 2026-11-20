@@ -126,11 +126,24 @@ build/output/
 
 ## Step 5: Validate the ISO
 
-Always validate ISOs after building:
+Validation runs **automatically** after each edition builds. The build script will:
+- Verify the ISO exists and is not empty
+- Check ISO9660 filesystem structure
+- Verify kernel, initrd, and squashfs are present
+- Check BIOS MBR boot signature and UEFI EFI boot image
+- Verify GRUB and ISOLINUX bootloaders
+- Confirm SHA256 checksum
+
+If validation fails, the build exits with an error and reports the specific issues.
+The ISO and build log are preserved for investigation.
+
+To manually re-validate an ISO:
 
 ```bash
 ./build/scripts/validate-iso.sh build/output/home/bright-os-0.1.0-alpha-home-amd64.iso
 ```
+
+Passing validation means the ISO structure is correct; it does NOT guarantee the OS boots. Always test in QEMU before writing to USB.
 
 Validation checks:
 - File is not empty and is >100 MB
@@ -173,11 +186,14 @@ After building and validating all three editions, you can publish a release:
 
 This script:
 1. Verifies GitHub CLI (`gh`) is installed and authenticated
-2. Checks all three ISOs exist and pass checksum verification
-3. Refuses to publish incomplete or invalid builds
-4. Creates a GitHub Release with version tag `v0.1.0-alpha`
-5. Uploads the three ISOs and SHA256SUMS file
-6. Asks for confirmation before publishing
+2. Checks all three ISOs exist and are non-empty
+3. Verifies SHA256 checksums for all three ISOs
+4. Runs ISO validation on all three editions (using validate-iso.sh)
+5. Checks that no ISO exceeds GitHub's 2 GiB file size limit
+6. Refuses to publish if any ISO is missing, invalid, or oversized
+7. Asks for explicit confirmation before publishing
+8. Creates a GitHub Release with the version tag
+9. Uploads the three ISOs and SHA256SUMS file
 
 Prerequisites:
 - [GitHub CLI](https://cli.github.com/) installed (`sudo apt-get install gh`)

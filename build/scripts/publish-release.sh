@@ -179,6 +179,48 @@ for i in "${!ISO_PATHS[@]}"; do
 done
 log_ok "All checksums verified"
 
+# --- Run ISO validation on all three editions ---
+echo ""
+echo "--- ISO Validation ---"
+VALIDATE_SCRIPT="${PROJECT_ROOT}/build/scripts/validate-iso.sh"
+if [ ! -x "$VALIDATE_SCRIPT" ]; then
+    log_error "validate-iso.sh not found or not executable"
+    exit 1
+fi
+
+VALIDATION_FAILS=0
+for i in "${!ISO_PATHS[@]}"; do
+    ISO_PATH="${ISO_PATHS[$i]}"
+    EDITION=$(basename "$(dirname "$ISO_PATH")")
+
+    echo "  Validating ${EDITION}..."
+    set +e
+    bash "$VALIDATE_SCRIPT" "$ISO_PATH" >/tmp/bright-validate-${EDITION}.log 2>&1
+    VRC=$?
+    set -e
+
+    if [ $VRC -eq 0 ]; then
+        echo "    ${EDITION}: PASS"
+    elif [ $VRC -eq 2 ]; then
+        echo "    ${EDITION}: INCONCLUSIVE (some validation tools missing)"
+        log_warn "Validation inconclusive for ${EDITION} - install genisoimage, xorriso, file for full validation"
+    else
+        echo "    ${EDITION}: FAIL"
+        log_error "Validation FAILED for ${EDITION}:"
+        tail -20 /tmp/bright-validate-${EDITION}.log | sed 's/^/    /'
+        VALIDATION_FAILS=$((VALIDATION_FAILS+1))
+    fi
+done
+rm -f /tmp/bright-validate-home.log /tmp/bright-validate-developer.log /tmp/bright-validate-lite.log
+
+if [ "$VALIDATION_FAILS" -gt 0 ]; then
+    echo ""
+    log_error "${VALIDATION_FAILS} edition(s) failed ISO validation. Refusing to publish."
+    log_error "Fix the ISO issues and rebuild before publishing."
+    exit 1
+fi
+log_ok "ISO validation complete"
+
 # --- Create consolidated SHA256SUMS ---
 echo ""
 echo "--- Creating SHA256SUMS ---"
