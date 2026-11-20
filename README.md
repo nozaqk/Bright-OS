@@ -3,16 +3,16 @@
 **An independent, Linux-based hybrid desktop operating system** for developers, programmers, electronics engineers, and technical professionals — built on Debian Linux with an original desktop environment called Bright Desktop.
 
 > **Status: Alpha 0.1 "Dawn"** — Early development release. The build system is
-> fully configured and validated (**423 automated tests pass**), including
-> automated GitHub Actions CI builds. Package architecture
+> fully configured and validated (**automated tests pass**). Package architecture
 > is cleanly separated into Core (169 packages), Desktop-Plasma (37 packages for
 > Home/Developer), and Desktop-Lite (29 packages for Lite).
-> The ISO must be built on a Debian 13 Trixie machine per the instructions below.
+> ISOs are built locally on a Debian Linux machine and published to GitHub Releases.
 > Boot testing is pending the first ISO build.
 
 ## Download
 
-Pre-built ISO images are available from **[GitHub Releases](https://github.com/nozaqk/Bright-OS/releases)**.
+Pre-built ISO images are published to **[GitHub Releases](https://github.com/nozaqk/Bright-OS/releases)**
+when a version tag is built and released. If no release is available yet, build from source (see below).
 
 | Edition | Description |
 |---------|-------------|
@@ -33,7 +33,39 @@ sha256sum -c SHA256SUMS --ignore-missing
 
 ## Build from Source
 
-You can also build Bright OS yourself on a Debian 13 Trixie machine (see [docs/BUILDING.md](docs/BUILDING.md)):
+Bright OS is built locally on a Debian Linux machine (see [docs/BUILDING.md](docs/BUILDING.md)).
+
+### Requirements
+
+- **OS:** Debian 12 (Bookworm) or later; Debian 13 (Trixie) recommended
+- **Architecture:** x86_64 / amd64
+- **RAM:** 4 GB minimum, 8 GB recommended
+- **Disk:** 20 GB free space minimum (30+ GB for all three editions)
+- **Windows:** Not directly supported; use a Debian Linux virtual machine
+- **macOS:** Not supported; use a Debian Linux virtual machine
+
+### Quick Start
+
+```bash
+# 1. Set up build environment (installs dependencies)
+./build/scripts/setup-build-env.sh
+
+# 2. Build one edition
+./build/scripts/build.sh home         # Home edition (KDE Plasma)
+./build/scripts/build.sh developer    # Developer edition
+./build/scripts/build.sh lite         # Lite edition (LXQt)
+
+# Or build all three editions at once
+./build/scripts/build-all.sh
+
+# 3. Validate the ISO
+./build/scripts/validate-iso.sh build/output/home/bright-os-0.1.0-alpha-home-amd64.iso
+
+# 4. Publish a release (after building all three editions)
+./build/scripts/publish-release.sh 0.1.0-alpha
+```
+
+For complete instructions, see [docs/BUILDING.md](docs/BUILDING.md).
 
 ## Editions
 
