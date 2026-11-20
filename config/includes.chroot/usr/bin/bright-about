@@ -1,49 +1,133 @@
 #!/usr/bin/env python3
-"""Bright OS About dialog"""
+"""Bright OS About dialog - shows edition-aware system information"""
 import sys
 import subprocess
+from pathlib import Path
 from PyQt6.QtWidgets import QApplication, QDialog, QVBoxLayout, QLabel, QPushButton, QHBoxLayout
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont, QPixmap
+from PyQt6.QtGui import QFont, QFontDatabase
+
+APP_VERSION = "0.1.0-alpha"
+EDITION_FILE = Path("/etc/bright-os/edition")
+
+# Bright Design System colors (mirrors DesignTokens.js for consistency)
+BRAND_BLUE = "#3b82f6"
+BRAND_INDIGO = "#6366f1"
+BRAND_VIOLET = "#8b5cf6"
+BG_DARK = "#0f172a"
+TEXT_PRIMARY = "#f1f5f9"
+TEXT_SECONDARY = "#94a3b8"
+
+EDITION_NAMES = {
+    "home": "Home",
+    "developer": "Developer",
+    "lite": "Lite",
+}
+
+EDITION_TAGLINES = {
+    "home": "Everyday computing, made simple",
+    "developer": "Built for creators, engineers, and makers",
+    "lite": "Fast and responsive on older hardware",
+}
+
+
+def detect_edition():
+    try:
+        ed = EDITION_FILE.read_text().strip().lower()
+        if ed in EDITION_NAMES:
+            return ed
+    except Exception:
+        pass
+    return "home"
+
 
 def main():
     app = QApplication(sys.argv)
+    edition = detect_edition()
+    edition_name = EDITION_NAMES.get(edition, "Home")
+    tagline = EDITION_TAGLINES.get(edition, "")
+
     d = QDialog()
-    d.setWindowTitle("About Bright OS")
-    d.setMinimumSize(480, 380)
-    d.setStyleSheet("QDialog { background: #0f172a; } QLabel { color: #e2e8f0; } QPushButton { background: #3b82f6; color: white; border: none; border-radius: 8px; padding: 8px 24px; }")
+    d.setWindowTitle(f"About Bright OS {edition_name}")
+    d.setMinimumSize(500, 440)
+    d.setStyleSheet(f"""
+        QDialog {{ background: {BG_DARK}; }}
+        QLabel {{ color: {TEXT_PRIMARY}; }}
+        QPushButton {{
+            background: {BRAND_BLUE}; color: white; border: none;
+            border-radius: 8px; padding: 10px 32px; font-weight: 500;
+        }}
+        QPushButton:hover {{ background: {BRAND_INDIGO}; }}
+    """)
     lay = QVBoxLayout(d)
-    lay.setContentsMargins(40, 40, 40, 40)
-    
-    logo = QLabel("☀")
-    logo.setStyleSheet("font-size: 72px; color: #3b82f6;")
+    lay.setContentsMargins(48, 48, 48, 48)
+    lay.setSpacing(12)
+
+    # Bright OS sun logo (using unicode sun, styled to match brand)
+    logo = QLabel("\u2600")
+    logo.setStyleSheet(f"font-size: 72px; color: {BRAND_BLUE};")
     logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
     lay.addWidget(logo)
-    
+
+    # Title
     title = QLabel("Bright OS")
-    title.setStyleSheet("font-size: 28px; font-weight: bold; color: #f1f5f9;")
+    title.setStyleSheet(f"font-size: 32px; font-weight: bold; color: {TEXT_PRIMARY};")
     title.setAlignment(Qt.AlignmentFlag.AlignCenter)
     lay.addWidget(title)
-    
-    ver = QLabel("Alpha 0.1.0 \"Dawn\"")
-    ver.setStyleSheet("font-size: 14px; color: #3b82f6;")
+
+    # Edition
+    edition_label = QLabel(f"{edition_name} Edition")
+    edition_label.setStyleSheet(f"font-size: 14px; color: {BRAND_BLUE}; font-weight: 500;")
+    edition_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    lay.addWidget(edition_label)
+
+    # Version
+    ver = QLabel(f'Alpha {APP_VERSION} "Dawn"')
+    ver.setStyleSheet(f"font-size: 13px; color: {TEXT_SECONDARY};")
     ver.setAlignment(Qt.AlignmentFlag.AlignCenter)
     lay.addWidget(ver)
-    
+
+    # Tagline
+    tag = QLabel(tagline)
+    tag.setStyleSheet(f"font-size: 12px; color: {BRAND_VIOLET}; font-style: italic;")
+    tag.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    lay.addWidget(tag)
+
+    # Spacer
+    lay.addSpacing(8)
+
+    # System info
     try:
         kernel = subprocess.run(["uname", "-r"], capture_output=True, text=True).stdout.strip()
-    except: kernel = "unknown"
-    info = QLabel(f"Linux kernel {kernel}\nDebian Bookworm base\nQt 6 / Wayland desktop\n\nAn independent operating system\nfor developers and makers.")
+    except Exception:
+        kernel = "unknown"
+    try:
+        mem_raw = subprocess.run(["free", "-h"], capture_output=True, text=True).stdout.splitlines()
+        mem = mem_raw[1].split()[3] if len(mem_raw) > 1 else "?"
+    except Exception:
+        mem = "unknown"
+
+    info = QLabel(
+        f"Linux kernel {kernel}\n"
+        f"Debian Linux base\n"
+        f"Qt 6 / Wayland desktop\n"
+        f"Edition: {edition_name}\n\n"
+        f"An independent operating system\n"
+        f"for developers and makers."
+    )
     info.setAlignment(Qt.AlignmentFlag.AlignCenter)
-    info.setStyleSheet("color: #94a3b8; font-size: 13px; margin-top: 16px;")
+    info.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 13px; margin-top: 8px;")
     lay.addWidget(info)
-    
+
+    lay.addStretch()
+
     btn = QPushButton("Close")
     btn.clicked.connect(d.accept)
     lay.addWidget(btn)
     lay.setAlignment(btn, Qt.AlignmentFlag.AlignCenter)
-    
+
     d.exec()
+
 
 if __name__ == "__main__":
     main()

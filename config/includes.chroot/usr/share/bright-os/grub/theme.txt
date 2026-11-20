@@ -1,5 +1,6 @@
 # Bright OS GRUB2 Graphical Theme
-# Clean dark theme matching Bright Desktop branding
+# Consistent with Bright Design System - dark navy with blue accents
+# Shared across all three editions (Home, Developer, Lite)
 
 # Global properties
 title-text: "BRIGHT OS"
@@ -25,15 +26,15 @@ terminal-height: 100%
 # Boot menu positioning
 + boot_menu {
     left = 25%
-    top = 35%
+    top = 38%
     width = 50%
-    height = 45%
+    height = 40%
     visible = 1
     menu_font = "DejaVu Sans 14"
     item_color = "#e2e8f0"
     item_height = 32
-    item_spacing = 4
-    item_padding = 4
+    item_spacing = 6
+    item_padding = 8
     selected_item_color = "#ffffff"
     selected_item_font = "DejaVu Sans Bold 14"
     icon_width = 0
@@ -49,7 +50,7 @@ terminal-height: 100%
     left = 35%
     top = 85%
     width = 30%
-    height = 4
+    height = 3
     visible = 1
     show_text = false
     fg_color = "#3b82f6"
@@ -67,16 +68,16 @@ terminal-height: 100%
     width = 100%
     align = "center"
     text = "BRIGHT OS"
-    font = "DejaVu Sans Bold 36"
+    font = "DejaVu Sans Bold 42"
     color = "#f1f5f9"
 }
 
 + label {
     left = 0
-    top = 17%
+    top = 18%
     width = 100%
     align = "center"
-    text = "Linux for developers and makers"
+    text = "An independent Linux desktop for developers and makers"
     font = "DejaVu Sans 14"
     color = "#60a5fa"
 }
@@ -87,7 +88,7 @@ terminal-height: 100%
     bottom = 2%
     width = 100%
     align = "center"
-    text = "Alpha 0.1  |  Debian Bookworm base  |  Press E to edit, C for command line"
+    text = "Alpha 0.1  |  Debian Linux base  |  Press E to edit, C for command line"
     font = "DejaVu Sans 10"
     color = "#64748b"
 }
