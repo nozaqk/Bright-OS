@@ -114,6 +114,7 @@ run_build() {
     MOCK_LB_LOG="${TEST_DIR}/lb.log" \
     MOCK_LB_BUILD_EXIT="${MOCK_LB_BUILD_EXIT:-0}" \
     MOCK_LB_CREATE_ISO="${MOCK_LB_CREATE_ISO:-1}" \
+    BRIGHT_SKIP_VALIDATION=1 \
         bash "${BUILD_SCRIPT}" "$@"
 }
 

@@ -112,8 +112,8 @@ All editions share the same codebase, system services, and Bright Desktop techno
 ## Quick Start: Building the ISO
 
 ### Requirements
-- Debian 12 (Bookworm) amd64 build machine
-- 4+ GB RAM, 15+ GB free disk space
+- Debian 12 (Bookworm) or 13 (Trixie) amd64 build machine (Trixie recommended)
+- 4+ GB RAM (8+ GB recommended), 20+ GB free disk space (30+ GB for all editions)
 - Internet connection
 
 ```bash

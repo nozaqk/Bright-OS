@@ -89,11 +89,11 @@ for edition in $EDITIONS; do
 
     if [ $RC -eq 0 ]; then
         echo ""
-        echo -e "${GREEN}[SUCCESS]${NC} ${edition} built successfully"
+        echo -e "${GREEN}[SUCCESS]${NC} ${edition} built and validated successfully"
         SUCCESS_COUNT=$((SUCCESS_COUNT+1))
     else
         echo ""
-        echo -e "${RED}[FAILURE]${NC} ${edition} build failed (exit code ${RC})"
+        echo -e "${RED}[FAILURE]${NC} ${edition} build or validation failed (exit code ${RC})"
         FAIL_COUNT=$((FAIL_COUNT+1))
         FAILED_EDITIONS="${FAILED_EDITIONS} ${edition}"
     fi
@@ -131,11 +131,12 @@ for edition in $EDITIONS; do
     fi
 done
 echo ""
-echo "To validate all ISOs:"
+echo "Each edition was automatically validated during build."
+echo "To re-validate an ISO manually:"
 for edition in $EDITIONS; do
     echo "  ${SCRIPT_DIR}/validate-iso.sh build/output/${edition}/bright-os-${VERSION}-${edition}-amd64.iso"
 done
 echo ""
-echo "To publish a release:"
+echo "To publish a release (validates all ISOs again before publishing):"
 echo "  ${SCRIPT_DIR}/publish-release.sh ${VERSION}"
 echo ""
