@@ -3,13 +3,16 @@
 **An independent, Linux-based hybrid desktop operating system** for developers, programmers, electronics engineers, and technical professionals — built on Debian Linux with an original desktop environment called Bright Desktop.
 
 > **Status: Alpha 0.1 "Dawn"** — Early development release. The build system and
-> installer are fully configured (**876 automated tests pass, 0 failures across
-> 12 test suites**). Package architecture is cleanly separated into Core, Desktop-Plasma,
+> installer are fully configured (**916 automated tests pass, 0 failures across
+> 13 test suites**). Package architecture is cleanly separated into Core, Desktop-Plasma,
 > and Desktop-Lite.
+>
+> **Build tools are ready** — use `./build/scripts/bright-build-doctor.sh` to check your
+> system and `./build/scripts/build-first-iso.sh` to build the first Lite ISO.
 > 
 > **No genuine ISO has been boot-tested yet** — see [docs/BUILDING.md](docs/BUILDING.md) for
-> exact build and test reproduction steps. ISOs must be built locally on a Debian 12/13
-> machine with network access to Debian package repositories (deb.debian.org).
+> complete build instructions. ISOs must be built locally on a Debian 12/13 machine with
+> network access to Debian package repositories (deb.debian.org).
 > Boot testing in QEMU (BIOS + UEFI) and on real hardware is the next milestone.
 
 ## Download
@@ -49,25 +52,37 @@ Bright OS is built locally on a Debian Linux machine (see [docs/BUILDING.md](doc
 - **Windows:** Not directly supported; use a Debian Linux virtual machine
 - **macOS:** Not supported; use a Debian Linux virtual machine
 
-### Quick Start
+### Quick Start — Your First Lite ISO
 
 ```bash
-# 1. Set up build environment (installs dependencies)
-./build/scripts/setup-build-env.sh
+git clone https://github.com/nozaqk/Bright-OS.git
+cd Bright-OS
 
-# 2. Build one edition
+# 1. Check if your system is ready to build
+./build/scripts/bright-build-doctor.sh
+
+# 2. Install missing dependencies (the doctor prints the exact command)
+sudo apt-get update && sudo apt-get install -y live-build debootstrap \
+    squashfs-tools xorriso isolinux syslinux-common mtools dosfstools \
+    genisoimage grub-pc-bin grub-efi-amd64-bin shim-signed \
+    qemu-system-x86 qemu-utils ovmf file
+
+# 3. Build the first Lite ISO (runs tests, builds, validates, records checksum)
+./build/scripts/build-first-iso.sh
+
+# 4. Test boot in QEMU
+./build/scripts/test-in-qemu.sh --bios build/output/lite/bright-os-0.1.0-alpha-lite-amd64.iso
+```
+
+### Building Other Editions
+
+After Lite works, build Home and Developer:
+
+```bash
 ./build/scripts/build.sh home         # Home edition (KDE Plasma)
 ./build/scripts/build.sh developer    # Developer edition
-./build/scripts/build.sh lite         # Lite edition (LXQt)
-
-# Or build all three editions at once
-./build/scripts/build-all.sh
-
-# 3. Validate the ISO
-./build/scripts/validate-iso.sh build/output/home/bright-os-0.1.0-alpha-home-amd64.iso
-
-# 4. Publish a release (after building all three editions)
-./build/scripts/publish-release.sh 0.1.0-alpha
+./build/scripts/build-all.sh          # Build all three sequentially
+./build/scripts/publish-release.sh 0.1.0-alpha   # Publish release
 ```
 
 For complete instructions, see [docs/BUILDING.md](docs/BUILDING.md).

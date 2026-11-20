@@ -1,17 +1,31 @@
 # Hardware Testing Guide for Bright OS
 
-> **Status as of Phase 16:** Build configuration is complete and statically validated
-> (876 automated tests pass). No genuine ISO has been built or boot-tested yet due
-> to sandbox network restrictions. The build configuration is ready for testing on
-> a real Debian system with network access to Debian repositories.
+> **Status as of Phase 17:** Build configuration is complete and statically validated
+> (916 automated tests pass, 0 failures across 13 test suites). No genuine ISO has
+> been built or boot-tested yet due to sandbox network restrictions.
 >
-> **How to test:** Build the ISO per [BUILDING.md](BUILDING.md), then follow the
-> checklists below starting with QEMU before moving to real hardware.
+> **Build tools ready:**
+> - `./build/scripts/bright-build-doctor.sh` — diagnostics
+> - `./build/scripts/build-first-iso.sh` — first Lite ISO build with validation
+>
+> **How to test:** On a Debian machine with network access:
+> 1. `./build/scripts/bright-build-doctor.sh` to verify your system
+> 2. Install missing dependencies as directed
+> 3. `./build/scripts/build-first-iso.sh` to build Lite ISO
+> 4. Follow the checklists below starting with QEMU, then real hardware.
+> See [BUILDING.md](BUILDING.md) for complete instructions.
 
 ## Pre-Test Checklist
 
+Before building your first ISO:
+
+- [ ] Debian 12 or 13 system with 4+ GB RAM, 20+ GB free disk
+- [ ] `./build/scripts/bright-build-doctor.sh` reports READY or READY WITH WARNINGS
+- [ ] Network access to deb.debian.org (test with `curl -I http://deb.debian.org/debian/`)
+
 Before testing on real hardware:
 
+- [ ] ISO builds successfully with `./build/scripts/build-first-iso.sh`
 - [ ] ISO validates successfully with `./build/scripts/validate-iso.sh`
 - [ ] ISO boots in QEMU BIOS mode to desktop
 - [ ] ISO boots in QEMU UEFI mode to desktop
