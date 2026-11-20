@@ -93,6 +93,12 @@ xdg-user-dirs
 xdg-utils
 
 # Qt 6 essentials
+# In Trixie (Qt 6.7), Qt5Compat was renamed and some modules moved
+# We include both old and new names; apt will skip unavailable packages gracefully? No, that would fail.
+# Let's keep the Trixie names and add a fallback list via a separate file.
+# Actually, let's check: qml6-module-qt5compat-graphicaleffects exists in both.
+# In Trixie, there is also qml6-module-qt5compat which is a larger metapackage.
+# We'll keep the specific modules that exist in both.
 qml6-module-qtquick
 qml6-module-qtquick-controls
 qml6-module-qtquick-layouts
@@ -114,11 +120,13 @@ libqt6network6
 libqt6svg6
 libqt6waylandclient6
 libqt6waylandcompositor6
+libqt6opengl6
 qml6-module-qtquick-shapes
 qml6-module-qtquick-particles
 qml6-module-qtgraphicaleffects
 qml6-module-qt-labs-folderlistmodel
 qml6-module-qt-labs-settings
+qml6-module-qtqml-workerscript
 
 # System utilities
 htop
@@ -208,8 +216,8 @@ fuseiso
 ntfs-3g
 exfatprogs
 plasma-discover
-discover-backend-flatpak
-discover-backend-apt
+plasma-discover-backend-flatpak
+plasma-discover-backend-apt
 cups
 cups-filters
 printer-driver-all

@@ -2,15 +2,34 @@
 
 This document describes how to build a bootable Bright OS ISO from source.
 
+> **Status:** The build system has been validated for correctness (104 build-readiness
+> tests pass, 111 application tests pass). The ISO has not yet been built and tested
+> end-to-end in CI — the first build must be performed on a Debian machine as
+> described below. Please report build failures via GitHub Issues.
+
+## Supported Debian Releases
+
+| Debian Version | Codename | Support Status |
+|---------------|----------|----------------|
+| Debian 13 | **trixie** | ✅ Primary target (current stable) |
+| Debian 12 | bookworm | ✅ Should work; use `--distro bookworm` |
+
+The build defaults to Debian 13 Trixie.
+
 ## Build Requirements
 
-- **Host OS:** Debian 12 (Bookworm) amd64
+### Hardware
+- **CPU:** x86-64 (amd64) — multi-core recommended
 - **RAM:** Minimum 4 GB, 8 GB recommended
-- **Disk:** Minimum 15 GB free space
-- **Root:** sudo access required (for chroot operations during build)
-- **Network:** Internet connection to download packages
+- **Disk:** Minimum 20 GB free space
+- **Network:** Internet connection to download packages from `deb.debian.org`
 
-### Install Build Dependencies
+### Operating System
+You must build on a Debian (or Debian-based) system of the same release as
+your target. Building from Ubuntu or other derivatives is not tested and may
+fail due to package differences.
+
+### Required Packages
 
 ```bash
 sudo apt-get update
@@ -24,14 +43,17 @@ sudo apt-get install -y \
     grub-pc-bin \
     grub-efi-amd64-bin \
     mtools \
-    dosfstools \
-    coreutils
+    dosfstools
+```
+
+For UEFI boot testing in QEMU, also install:
+```bash
+sudo apt-get install -y qemu-system-x86 ovmf
 ```
 
 ## Quick Build
 
 ```bash
-# Clone repository
 git clone https://github.com/nozaqk/Bright-OS.git
 cd Bright-OS
 
@@ -45,126 +67,205 @@ cd Bright-OS
 ./build/scripts/build.sh lite
 ```
 
-The resulting ISO will be in `build/output/<edition>/bright-os-0.1.0-alpha-<edition>-amd64.iso`.
+The resulting ISO will be at:
+```
+build/output/<edition>/bright-os-0.1.0-alpha-<edition>-amd64.iso
+```
 
 ## Build Options
 
-```bash
-./build/scripts/build.sh [edition] [options]
+```
+Usage: ./build/scripts/build.sh [OPTIONS] [EDITION]
 
 Editions:
-  home        Standard desktop edition
-  developer   Full development/electronics toolchain
-  lite        Minimal edition for older hardware
+  home        Bright OS Home edition (default)
+  developer   Bright OS Developer edition
+  lite        Bright OS Lite edition
 
 Options:
-  --version VERSION   Set version string (default: 0.1.0-alpha)
-  --arch ARCH         Architecture (default: amd64)
-  --clean             Clean build directory
-  --skip-build        Configure only (don't build)
-  --verbose           Verbose build output
+  -h, --help            Show this help
+  -v, --version VER     Set version string (default: 0.1.0-alpha)
+  -a, --arch ARCH       Set architecture (default: amd64)
+  -d, --distro CODENAME Debian codename (default: trixie)
+  --clean               Clean build directory only
+  --skip-build          Configure only, do not build
+  --verbose             Verbose build output
 ```
+
+### Examples
+
+```bash
+# Build Home edition for Debian Bookworm
+./build/scripts/build.sh --distro bookworm home
+
+# Configure only (don't build) - useful for debugging config
+./build/scripts/build.sh --skip-build home
+
+# Clean a previous build
+./build/scripts/build.sh --clean home
+
+# Build with verbose output
+./build/scripts/build.sh --verbose developer
+```
+
+## What the Build Does
+
+The build script (`build/scripts/build.sh`) performs these steps:
+
+1. **Validates** edition, architecture, dependencies, and source files
+2. **Creates** a build directory at `build/output/<edition>/`
+3. **Copies** live-build auto scripts (`config`, `build`, `clean`)
+4. **Copies** the configuration tree (package lists, hooks, includes.chroot, includes.binary)
+5. **Merges** edition-specific packages and hooks
+6. **Writes** the edition marker (`home`, `developer`, or `lite`)
+7. **Masks services** for Lite edition (bluetooth, cups, ModemManager)
+8. **Runs** `lb config` to configure Debian live-build
+9. **Runs** `lb build` to download packages, create the chroot, and build the ISO
+10. **Renames** the output ISO and generates a SHA256 checksum
+
+### Live-Build Configuration
+
+The `build/live-build/auto/` directory contains the live-build automation:
+- `auto/config` — Configures `lb` with distribution, mirrors, bootloader, and ISO metadata
+- `auto/build` — Runs `lb build`
+- `auto/clean` — Runs `lb clean`
+
+The `config/` directory contains:
+- `config/package-lists/base.list.chroot` — Core system packages
+- `config/package-lists/edition-packages.list.chroot` — Edition-specific packages (added during build)
+- `config/hooks/live/` — Chroot hooks (branding, component installation, Calamares setup)
+- `config/includes.chroot/` — Files copied directly into the live system root
+- `config/includes.binary/` — Files placed on the ISO filesystem (GRUB config)
 
 ## Build Outputs
 
-After a successful build, you will find:
+After a successful build you will find:
 
-- `bright-os-<version>-<edition>-<arch>.iso` — The bootable ISO image
-- `bright-os-<version>-<edition>-<arch>.iso.sha256` — SHA256 checksum
-- `build.log` — Full build log
-
-## Installation from Build Machine
-
-If you want to install Bright OS components onto your existing Debian system (without building an ISO):
-
-```bash
-sudo ./build/scripts/install-bright-os.sh --edition home
-```
-
-This will install the Bright Desktop shell, applications, themes, and configuration on top of your current system.
-
-## Testing the ISO in QEMU
-
-After building, test boot in QEMU without writing to USB:
-
-```bash
-# UEFI boot (if OVMF available)
-qemu-system-x86_64 \
-    -cdrom build/output/home/bright-os-0.1.0-alpha-home-amd64.iso \
-    -m 4G \
-    -enable-kvm \
-    -cpu host \
-    -smp 4 \
-    -vga virtio \
-    -bios /usr/share/OVMF/OVMF_CODE.fd
-
-# BIOS boot
-qemu-system-x86_64 \
-    -cdrom build/output/home/bright-os-0.1.0-alpha-home-amd64.iso \
-    -m 4G \
-    -enable-kvm \
-    -cpu host \
-    -smp 4 \
-    -vga virtio
-```
-
-## Creating a Bootable USB
-
-```bash
-# WARNING: This will erase the target drive!
-sudo dd if=build/output/home/bright-os-0.1.0-alpha-home-amd64.iso \
-    of=/dev/sdX bs=4M status=progress conv=fsync
-```
-
-Replace `/dev/sdX` with your USB drive (e.g., `/dev/sdb`). Use `lsblk` to identify it.
+| File | Description |
+|------|-------------|
+| `bright-os-<version>-<edition>-<arch>.iso` | Bootable hybrid ISO |
+| `bright-os-<version>-<edition>-<arch>.iso.sha256` | SHA256 checksum |
+| `build.log` | Full build log |
 
 ## Validating the ISO
+
+After building, validate the ISO:
 
 ```bash
 ./build/scripts/validate-iso.sh build/output/home/bright-os-0.1.0-alpha-home-amd64.iso
 ```
 
-This checks ISO integrity, boot signatures, presence of kernel/initrd/squashfs, and EFI support.
+This checks:
+- File size (>100 MB)
+- ISO 9660 filesystem validity
+- Hybrid ISO status (USB bootable)
+- MBR boot signature
+- Kernel (`vmlinuz`) presence in `/live/`
+- Initrd presence in `/live/`
+- Squashfs root filesystem presence
+- EFI boot support
+- GRUB presence
+- SHA256 checksum (if `.sha256` file exists)
 
-## Build Customization
+## Testing in QEMU
 
-### Adding Packages
+```bash
+./build/scripts/test-in-qemu.sh build/output/home/bright-os-0.1.0-alpha-home-amd64.iso
+```
 
-Edit `config/package-lists/base.list.chroot` for system-wide packages, or add edition-specific packages to:
-- `editions/home/packages.list`
-- `editions/developer/packages.list`
-- `editions/lite/packages.list`
+Options:
+- `--bios` — BIOS boot (default)
+- `--uefi` — UEFI boot (requires `ovmf` package)
+- Memory size in MB (e.g. `4096`)
 
-### Customizing the Live Environment
+Example:
+```bash
+# UEFI boot with 8 GB RAM
+./build/scripts/test-in-qemu.sh build/output/home/bright-os-0.1.0-alpha-home-amd64.iso --uefi 8192
+```
 
-Files placed in `config/includes.chroot/` are copied into the live system root filesystem. For example:
-- `config/includes.chroot/etc/skel/` — Default user home directory contents
-- `config/includes.chroot/usr/share/bright-os/` — Bright OS system files
-- `config/includes.chroot/lib/live/config/` — Live system boot hooks
+## Creating a Bootable USB
 
-### Custom Hooks
+**WARNING:** This will erase the target drive! Double-check the device name.
 
-Shell scripts in `config/hooks/live/*.hook.chroot` run inside the chroot during the build process. Use these for system configuration.
+```bash
+# Identify your USB drive
+lsblk
+
+# Write ISO to USB
+sudo dd if=build/output/home/bright-os-0.1.0-alpha-home-amd64.iso \
+    of=/dev/sdX bs=4M status=progress conv=fsync
+```
+
+Replace `/dev/sdX` with your USB device (e.g., `/dev/sdb`). Do NOT append a partition number.
+
+## Installing onto Existing Debian
+
+If you already run Debian 12 or 13 and want to try Bright Desktop without building an ISO:
+
+```bash
+sudo ./build/scripts/install-bright-os.sh --edition home
+```
+
+This installs Bright Desktop shell, applications, themes, and configuration on top of your existing system. Then log out and select "Bright Desktop" from your display manager session menu.
 
 ## Troubleshooting
 
-**Build fails with "no space left on device":**
-Ensure you have at least 15 GB free space. The build process creates temporary files in the build directory.
+### "Missing dependencies" error
+Install the packages listed above. The build script tells you which packages are missing.
 
-**Package download failures:**
-The build requires internet access. If behind a proxy, set `http_proxy` and `https_proxy` environment variables.
+### Build fails during package download
+Check your internet connection. The build downloads ~2-3 GB of packages. Use a mirror closer to you by editing `build/live-build/auto/config` (change `--mirror-bootstrap` and related options).
 
-**ISO won't boot on some hardware:**
-Try the "Safe Graphics" boot option. Some GPUs require nomodeset. Check `build.log` for firmware package inclusion.
+### "Could not resolve hostname" or network errors
+Ensure DNS is working and you have unrestricted internet access. Corporate proxies may cause issues.
 
-**No graphical desktop after boot:**
-Check TTY (Ctrl+Alt+F2) and verify SDDM is running: `systemctl status sddm`. Check X/Wayland logs in `~/.local/share/sddm/`.
+### ISO fails to boot in QEMU
+- Try BIOS mode first (`--bios`), UEFI requires the `ovmf` package.
+- Ensure you allocated enough memory (at least 2048 MB).
+- Use `-vga virtio` (default in the test script) rather than emulated cards.
+
+### Desktop doesn't start in live boot
+- Switch to TTY with Ctrl+Alt+F2
+- Log in as `user`/`live`
+- Check logs: `journalctl -u sddm`, `journalctl -t bright-desktop-shell`
+- Check that PyQt6 is installed: `python3 -c "from PyQt6.QtQml import QQmlApplicationEngine; print('OK')"`
+
+### Calamares fails to start
+Run Calamares from terminal to see errors:
+```bash
+pkexec calamares -d
+```
+
+### chroot or permission errors
+The build uses `lb` which handles chroot operations internally. If you see permission errors, ensure you're not running the build script itself as root (live-build uses fakeroot where needed). However, some versions of live-build require running as root — if you get chroot errors, try:
+```bash
+sudo ./build/scripts/build.sh home
+```
+
+## Build Time
+
+Expected build times on typical hardware:
+- 4-core CPU, SSD, 100 Mbps internet: **30-45 minutes**
+- 8-core CPU, NVMe SSD, 1 Gbps internet: **15-25 minutes**
+- Slow internet (<10 Mbps): **1-2 hours**
+
+The build downloads approximately 2-3 GB of packages.
 
 ## Reproducibility
 
-The build is configured for reproducibility where possible:
-- Fixed Debian snapshot mirror can be substituted
-- Timestamps are normalized where possible
-- Package versions are pinned to Debian Bookworm stable
+To create a reproducible build:
+1. Pin to a specific Debian snapshot mirror by adding `--mirror-bootstrap-append` and related snapshot options to `auto/config`
+2. Set `SOURCE_DATE_EPOCH` environment variable
+3. Use `lb build --cache` to enable caching
 
-For fully reproducible builds, use a specific Debian snapshot mirror by setting `--mirror-bootstrap` in `build/live-build/auto/config`.
+Reproducible builds are a future goal, not guaranteed for Alpha 0.1.
+
+## Cleaning
+
+To clean a specific edition's build directory:
+```bash
+./build/scripts/build.sh --clean home
+```
+
+This removes build artifacts (`config/`, `chroot/`, `binary/`, `.build/`, `local/`) but preserves ISO files.

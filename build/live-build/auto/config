@@ -4,23 +4,43 @@
 
 set -e
 
-# Detect edition from environment, default to home
+# Detect edition/codename from environment, with defaults
 EDITION="${BRIGHT_EDITION:-home}"
 ARCH="${BRIGHT_ARCH:-amd64}"
 VERSION="${BRIGHT_VERSION:-0.1.0-alpha}"
+CODENAME="${BRIGHT_DEBIAN_CODENAME:-trixie}"
 
-echo "=== Configuring Bright OS ${VERSION} (${EDITION} edition, ${ARCH}) ==="
+echo "=== Configuring Bright OS ${VERSION} (${EDITION} edition, ${ARCH}, Debian ${CODENAME}) ==="
+
+# Validate required parameters
+if [ -z "${EDITION}" ] || [ -z "${ARCH}" ] || [ -z "${CODENAME}" ]; then
+    echo "ERROR: EDITION, ARCH, and CODENAME must be set"
+    exit 1
+fi
+
+# Security mirror URL depends on codename
+case "${CODENAME}" in
+    trixie|forky)
+        SECURITY_URL="http://security.debian.org/debian-security"
+        ;;
+    bookworm)
+        SECURITY_URL="http://security.debian.org/debian-security"
+        ;;
+    *)
+        SECURITY_URL="http://security.debian.org/debian-security"
+        ;;
+esac
 
 lb config noauto \
-  --distribution bookworm \
+  --distribution "${CODENAME}" \
   --architecture "${ARCH}" \
   --archive-areas "main contrib non-free non-free-firmware" \
   --parent-archive-areas "main contrib non-free non-free-firmware" \
   --mirror-bootstrap "http://deb.debian.org/debian" \
   --mirror-binary "http://deb.debian.org/debian" \
   --mirror-chroot "http://deb.debian.org/debian" \
-  --mirror-chroot-security "http://security.debian.org/debian-security" \
-  --mirror-binary-security "http://security.debian.org/debian-security" \
+  --mirror-chroot-security "${SECURITY_URL}" \
+  --mirror-binary-security "${SECURITY_URL}" \
   --apt-recommends true \
   --apt-options "--yes --option Acquire::Retries=3" \
   --binary-images iso-hybrid \
@@ -40,4 +60,4 @@ lb config noauto \
   --swap-file-size 0 \
   "${@}"
 
-echo "=== Configuration complete for ${EDITION} edition ==="
+echo "=== Configuration complete for ${EDITION} edition (Debian ${CODENAME}) ==="
