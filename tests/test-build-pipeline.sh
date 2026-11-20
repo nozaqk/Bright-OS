@@ -70,6 +70,7 @@ if [ "$1" = "config" ] && [ "$2" = "--help" ]; then
     echo "  --parent-archive-areas AREAS"
     echo "  --mode debian"
     echo "  --keyring-packages PACKAGE"
+    echo "  --hdd-label LABEL"
     echo "  --distribution CODENAME"
     echo "  --debian-installer cdrom|netinst|netboot|live|none|false"
     echo "  --checksums md5|sha1|sha256|none"
