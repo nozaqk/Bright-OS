@@ -1,15 +1,13 @@
 # Hardware Testing Guide for Bright OS
 
-> **Status as of Phase 13:** GitHub Actions CI pipeline is configured to build
-> ISOs automatically on version tag pushes. Build configuration has been validated
-> (**423 automated tests pass**) including BIOS+UEFI dual-boot, LUKS full-disk
-> encryption, and the CI/CD pipeline.
+> **Status as of Phase 13.2:** The build system is configured for local building
+> on a Debian Linux machine. ISOs are built with `./build/scripts/build.sh <edition>`
+> and published to GitHub Releases with `./build/scripts/publish-release.sh`.
 >
-> **To get an ISO:** Push a version tag (see docs/BUILDING.md) or trigger a manual
-> build from the Actions tab. Download ISOs from
-> https://github.com/nozaqk/Bright-OS/releases
+> **To get an ISO:** Build locally per docs/BUILDING.md instructions, or download
+> from https://github.com/nozaqk/Bright-OS/releases when a release is published.
 >
-> **No real ISO has been boot-tested yet.** When CI produces the first ISO, follow
+> **No real ISO has been boot-tested yet.** After building the first ISO, follow
 > the checklists below to test in QEMU first, then on real hardware.
 
 ## Pre-Test Checklist
