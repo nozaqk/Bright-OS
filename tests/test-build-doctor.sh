@@ -465,7 +465,19 @@ lb config - Create config directory
   --bootloader grub|syslinux|yaboot
                              set bootloader
   --bootstrap BOOTSTRAP      set bootstrap
+  --bootstrap-keyring PACKAGE
+                             set bootstrap keyring
   -d|--distribution CODENAME set distribution
+  --mode debian|emdebian|progress|ubuntu|kubuntu
+                             set distribution mode
+  --keyring-packages PACKAGE | "PACKAGES"
+                             set keyring packages
+  --syslinux-theme THEME_SUFFIX
+                             set syslinux theme
+  --parent-archive-areas PARENT_ARCHIVE_AREAS
+                             set parent archive areas
+  --parent-distribution CODENAME
+                             set parent distribution
   --mirror-bootstrap URL     set mirror
   --mirror-binary URL        set mirror
   --mirror-chroot URL        set mirror
@@ -531,6 +543,18 @@ if echo "$DETECTED" | grep -qFxe "--uefi-secure-boot"; then
 else
     pass "Ubuntu legacy: --uefi-secure-boot correctly NOT detected"
 fi
+# Check --mode debian support (critical for preventing Ubuntu mode)
+if echo "$DETECTED" | grep -qFxe "--mode"; then
+    pass "Ubuntu legacy: --mode detected (can force debian mode)"
+else
+    fail "Ubuntu legacy: --mode NOT detected (cannot prevent Ubuntu mode!)"
+fi
+# Check --keyring-packages support
+if echo "$DETECTED" | grep -qFxe "--keyring-packages"; then
+    pass "Ubuntu legacy: --keyring-packages detected (can use debian-archive-keyring)"
+else
+    fail "Ubuntu legacy: --keyring-packages NOT detected"
+fi
 
 # Realistic fixture: Debian Trixie modern live-build (1:2025xxxx)
 MODERN_HELP="lb config - Create config directory
@@ -556,6 +580,8 @@ MODERN_HELP="lb config - Create config directory
   --bootstrap-qemu-arch ARCH
   --checksums md5|sha1|sha224|sha256|sha384|sha512|none
   -d|--distribution CODENAME
+  --mode debian
+  --keyring-packages PACKAGE
   --firmware-binary true|false
   --firmware-chroot true|false
   -k|--linux-flavours FLAVOURS
@@ -608,6 +634,16 @@ if echo "$DETECTED" | grep -qFxe "--parent-archive-areas"; then
     pass "Debian modern: --parent-archive-areas detected"
 else
     fail "Debian modern: --parent-archive-areas NOT detected"
+fi
+if echo "$DETECTED" | grep -qFxe "--mode"; then
+    pass "Debian modern: --mode detected"
+else
+    fail "Debian modern: --mode NOT detected"
+fi
+if echo "$DETECTED" | grep -qFxe "--keyring-packages"; then
+    pass "Debian modern: --keyring-packages detected"
+else
+    fail "Debian modern: --keyring-packages NOT detected"
 fi
 
 # Edge case: malformed/empty help output

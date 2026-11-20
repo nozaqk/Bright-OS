@@ -53,6 +53,10 @@ create_mock_lb() {
     local arch_opt="--architecture"
     local binary_opt="--binary-image"
     local has_parent_areas="yes"
+    local has_mode="yes"
+    local has_keyring="yes"
+    local mode_opt="--mode debian"
+    local keyring_opt="--keyring-packages"
     
     case "$version" in
         modern)
@@ -61,11 +65,13 @@ create_mock_lb() {
             secureboot_help="--uefi-secure-boot auto|enable|disable"
             ;;
         legacy)
-            # Ubuntu 24.04 live-build 3.0~a57
+            # Ubuntu 24.04 live-build 3.0~a57-1ubuntuXX (confirmed real help format)
             bootloader_help="--bootloader grub|syslinux|yaboot"
             arch_opt="--architectures"
             binary_opt="--binary-images"
-            has_parent_areas="no"
+            mode_opt="--mode debian|emdebian|ubuntu|kubuntu"
+            # Ubuntu legacy DOES support --parent-archive-areas (confirmed from manpage)
+            has_parent_areas="yes"
             ;;
         partial-bootloaders)
             # Has modern bootloaders but no secure boot
@@ -78,6 +84,12 @@ create_mock_lb() {
             ;;
         no-bootloader)
             # Neither option - should fail
+            ;;
+        no-mode)
+            # Has bootloaders but no --mode option (very old version)
+            bootloader_help="--bootloaders grub-legacy|grub-pc|syslinux|grub-efi"
+            secureboot_help="--uefi-secure-boot auto|enable|disable"
+            has_mode="no"
             ;;
         singular-arch)
             # Modern bootloaders but uses --architectures (plural)
@@ -98,7 +110,10 @@ if [ "\$1" = "config" ] && [ "\$2" = "--help" ]; then
     [ -n "$bootloader_help" ] && echo "  $bootloader_help"
     [ -n "$secureboot_help" ] && echo "  $secureboot_help"
     [ "$has_parent_areas" = "yes" ] && echo "  --parent-archive-areas AREAS"
+    [ "$has_mode" = "yes" ] && echo "  $mode_opt"
+    [ "$has_keyring" = "yes" ] && echo "  $keyring_opt PACKAGE"
     echo "  --debian-installer cdrom|netinst|netboot|live|none|false"
+    echo "  --distribution CODENAME"
     echo "  --checksums md5|sha1|sha256|none"
     echo "  --iso-application NAME"
     echo "  --iso-publisher NAME"
@@ -221,8 +236,32 @@ if echo "$ARGS" | grep -q -- "--parent-archive-areas"; then
 else
     fail "Modern: --parent-archive-areas missing"
 fi
+# Must pass --mode debian
+if echo "$ARGS" | grep -q -- "--mode debian"; then
+    pass "Modern: passes --mode debian"
+else
+    fail "Modern: --mode debian missing (critical: Ubuntu mode auto-detection risk)"
+fi
+# Must pass --keyring-packages debian-archive-keyring
+if echo "$ARGS" | grep -q -- "--keyring-packages debian-archive-keyring"; then
+    pass "Modern: uses --keyring-packages debian-archive-keyring"
+else
+    fail "Modern: debian-archive-keyring missing"
+fi
+# Must NOT contain any ubuntu references
+if echo "$ARGS" | grep -qi "ubuntu"; then
+    fail "Modern: arguments contain 'ubuntu' (would produce Ubuntu derivative)"
+else
+    pass "Modern: no ubuntu references in arguments"
+fi
+# Must use plural bootloaders
+if echo "$ARGS" | grep -q -- "--bootloaders grub-pc,grub-efi"; then
+    pass "Modern: uses --bootloaders grub-pc,grub-efi (BIOS+UEFI)"
+else
+    fail "Modern: --bootloaders grub-pc,grub-efi missing"
+fi
 # Should NOT use legacy options
-if echo "$ARGS" | grep -q -- "--bootloader " && ! echo "$ARGS" | grep -q -- "--bootloaders"; then
+if echo "$ARGS" | grep -q -- "--bootloader grub" && ! echo "$ARGS" | grep -q -- "--bootloaders"; then
     fail "Modern: incorrectly using legacy --bootloader (singular)"
 else
     pass "Modern: not using legacy --bootloader"
@@ -264,11 +303,41 @@ if echo "$ARGS" | grep -q -- "--binary-images iso-hybrid"; then
 else
     fail "Legacy: --binary-images not found"
 fi
-# Should NOT include --parent-archive-areas (not supported in legacy)
+# Legacy DOES support --parent-archive-areas (confirmed from Ubuntu manpage)
 if echo "$ARGS" | grep -q -- "--parent-archive-areas"; then
-    fail "Legacy: should NOT include --parent-archive-areas (not supported)"
+    pass "Legacy: includes --parent-archive-areas (supported on Ubuntu 24.04)"
 else
-    pass "Legacy: correctly omits --parent-archive-areas"
+    fail "Legacy: --parent-archive-areas missing"
+fi
+# Must pass --mode debian (CRITICAL: prevents Ubuntu mode auto-detection)
+if echo "$ARGS" | grep -q -- "--mode debian"; then
+    pass "Legacy: passes --mode debian (prevents Ubuntu host auto-detection)"
+else
+    fail "Legacy: --mode debian MISSING — would default to Ubuntu mode on Ubuntu hosts!"
+fi
+# Must pass --keyring-packages debian-archive-keyring
+if echo "$ARGS" | grep -q -- "--keyring-packages debian-archive-keyring"; then
+    pass "Legacy: uses --keyring-packages debian-archive-keyring (not ubuntu-keyring)"
+else
+    fail "Legacy: debian-archive-keyring missing — would use ubuntu-keyring!"
+fi
+# Must pass --bootloader grub (verified working for EFI support)
+if echo "$ARGS" | grep -q -- "--bootloader grub"; then
+    pass "Legacy: passes --bootloader grub (enables GRUB for EFI boot)"
+else
+    fail "Legacy: --bootloader grub missing"
+fi
+# Must NOT contain any ubuntu references in the arguments
+if echo "$ARGS" | grep -qi "ubuntu"; then
+    fail "Legacy: arguments contain 'ubuntu' (would produce Ubuntu derivative)"
+else
+    pass "Legacy: no ubuntu references in arguments"
+fi
+# Must keep target distribution as trixie
+if echo "$ARGS" | grep -q -- "--distribution trixie"; then
+    pass "Legacy: target distribution remains trixie"
+else
+    fail "Legacy: target distribution not set to trixie"
 fi
 # Should report the legacy notice
 if echo "$OUTPUT" | grep -qi "legacy live-build\|older live-build"; then
@@ -435,6 +504,190 @@ else
 fi
 
 echo ""
+echo "--- Testing no-mode live-build (very old, no --mode option) ---"
+run_config_test "no-mode"
+
+ARGS=$(get_args "no-mode")
+EXIT=$(get_exit "no-mode")
+
+if [ "$EXIT" = "0" ]; then
+    pass "No-mode: auto/config exits 0 (graceful fallback)"
+else
+    fail "No-mode: auto/config exits $EXIT (should succeed, just skip --mode)"
+fi
+if echo "$ARGS" | grep -q -- "--mode"; then
+    fail "No-mode: should NOT pass --mode (unsupported in this version)"
+else
+    pass "No-mode: correctly omits --mode when not supported"
+fi
+# Even without --mode, should NOT contain any ubuntu references
+if echo "$ARGS" | grep -qi "ubuntu"; then
+    fail "No-mode: arguments contain 'ubuntu'"
+else
+    pass "No-mode: no ubuntu references"
+fi
+
+echo ""
+echo "--- Integration test: legacy Ubuntu host scenario ---"
+# Simulate a realistic Ubuntu 24.04 host where lb writes config/bootstrap
+# We extend the legacy mock to write a config/bootstrap file that mimics
+# what live-build actually does: defaults to LB_MODE based on /etc/os-release
+# unless --mode is explicitly passed.
+UBUNTU_HOST_TEST="$TMPDIR/ubuntu-host-realistic"
+rm -rf "$UBUNTU_HOST_TEST"
+mkdir -p "$UBUNTU_HOST_TEST"
+cd "$UBUNTU_HOST_TEST"
+
+mkdir -p auto
+cp "$PROJECT_ROOT/build/live-build/auto/config" auto/config
+chmod +x auto/config
+
+mkdir -p config/package-lists config/includes.chroot/etc/bright-os
+echo "home" > config/includes.chroot/etc/bright-os/edition
+cp -r "$PROJECT_ROOT/config/package-lists" config/ 2>/dev/null || true
+
+# Realistic Ubuntu 24.04 lb mock that writes config/bootstrap and respects --mode
+mkdir -p mock-bin
+cat > mock-bin/lb << 'MOCKEOF'
+#!/bin/bash
+# Realistic Ubuntu 24.04 live-build 3.0~a57 simulation
+# Defaults to UBUNTU mode based on host /etc/os-release unless --mode debian
+if [ "$1" = "config" ] && [ "$2" = "--help" ]; then
+cat << 'HELP'
+Usage: lb config [options]
+  -a|--architectures ARCHITECTURE
+  -b|--binary-images iso|iso-hybrid|netboot|tar|hdd
+  --archive-areas AREAS
+  --parent-archive-areas AREAS
+  --bootloader grub|syslinux|yaboot
+  --bootstrap cdebootstrap|debootstrap
+  --bootstrap-keyring PACKAGE
+  --distribution CODENAME
+  --mode debian|emdebian|ubuntu|kubuntu
+  --keyring-packages PACKAGE | "PACKAGES"
+  --mirror-bootstrap URL
+  --mirror-binary URL
+  --mirror-chroot URL
+  --debian-installer cdrom|netinst|netboot|live|none|false
+  --checksums md5|sha1|sha256|none
+  --iso-application NAME
+  --iso-publisher NAME
+  --iso-volume NAME
+  --iso-preparer NAME
+  --memtest memtest86+|memtest86|none
+  --firmware-binary true|false
+  --firmware-chroot true|false
+  --win32-loader true|false
+  --zsync true|false
+  --initsystem sysvinit|systemd|none
+  --apt-recommends true|false
+  --apt-options OPTIONS
+  --syslinux-theme THEME_SUFFIX
+HELP
+    exit 0
+fi
+if [ "$1" = "config" ]; then
+    shift
+    # Parse arguments and simulate live-build's default behavior
+    MODE="ubuntu"        # DEFAULT on Ubuntu hosts (from /etc/os-release detection)
+    DIST=""
+    KEYRING="ubuntu-keyring"  # DEFAULT on Ubuntu
+    ARCH=""
+    BOOTLOADER=""
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            noauto) ;;
+            --mode) shift; MODE="$1" ;;
+            --distribution) shift; DIST="$1" ;;
+            --keyring-packages) shift; KEYRING="$1" ;;
+            --architectures) shift; ARCH="$1" ;;
+            --bootloader) shift; BOOTLOADER="$1" ;;
+        esac
+        shift
+    done
+    mkdir -p config
+    cat > config/bootstrap << EOBT
+LB_MODE="${MODE}"
+LB_DISTRIBUTION="${DIST}"
+LB_KEYRING_PACKAGES="${KEYRING}"
+LB_ARCHITECTURES="${ARCH}"
+LB_BOOTLOADER="${BOOTLOADER}"
+LB_HDD_LABEL="$( [ "$MODE" = "ubuntu" ] && echo "UBUNTU" || echo "DEBIAN_LIVE" )"
+LB_SYSLINUX_THEME="$( [ "$MODE" = "ubuntu" ] && echo "ubuntu-oneiric" || echo "live-build" )"
+EOBT
+    echo "LB_ARGS written to config/bootstrap (MODE=$MODE, KEYRING=$KEYRING)"
+    exit 0
+fi
+exit 1
+MOCKEOF
+chmod +x mock-bin/lb
+
+PATH="$UBUNTU_HOST_TEST/mock-bin:$PATH" \
+BRIGHT_EDITION=home BRIGHT_ARCH=amd64 BRIGHT_VERSION=0.1.0-alpha BRIGHT_DEBIAN_CODENAME=trixie \
+    ./auto/config > "$UBUNTU_HOST_TEST/output.log" 2>&1
+
+INTEGRATION_EXIT=$?
+if [ "$INTEGRATION_EXIT" = "0" ]; then
+    pass "Integration (Ubuntu host): auto/config exits 0"
+else
+    fail "Integration (Ubuntu host): auto/config exits $INTEGRATION_EXIT"
+fi
+
+# Now examine the generated config/bootstrap file
+if [ -f config/bootstrap ]; then
+    pass "Integration (Ubuntu host): config/bootstrap generated"
+else
+    fail "Integration (Ubuntu host): config/bootstrap not created"
+fi
+
+# Check LB_MODE must be "debian", NOT "ubuntu"
+if grep -q 'LB_MODE="debian"' config/bootstrap; then
+    pass "Integration (Ubuntu host): LB_MODE=debian (correct Debian target)"
+else
+    MODE_VAL=$(grep LB_MODE config/bootstrap || echo "not found")
+    fail "Integration (Ubuntu host): LB_MODE is NOT debian — got: $MODE_VAL"
+fi
+
+# Check LB_DISTRIBUTION must be "trixie"
+if grep -q 'LB_DISTRIBUTION="trixie"' config/bootstrap; then
+    pass "Integration (Ubuntu host): LB_DISTRIBUTION=trixie (correct target)"
+else
+    DIST_VAL=$(grep LB_DISTRIBUTION config/bootstrap || echo "not found")
+    fail "Integration (Ubuntu host): LB_DISTRIBUTION not trixie — got: $DIST_VAL"
+fi
+
+# Check LB_KEYRING_PACKAGES must be "debian-archive-keyring"
+if grep -q 'LB_KEYRING_PACKAGES="debian-archive-keyring"' config/bootstrap; then
+    pass "Integration (Ubuntu host): LB_KEYRING_PACKAGES=debian-archive-keyring"
+else
+    KEYRING_VAL=$(grep LB_KEYRING_PACKAGES config/bootstrap || echo "not found")
+    fail "Integration (Ubuntu host): keyring not debian-archive-keyring — got: $KEYRING_VAL"
+fi
+
+# Check NO ubuntu-keyring
+if grep -q 'ubuntu-keyring' config/bootstrap; then
+    fail "Integration (Ubuntu host): ubuntu-keyring found in generated config!"
+else
+    pass "Integration (Ubuntu host): no ubuntu-keyring in generated config"
+fi
+
+# Check HDD label not UBUNTU
+if grep -q 'UBUNTU' config/bootstrap; then
+    fail "Integration (Ubuntu host): UBUNTU HDD label present (branding leak)"
+else
+    pass "Integration (Ubuntu host): HDD label is not UBUNTU"
+fi
+
+# Check syslinux theme not ubuntu-oneiric
+if grep -q 'ubuntu-oneiric' config/bootstrap; then
+    fail "Integration (Ubuntu host): ubuntu-oneiric syslinux theme present"
+else
+    pass "Integration (Ubuntu host): syslinux theme is not ubuntu-oneiric"
+fi
+
+cd "$PROJECT_ROOT"
+
+echo ""
 echo "--- Testing build doctor capability checks ---"
 if grep -q "live-build capability detection" build/scripts/bright-build-doctor.sh; then
     pass "Build doctor includes live-build capability detection"
@@ -445,6 +698,21 @@ if grep -q "\-\-bootloaders\|\-\-uefi-secure-boot" build/scripts/bright-build-do
     pass "Build doctor checks for --bootloaders and --uefi-secure-boot support"
 else
     fail "Build doctor does not check bootloader/SecureBoot options"
+fi
+if grep -q "\-\-mode.*debian\|debian.*mode" build/scripts/bright-build-doctor.sh; then
+    pass "Build doctor checks for --mode debian support"
+else
+    fail "Build doctor missing --mode debian check"
+fi
+if grep -q "debian-archive-keyring\|keyring-packages" build/scripts/bright-build-doctor.sh; then
+    pass "Build doctor checks for debian-archive-keyring"
+else
+    fail "Build doctor missing keyring/debian-archive-keyring check"
+fi
+if grep -q "ubuntu" build/scripts/bright-build-doctor.sh; then
+    pass "Build doctor warns about Ubuntu host/mode risk"
+else
+    fail "Build doctor does not warn about Ubuntu host auto-detection risk"
 fi
 if grep -q "30-efi-boot-setup.hook.binary" build/scripts/bright-build-doctor.sh; then
     pass "Build doctor checks for EFI boot hook file"

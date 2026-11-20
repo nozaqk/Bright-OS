@@ -112,6 +112,28 @@ else
     echo "  WARNING: --parent-archive-areas not supported; omitting."
 fi
 
+# Mode option: must always set --mode debian to prevent live-build from
+# auto-detecting Ubuntu mode when building on an Ubuntu host. Without this,
+# running on Ubuntu sets LB_MODE=ubuntu, ubuntu-keyring, UBUNTU labels, and
+# ubuntu syslinux theme — producing an Ubuntu derivative rather than Bright OS.
+if has_option "--mode"; then
+    LB_HAS_MODE=true
+    echo "  Detected --mode support (forcing debian mode)"
+else
+    LB_HAS_MODE=false
+    echo "  WARNING: --mode not supported by this live-build version"
+    echo "    (build may inherit host OS defaults; use Debian host for reliable builds)"
+fi
+
+# Keyring packages: specify debian-archive-keyring explicitly when in Debian mode
+if has_option "--keyring-packages"; then
+    LB_HAS_KEYRING_PACKAGES=true
+    echo "  Detected --keyring-packages support (using debian-archive-keyring)"
+else
+    LB_HAS_KEYRING_PACKAGES=false
+    echo "  WARNING: --keyring-packages not supported"
+fi
+
 # ==============================================================================
 # Build lb config argument list
 # ==============================================================================
@@ -144,6 +166,16 @@ set -- \
   --zsync false \
   --initsystem systemd
 
+# Force Debian mode to prevent Ubuntu host OS auto-detection
+if [ "$LB_HAS_MODE" = true ]; then
+    set -- "$@" --mode debian
+fi
+
+# Explicitly set Debian archive keyring (prevents ubuntu-keyring on Ubuntu hosts)
+if [ "$LB_HAS_KEYRING_PACKAGES" = true ]; then
+    set -- "$@" --keyring-packages debian-archive-keyring
+fi
+
 # Add parent-archive-areas if supported
 if [ "$LB_HAS_PARENT_ARCHIVE_AREAS" = true ]; then
     set -- "$@" --parent-archive-areas "main contrib non-free non-free-firmware"
@@ -156,21 +188,18 @@ set -- "$@" --debian-installer false
 
 # Bootloader configuration
 if [ "$LB_HAS_MODERN_BOOTLOADERS" = true ]; then
-    # Modern: specify both BIOS and EFI bootloaders explicitly
+    # Modern: specify both BIOS and EFI bootloaders explicitly (comma-separated)
     set -- "$@" "${LB_BOOTLOADERS_OPT}" grub-pc,grub-efi
     echo "  Bootloaders: grub-pc,grub-efi (BIOS + UEFI explicit)"
 else
     # Legacy live-build (e.g. Ubuntu 3.0~a57):
-    # - For iso-hybrid images, isolinux/syslinux is ALWAYS used for BIOS boot
-    #   (per the manpage: "if you build an ISO, syslinux/isolinux is always used")
-    # - We do NOT set --bootloader here because that option is for HDD images
-    #   and would interfere with iso-hybrid auto-selection
-    # - UEFI boot is provided by:
-    #   1. grub-efi-amd64-bin in chroot package lists
-    #   2. A binary hook that ensures EFI boot structure is present
-    #   3. The EFI boot image created by live-build from chroot packages
-    echo "  Bootloaders: auto-select (isolinux for BIOS via iso-hybrid)"
-    echo "  UEFI boot: via grub-efi packages + EFI setup hook"
+    # - For iso-hybrid images, isolinux/syslinux is always used for BIOS boot
+    #   (per the manpage), but passing --bootloader grub enables GRUB setup
+    #   which is needed for UEFI boot (EFI boot image generation).
+    # - Verified working command: --bootloader grub produces LB_BOOTLOADER="grub"
+    #   and enables both BIOS (isolinux) and UEFI (grub-efi) boot paths.
+    set -- "$@" "${LB_BOOTLOADERS_OPT}" grub
+    echo "  Bootloaders: grub (BIOS via isolinux + UEFI via grub-efi)"
 fi
 
 # Secure Boot configuration
