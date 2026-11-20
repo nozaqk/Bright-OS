@@ -200,6 +200,17 @@ else
     fail "Build doctor does not check for required project files"
 fi
 
+# Detect whether there were actually missing packages (to conditionally
+# check for the apt-get install hint)
+HAS_MISSING_PACKAGES=false
+if echo "$DOCTOR_OUTPUT" | grep -qE "(not found|not installed)" && \
+   echo "$DOCTOR_OUTPUT" | grep -qE "(lb |debootstrap |mksquashfs |xorriso |isolinux|syslinux|mtools|dosfstools|genisoimage|grub-pc|grub-efi|isoinfo|file |sha256)"; then
+    # At least one package/tool was reported missing
+    if echo "$DOCTOR_OUTPUT" | grep -qE "\[FAIL\].*(not found|not installed)"; then
+        HAS_MISSING_PACKAGES=true
+    fi
+fi
+
 # Status consistency: the reported STATUS should match actual conditions
 echo ""
 echo "--- Build doctor status consistency ---"
@@ -213,11 +224,23 @@ case "$REPORTED_STATUS" in
         else
             fail "Doctor reports NOT READY but no failures detected"
         fi
-        # Must show install hint
-        if echo "$DOCTOR_OUTPUT" | grep -q "apt-get install"; then
-            pass "Build doctor suggests apt-get install for missing packages"
+        # Apt-get install hint is required WHEN PACKAGES ARE MISSING.
+        # If the failure is for other reasons (mirrors unreachable, bad config, etc.),
+        # the doctor should show an appropriate diagnostic but not a misleading
+        # package-install hint.
+        if [ "$HAS_MISSING_PACKAGES" = "true" ]; then
+            if echo "$DOCTOR_OUTPUT" | grep -q "apt-get install"; then
+                pass "Build doctor suggests apt-get install for missing packages"
+            else
+                fail "Build doctor should suggest apt-get install when packages are missing"
+            fi
         else
-            fail "Build doctor should suggest apt-get install when NOT READY"
+            # No packages missing - must show non-package diagnostic (mirrors, etc.)
+            if echo "$DOCTOR_OUTPUT" | grep -qE "(mirror|network|connectivity|proxy|capability|cannot determine|configuration)"; then
+                pass "Build doctor provides non-package diagnostic for NOT READY status"
+            else
+                fail "Build doctor NOT READY but no package hint or diagnostic found"
+            fi
         fi
         ;;
     "STATUS: READY WITH WARNINGS")
@@ -412,6 +435,214 @@ if grep -q "\-\-skip-tests" "$BUILD_FIRST"; then
     pass "build-first-iso.sh supports --skip-tests flag"
 else
     fail "build-first-iso.sh does not support --skip-tests"
+fi
+
+echo ""
+echo "--- Live-build capability detection (fixture-based) ---"
+
+# Extract the option-detection logic from auto/config and doctor into a
+# testable helper function using the same robust token-extraction approach.
+detect_options() {
+    local helptext="$1"
+    echo "$helptext" | grep -oE '\-\-[a-z][a-z0-9\-]+' | sort -u
+}
+
+# Realistic fixture: Ubuntu 24.04 live-build 3.0~a57-1
+# Based on actual 'lb config --help' output
+UBUNTU_LEGACY_HELP="Usage: lb config [options]
+lb config - Create config directory
+
+  -h, --help                 display help
+  -u, --usage                display usage
+  -v, --version              display version
+
+  -a|--architectures ARCHITECTURE
+                             set architectures
+  -b|--binary-images iso|iso-hybrid|netboot|tar|hdd
+                             set binary image type
+  --archive-areas ARCHIVE_AREAS
+                             set archive areas
+  --bootloader grub|syslinux|yaboot
+                             set bootloader
+  --bootstrap BOOTSTRAP      set bootstrap
+  -d|--distribution CODENAME set distribution
+  --mirror-bootstrap URL     set mirror
+  --mirror-binary URL        set mirror
+  --mirror-chroot URL        set mirror
+  --mirror-chroot-security URL
+                             set security mirror
+  --mirror-binary-security URL
+                             set security mirror
+  --apt-recommends true|false
+                             enable recommends
+  --apt-options OPTIONS      set apt options
+  --checksums md5|sha1|sha256|none
+                             set checksums
+  --debian-installer cdrom|netinst|netboot|businesscard|live|false
+                             enable debian installer
+  --firmware-binary true|false
+                             include firmware in binary
+  --firmware-chroot true|false
+                             include firmware in chroot
+  --iso-application NAME     set application name
+  --iso-publisher NAME       set publisher
+  --iso-volume NAME          set volume
+  --iso-preparer NAME        set preparer
+  --memtest memtest86+|memtest86|none
+                             set memtest
+  --win32-loader true|false  enable win32 loader
+  --zsync true|false         enable zsync
+  --initsystem sysvinit|systemd|upstart|none
+                             set init system"
+
+DETECTED=$(detect_options "$UBUNTU_LEGACY_HELP")
+
+# Check singular bootloader detected, plural NOT detected
+if echo "$DETECTED" | grep -qFxe "--bootloader"; then
+    pass "Ubuntu legacy: --bootloader (singular) detected"
+else
+    fail "Ubuntu legacy: --bootloader NOT detected (false negative)"
+fi
+if echo "$DETECTED" | grep -qFxe "--bootloaders"; then
+    fail "Ubuntu legacy: --bootloaders (plural) FALSELY detected"
+else
+    pass "Ubuntu legacy: --bootloaders (plural) correctly NOT detected"
+fi
+# Check architecture option
+if echo "$DETECTED" | grep -qFxe "--architectures"; then
+    pass "Ubuntu legacy: --architectures (plural) detected"
+else
+    fail "Ubuntu legacy: --architectures NOT detected"
+fi
+if echo "$DETECTED" | grep -qFxe "--architecture"; then
+    fail "Ubuntu legacy: --architecture (singular) FALSELY detected"
+else
+    pass "Ubuntu legacy: --architecture (singular) correctly NOT detected"
+fi
+# Check binary image option
+if echo "$DETECTED" | grep -qFxe "--binary-images"; then
+    pass "Ubuntu legacy: --binary-images (plural) detected"
+else
+    fail "Ubuntu legacy: --binary-images NOT detected"
+fi
+# Check Secure Boot NOT detected
+if echo "$DETECTED" | grep -qFxe "--uefi-secure-boot"; then
+    fail "Ubuntu legacy: --uefi-secure-boot FALSELY detected"
+else
+    pass "Ubuntu legacy: --uefi-secure-boot correctly NOT detected"
+fi
+
+# Realistic fixture: Debian Trixie modern live-build (1:2025xxxx)
+MODERN_HELP="lb config - Create config directory
+
+  -h|--help
+  -u|--usage
+  -v|--version
+
+  --apt apt|apt-get|aptitude
+  --apt-http-proxy URL
+  --apt-indices true|false
+  --apt-options OPTIONS
+  --apt-recommends true|false
+  --apt-secure true|false
+  -a|--architecture ARCHITECTURE
+  --archive-areas ARCH_AREAS
+  --backports true|false
+  --binary-filesystem fat16|fat32|ext2|ext3|ext4|ntfs
+  -b|--binary-image iso|iso-hybrid|netboot|tar|hdd
+  --bootappend-install PARAMETERS
+  --bootappend-live PARAMETERS
+  --bootloaders grub-legacy|grub-pc|syslinux|grub-efi
+  --bootstrap-qemu-arch ARCH
+  --checksums md5|sha1|sha224|sha256|sha384|sha512|none
+  -d|--distribution CODENAME
+  --firmware-binary true|false
+  --firmware-chroot true|false
+  -k|--linux-flavours FLAVOURS
+  --memtest memtest86+|memtest86|none
+  --mirror-bootstrap URL
+  --mirror-binary URL
+  --mirror-chroot URL
+  --mirror-chroot-security URL
+  --mirror-binary-security URL
+  --parent-archive-areas ARCH_AREAS
+  --debian-installer cdrom|netinst|netboot|live|none|false
+  --iso-application NAME
+  --iso-publisher NAME
+  --iso-volume NAME
+  --iso-preparer NAME
+  --uefi-secure-boot auto|enable|disable
+  --updates true|false
+  --win32-loader true|false
+  --zsync true|false
+  --initsystem sysvinit|systemd|none"
+
+DETECTED=$(detect_options "$MODERN_HELP")
+
+if echo "$DETECTED" | grep -qFxe "--bootloaders"; then
+    pass "Debian modern: --bootloaders (plural) detected"
+else
+    fail "Debian modern: --bootloaders NOT detected"
+fi
+if echo "$DETECTED" | grep -qFxe "--bootloader"; then
+    fail "Debian modern: --bootloader (singular) FALSELY detected"
+else
+    pass "Debian modern: --bootloader (singular) correctly NOT detected"
+fi
+if echo "$DETECTED" | grep -qFxe "--architecture"; then
+    pass "Debian modern: --architecture (singular) detected"
+else
+    fail "Debian modern: --architecture NOT detected"
+fi
+if echo "$DETECTED" | grep -qFxe "--binary-image"; then
+    pass "Debian modern: --binary-image (singular) detected"
+else
+    fail "Debian modern: --binary-image NOT detected"
+fi
+if echo "$DETECTED" | grep -qFxe "--uefi-secure-boot"; then
+    pass "Debian modern: --uefi-secure-boot detected"
+else
+    fail "Debian modern: --uefi-secure-boot NOT detected"
+fi
+if echo "$DETECTED" | grep -qFxe "--parent-archive-areas"; then
+    pass "Debian modern: --parent-archive-areas detected"
+else
+    fail "Debian modern: --parent-archive-areas NOT detected"
+fi
+
+# Edge case: malformed/empty help output
+EMPTY_HELP=""
+DETECTED=$(detect_options "$EMPTY_HELP")
+if [ -z "$DETECTED" ]; then
+    pass "Empty help: no options detected (correct)"
+else
+    fail "Empty help: spurious options detected"
+fi
+
+# Edge case: partial/garbled help (no bootloader option at all)
+GARBLED_HELP="lb config version 1.0
+some random output
+--some-internal-flag value
+more output"
+DETECTED=$(detect_options "$GARBLED_HELP")
+if ! echo "$DETECTED" | grep -qFxe "--bootloader" && \
+   ! echo "$DETECTED" | grep -qFxe "--bootloaders"; then
+    pass "Garbled help: correctly detects no bootloader option"
+else
+    fail "Garbled help: false bootloader detection"
+fi
+
+# Edge case: help with groff bold markers (manpage piped through col might leave these)
+BOLD_HELP="[**--bootloader** grub|syslinux]
+[**--architectures** *ARCH*]
+[**--binary-images** iso|iso-hybrid]
+[**--uefi-secure-boot** auto|enable]"
+DETECTED=$(detect_options "$BOLD_HELP")
+# The ** should not interfere with token extraction (-- is followed by letters)
+if echo "$DETECTED" | grep -qFxe "--bootloader"; then
+    pass "Bold-marked help: --bootloader detected despite ** markers"
+else
+    fail "Bold-marked help: --bootloader NOT detected (** markers confuse parser)"
 fi
 
 # --- Report ---

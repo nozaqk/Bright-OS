@@ -40,16 +40,22 @@ SECURITY_URL="http://security.debian.org/debian-security"
 # ==============================================================================
 
 echo "Detecting live-build capabilities..."
+# Capture both stdout and stderr; some versions of lb may write help to either
 LB_HELP=$(lb config --help 2>&1 || true)
 
+# Extract all --long-option names from the help text into a sorted list.
+# This robustly handles any help formatting (bracketed synopsis, bold markers,
+# pipe-separated alternatives, short|long combinations) by simply extracting
+# every token that starts with -- followed by option-name characters.
+# We then check for exact option name in this list, which avoids singular/plural
+# false matches (--bootloader won't match --bootloaders because 's' is part of
+# the token, and exact matching distinguishes them).
+LB_OPTIONS=$(echo "$LB_HELP" | grep -oE '\-\-[a-z][a-z0-9\-]+' | sort -u)
+
 has_option() {
-    # Check if an option appears in lb config --help output.
-    # Handles patterns like:
-    #   --option value       (followed by space/arg)
-    #   -o|--option value    (short|long form in synopsis)
-    #   --option|--other     (alternation in synopsis)
-    # Avoids partial matches (e.g. --bootloader vs --bootloaders).
-    echo "$LB_HELP" | grep -qE "(^|[[:space:]|\|])$1([[:space:]]|$|\|)"
+    # Check if an exact --option-name was extracted from the help text.
+    # Use -e to prevent patterns starting with -- from being treated as grep options.
+    echo "$LB_OPTIONS" | grep -qFxe "$1"
 }
 
 # Bootloader option detection
