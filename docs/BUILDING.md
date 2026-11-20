@@ -275,3 +275,55 @@ To clean a specific edition's build directory:
 ```
 
 This removes build artifacts (`config/`, `chroot/`, `binary/`, `.build/`, `local/`) but preserves ISO files.
+
+## Automated CI/CD Builds (GitHub Actions)
+
+Bright OS includes a GitHub Actions workflow that automatically builds all three
+editions and publishes them to GitHub Releases.
+
+### Workflow file
+`.github/workflows/build-bright-os.yml`
+
+### Automatic release builds
+
+Push a version tag to trigger a full release build:
+
+```bash
+git tag -a v0.1.0-alpha -m "Bright OS 0.1.0 Alpha"
+git push origin v0.1.0-alpha
+```
+
+This will:
+1. Build Home, Developer, and Lite editions in parallel (each in its own Debian Trixie container)
+2. Validate each ISO (filesystem, kernel, initrd, squashfs, BIOS/UEFI boot structures)
+3. Verify SHA256 checksums
+4. If all editions succeed, create a GitHub Release with downloadable ISOs and SHA256SUMS
+
+### Manual builds
+
+You can start a manual build from the [Actions tab](https://github.com/nozaqk/Bright-OS/actions):
+1. Select "Build Bright OS ISOs" workflow
+2. Click "Run workflow"
+3. Choose version string and edition (or "all")
+4. Manual builds upload ISOs as workflow artifacts (retained 14 days) but do NOT create a public release
+
+### Build environment
+
+- **Runner:** `ubuntu-latest` (2-core, 16 GB RAM, ~50 GB free after cleanup)
+- **Build container:** `debian:trixie` (Docker, privileged mode for chroot/mount operations)
+- **Build time:** ~45-90 minutes per edition (parallel, so total ~90 minutes for all three)
+- **Size limit:** GitHub Releases has a 2 GiB per-file limit; the build fails if any ISO exceeds this
+
+### What happens on failure
+
+- If one edition fails, other editions continue building (fail-fast: false)
+- Failed editions do not upload artifacts
+- The release job does NOT run if any edition fails (no partial releases)
+- Build logs are shown in the Actions interface and available as artifacts on failure
+
+### Security
+
+- Third-party actions are pinned to full commit SHAs
+- Build jobs have read-only permissions; only the release job has `contents: write`
+- The workflow does NOT run on pull requests (prevents untrusted code execution with secrets)
+- Only the built-in `GITHUB_TOKEN` is used (no personal access tokens required)
