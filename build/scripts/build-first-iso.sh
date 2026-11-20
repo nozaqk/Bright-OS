@@ -133,6 +133,8 @@ if ! "$DOCTOR_SCRIPT"; then
         echo "    grub-pc-bin grub-efi-amd64-bin shim-signed grub-efi-amd64-signed \\"
         echo "    qemu-system-x86 qemu-utils ovmf file"
         echo ""
+        echo "  Or run: ./build/scripts/setup-build-env.sh"
+        echo ""
         exit 1
     elif [ $DOCTOR_EXIT -eq 2 ]; then
         if [ "$FORCE" != "true" ]; then
@@ -229,7 +231,8 @@ log_info "This typically takes 30-90 minutes depending on network speed and hard
 echo ""
 
 # Clean stale build state if any (but preserve old ISO)
-"${BUILD_SCRIPT}" --clean "$EDITION" 2>&1 | tee -a "$BUILD_LOG" >/dev/null 2>&1 || true
+log_info "Cleaning stale build artifacts..."
+"${BUILD_SCRIPT}" --clean "$EDITION" >> "$BUILD_LOG" 2>&1 || true
 
 # Run the actual build
 BUILD_EXIT=0

@@ -85,7 +85,7 @@ After Lite works, build Home and Developer:
 ./build/scripts/publish-release.sh 0.1.0-alpha   # Publish release
 ```
 
-For complete instructions, see [docs/BUILDING.md](docs/BUILDING.md).
+For complete step-by-step instructions, see **[docs/FIRST-ISO-HANDOFF.md](docs/FIRST-ISO-HANDOFF.md)** or [docs/BUILDING.md](docs/BUILDING.md).
 
 ## Editions
 
