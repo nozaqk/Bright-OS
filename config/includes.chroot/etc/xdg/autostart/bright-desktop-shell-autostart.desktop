@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Bright Desktop Shell
-Comment=Start Bright Desktop panels and wallpaper
-Exec=/usr/bin/bright-desktop-shell
-OnlyShowIn=Bright;
-X-KDE-autostart-phase=1
-X-KDE-StartupNotify=false
