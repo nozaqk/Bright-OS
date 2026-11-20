@@ -103,18 +103,32 @@ else
     fail "auto/config may not use trixie as default"
 fi
 
-# Check --binary-image iso-hybrid (correct flag name)
-if grep -q "\-\-binary-image iso-hybrid" "$AUTO_CONFIG"; then
-    pass "auto/config uses --binary-image iso-hybrid (correct live-build flag)"
+# Check iso-hybrid binary image type (required for USB bootable ISO)
+if grep -q "iso-hybrid" "$AUTO_CONFIG"; then
+    pass "auto/config uses iso-hybrid binary image type (USB-bootable)"
 else
-    fail "auto/config may use wrong binary image flag"
+    fail "auto/config may use wrong binary image type (expected iso-hybrid)"
 fi
 
-# Check --bootloaders (plural, correct)
-if grep -q "\-\-bootloaders grub-pc,grub-efi" "$AUTO_CONFIG"; then
-    pass "auto/config uses --bootloaders grub-pc,grub-efi for BIOS+UEFI dual boot"
+# Check capability detection and BIOS+UEFI boot support
+if grep -q "has_option.*bootloaders\|LB_HAS_MODERN_BOOTLOADERS\|Detecting live-build" "$AUTO_CONFIG"; then
+    pass "auto/config includes live-build capability detection"
 else
-    fail "auto/config bootloader configuration incorrect"
+    fail "auto/config missing live-build capability detection"
+fi
+
+# Check that grub-pc,grub-efi is configured for modern live-build
+if grep -q "grub-pc,grub-efi" "$AUTO_CONFIG"; then
+    pass "auto/config configures grub-pc,grub-efi for BIOS+UEFI dual boot (modern live-build)"
+else
+    fail "auto/config bootloader configuration missing grub-pc,grub-efi"
+fi
+
+# Check that unsupported options are NOT passed blindly
+if grep -q "LB_HELP=\$(lb config --help)\|has_option" "$AUTO_CONFIG"; then
+    pass "auto/config detects capabilities before passing options to lb"
+else
+    fail "auto/config does not detect lb capabilities (may pass unsupported options)"
 fi
 
 # Check memtest none

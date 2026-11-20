@@ -21,9 +21,30 @@ you will end up with a bootable, validated ISO.
 
 ### Operating System
 
-- **Debian 12 Bookworm** or **Debian 13 Trixie** (bare metal or virtual machine)
-- Ubuntu or other Debian derivatives may work but are not tested or supported
+- **Debian 13 Trixie** (recommended — includes modern live-build with full BIOS+UEFI+Secure Boot support)
+- **Debian 12 Bookworm** (works — live-build will bootstrap a Trixie chroot)
+- **Ubuntu 24.04 LTS** (works with automatic capability detection; see note below)
 - Windows, macOS, WSL, and Docker are not supported — use a Debian VM instead
+
+#### Live-build Version Compatibility
+
+Bright OS automatically detects the installed live-build version and adapts:
+
+| Build Host | live-build version | BIOS boot | UEFI boot | Secure Boot |
+|---|---|---|---|---|
+| Debian 13 Trixie | 1:2025xxxx (modern) | ✅ Full | ✅ Full | ✅ `--uefi-secure-boot auto` |
+| Debian 12 Bookworm | 1:2023xxxx | ✅ Full | ✅ Full | ⚠️ Depends on shim packages |
+| Ubuntu 24.04 | 3.0~a57-1ubuntuXX (legacy) | ✅ Full | ⚠️ See note | ❌ Not configurable |
+
+**Ubuntu 24.04 note**: Ubuntu ships an older fork of live-build (3.0~a57) that lacks
+the `--bootloaders` and `--uefi-secure-boot` options. Bright OS detects this and:
+- Uses only supported options (no unrecognized option errors)
+- Provides BIOS boot via isolinux (auto-detected)
+- Attempts UEFI boot setup via a binary hook (requires `grub-efi-amd64-bin` and `mtools` packages)
+- Reports Secure Boot as unavailable (shim-signed is installed but not integrated)
+- Fails with a clear error if UEFI cannot be configured (set `BRIGHT_REQUIRE_UEFI=0` to override)
+
+For best results (especially UEFI Secure Boot), build on Debian 13 Trixie.
 
 ### Virtual Machine Notes
 
