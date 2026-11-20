@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Install Bright OS
+Comment=Install Bright OS to your computer
+Exec=pkexec calamares
+Icon=system-software-install
+Terminal=false
+Categories=System;Settings;
+StartupNotify=true

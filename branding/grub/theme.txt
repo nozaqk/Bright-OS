@@ -1,0 +1,93 @@
+# Bright OS GRUB2 Graphical Theme
+# Clean dark theme matching Bright Desktop branding
+
+# Global properties
+title-text: "BRIGHT OS"
+title-color: "#f1f5f9"
+title-font: "DejaVu Sans Bold 24"
+
+message-font: "DejaVu Sans 12"
+message-color: "#94a3b8"
+message-bg-color: "#0a0e1a"
+
+# Desktop/image
+desktop-image: "background.png"
+desktop-color: "#0a0e1a"
+
+# Terminal box (where boot messages go)
+terminal-box: "terminal_box_*.png"
+terminal-border: 0
+terminal-left: 0
+terminal-top: 0
+terminal-width: 100%
+terminal-height: 100%
+
+# Boot menu positioning
++ boot_menu {
+    left = 25%
+    top = 35%
+    width = 50%
+    height = 45%
+    visible = 1
+    menu_font = "DejaVu Sans 14"
+    item_color = "#e2e8f0"
+    item_height = 32
+    item_spacing = 4
+    item_padding = 4
+    selected_item_color = "#ffffff"
+    selected_item_font = "DejaVu Sans Bold 14"
+    icon_width = 0
+    icon_height = 0
+    item_icon_space = 0
+    selected_item_pixmap_style = "select_*.png"
+    scrollbar = false
+}
+
+# Progress bar (for boot countdown)
++ progress_bar {
+    id = "__timeout__"
+    left = 35%
+    top = 85%
+    width = 30%
+    height = 4
+    visible = 1
+    show_text = false
+    fg_color = "#3b82f6"
+    bg_color = "#1e293b"
+    border_color = "#334155"
+    text_color = "#94a3b8"
+    font = "DejaVu Sans 11"
+    text = "@TIMEOUT_NOTIFICATION_LONG@"
+}
+
+# Bright OS label at top
++ label {
+    left = 0
+    top = 10%
+    width = 100%
+    align = "center"
+    text = "BRIGHT OS"
+    font = "DejaVu Sans Bold 36"
+    color = "#f1f5f9"
+}
+
++ label {
+    left = 0
+    top = 17%
+    width = 100%
+    align = "center"
+    text = "Linux for developers and makers"
+    font = "DejaVu Sans 14"
+    color = "#60a5fa"
+}
+
+# Version label
++ label {
+    left = 0
+    bottom = 2%
+    width = 100%
+    align = "center"
+    text = "Alpha 0.1  |  Debian Bookworm base  |  Press E to edit, C for command line"
+    font = "DejaVu Sans 10"
+    color = "#64748b"
+}

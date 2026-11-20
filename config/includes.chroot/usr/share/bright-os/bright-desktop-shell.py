@@ -309,9 +309,27 @@ def main():
         "DockApps", json.dumps(get_dock_applications())
     )
     
-    qml_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Shell.qml")
-    if not os.path.exists(qml_path):
-        qml_path = "/usr/share/bright-os/shell/Shell.qml"
+    # Search for Shell.qml in multiple locations
+    qml_candidates = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "Shell.qml"),
+        "/usr/share/bright-os/Shell.qml",
+        "/usr/share/bright-os/shell/Shell.qml",
+        "/usr/local/share/bright-os/Shell.qml",
+    ]
+    qml_path = None
+    for candidate in qml_candidates:
+        if os.path.exists(candidate):
+            qml_path = candidate
+            break
+    
+    if qml_path is None:
+        print("ERROR: Shell.qml not found in any expected location!", file=sys.stderr)
+        print("Searched:", file=sys.stderr)
+        for c in qml_candidates:
+            print(f"  {c}", file=sys.stderr)
+        # Fallback: launch plasmashell
+        subprocess.Popen(["plasmashell"])
+        return -1
     
     engine.load(QUrl.fromLocalFile(qml_path))
     

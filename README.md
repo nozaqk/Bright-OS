@@ -19,24 +19,34 @@ All editions share the same codebase, system services, and Bright Desktop techno
 ## Features (Alpha 0.1)
 
 - ✅ Debian Linux 12 (Bookworm) base
-- ✅ Bootable live ISO (UEFI + BIOS support)
-- ✅ Wayland graphical desktop using KWin + custom Bright Shell
-- ✅ Original dark and light themes with gradient wallpapers
-- ✅ Bright Terminal (terminal emulator)
-- ✅ Bright Files (file manager)
-- ✅ Bright Settings (system settings panel)
-- ✅ Bright Monitor (task manager & resource monitor)
-- ✅ Bright Control Center (firewall, users, services)
-- ✅ Bright Launcher (application launcher)
-- ✅ Bright Update Manager
-- ✅ Bright Store (application marketplace)
-- ✅ Network management (NetworkManager)
-- ✅ Sound (PipeWire + WirePlumber)
-- ✅ Firewall (firewalld, secure defaults)
-- ✅ Wine integration for Windows applications
-- ✅ Flatpak support (Flathub pre-configured)
-- ✅ APT package management
-- ✅ Clean shutdown/reboot from desktop
+- ✅ Bootable live ISO (UEFI + BIOS/hybrid support via GRUB)
+- ✅ Calamares installer for disk installation (partitioning, users, bootloader)
+- ✅ Wayland graphical desktop using KWin + custom multi-window Bright Shell
+- ✅ Separate panel, dock, wallpaper, launcher, and notification windows
+- ✅ Plymouth boot splash with animated spinner (Bright branded)
+- ✅ Original dark and light themes with gradient wallpapers (4K SVG)
+- ✅ GRUB boot menu with Bright OS branding and multiple boot options
+- ✅ Bright Terminal (real PTY-based terminal emulator with tabs)
+- ✅ Bright Files (file manager with sidebar, grid, context menu)
+- ✅ Bright Settings (appearance, display, network, sound, power, about)
+- ✅ Bright Monitor (live process list with kill, CPU/RAM/disk/network)
+- ✅ Bright Control Center (firewall, users, services management)
+- ✅ Bright Launcher (standalone app launcher reading .desktop files)
+- ✅ Bright Update Manager (GUI for APT updates with pkexec)
+- ✅ Bright Store (application marketplace for APT/Flatpak)
+- ✅ Network management (NetworkManager + plasma-nm)
+- ✅ Sound (PipeWire + WirePlumber + PulseAudio compatibility)
+- ✅ Firewall (firewalld with secure defaults)
+- ✅ Kernel hardening (sysctl settings: KASLR, kptr_restrict, Yama ptrace)
+- ✅ Wine integration with prefix management scripts
+- ✅ Flatpak support (Flathub pre-configured on first boot)
+- ✅ APT package management with secure defaults
+- ✅ Systemd-based init with all required services
+- ✅ Qt6ct system-wide theme configuration
+- ✅ Clean shutdown/reboot/suspend/logout/lock from power menu
+- ✅ Keyboard shortcuts (Super, Super+T/E/S/L, etc.)
+- ✅ First-boot setup service
+- ✅ Three edition configurations (Home, Developer, Lite)
 
 ## Quick Start: Building the ISO
 

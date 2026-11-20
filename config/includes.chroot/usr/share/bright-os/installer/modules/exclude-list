@@ -1,0 +1,44 @@
+# Files/directories to exclude when copying live system to installation target
+# Used by rsync during Calamares unpackfs step
+
+# Live system paths that shouldn't be copied
+/live/
+/cdrom/
+/run/live*
+/run/tmpfiles.d/*
+/run/utmp
+/run/systemd/ask-password*
+/run/mount/*
+/run/media/*
+/run/udisks2/*
+
+# Temporary files
+/tmp/*
+/var/tmp/*
+/var/cache/apt/archives/*.deb
+/var/cache/debconf/*-old
+/var/lib/dpkg/*-old
+/var/log/*
+/var/log/live-installer*
+
+# Live user
+/home/user/
+/root/*
+/etc/sudoers.d/bright-live
+
+# System state that should be regenerated
+/etc/machine-id
+/var/lib/dbus/machine-id
+/etc/udev/rules.d/70-persistent*
+/var/lib/systemd/random-seed
+
+# Mount points
+/proc/*
+/sys/*
+/dev/*
+/run/*
+/media/*
+/mnt/*
+
+# Swap
+/swapfile

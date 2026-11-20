@@ -9,8 +9,21 @@ echo "Installing Bright OS components into live image..."
 mkdir -p /usr/share/bright-os/shell
 mkdir -p /usr/share/bright-os/icons
 mkdir -p /usr/share/bright-os/wallpapers
+mkdir -p /usr/share/bright-os/themes/dark
+mkdir -p /usr/share/bright-os/themes/light
+mkdir -p /usr/share/bright-os/installer
 mkdir -p /usr/lib/bright-os
 mkdir -p /etc/bright-os
+mkdir -p /etc/calamares/modules
+mkdir -p /etc/calamares/branding/bright-os
+mkdir -p /usr/share/plymouth/themes/bright-os
+mkdir -p /boot/grub/themes/bright-os
+mkdir -p /usr/share/desktop-directories
+mkdir -p /etc/skel/Desktop
+mkdir -p /etc/skel/.config/qt6ct/colors
+mkdir -p /etc/skel/.config/qt5ct/colors
+mkdir -p /etc/skel/.config/KDE
+mkdir -p /etc/xdg/autostart
 
 # Copy shell
 cat > /usr/bin/bright-desktop-shell << 'SHELL_SCRIPT'
@@ -92,6 +105,54 @@ systemctl set-default graphical.target 2>/dev/null || true
 if command -v firewall-cmd &>/dev/null; then
     firewall-cmd --permanent --add-service=ssh 2>/dev/null || true
     firewall-cmd --permanent --add-service=dhcpv6-client 2>/dev/null || true
+fi
+
+# === Install Calamares configuration ===
+if [ -d /usr/share/bright-os/installer ]; then
+    cp -f /usr/share/bright-os/installer/settings.conf /etc/calamares/settings.conf 2>/dev/null || true
+    cp -f /usr/share/bright-os/installer/modules/*.conf /etc/calamares/modules/ 2>/dev/null || true
+    cp -f /usr/share/bright-os/installer/postcfg.sh /usr/share/bright-os/installer/postcfg.sh 2>/dev/null || true
+    chmod +x /usr/share/bright-os/installer/postcfg.sh 2>/dev/null || true
+    if [ -d /usr/share/bright-os/installer/branding ]; then
+        cp -rf /usr/share/bright-os/installer/branding/* /etc/calamares/branding/ 2>/dev/null || true
+    fi
+fi
+
+# === Install Plymouth theme ===
+if [ -d /usr/share/bright-os/plymouth ]; then
+    cp -rf /usr/share/bright-os/plymouth/* /usr/share/plymouth/themes/bright-os/ 2>/dev/null || true
+    if command -v plymouth-set-default-theme &>/dev/null; then
+        plymouth-set-default-theme bright-os 2>/dev/null || true
+        update-initramfs -u 2>/dev/null || true
+    fi
+fi
+
+# === Install GRUB theme (for installed system) ===
+if [ -d /usr/share/bright-os/grub ]; then
+    cp -rf /usr/share/bright-os/grub/* /boot/grub/themes/bright-os/ 2>/dev/null || true
+fi
+
+# === Install Qt6ct default theme (dark) ===
+if [ -f /usr/share/bright-os/themes/dark/qt6ct.conf ]; then
+    cp -f /usr/share/bright-os/themes/dark/qt6ct.conf /etc/skel/.config/qt6ct/qt6ct.conf 2>/dev/null || true
+fi
+if [ -f /usr/share/bright-os/themes/dark/colors.conf ]; then
+    cp -f /usr/share/bright-os/themes/dark/colors.conf /etc/skel/.config/qt6ct/colors/bright-dark.conf 2>/dev/null || true
+fi
+
+# === Make sure live user has install icon on desktop ===
+chmod +x /etc/skel/Desktop/install-bright-os.desktop 2>/dev/null || true
+chmod +x /home/user/Desktop/install-bright-os.desktop 2>/dev/null || true
+
+# === Add user to required groups ===
+for g in dialout plugdev kvm docker; do
+    addgroup --system $g 2>/dev/null || true
+done
+# live user already exists; ensure groups
+if id user &>/dev/null; then
+    for g in dialout plugdev kvm docker; do
+        adduser user $g 2>/dev/null || true
+    done
 fi
 
 echo "Bright OS components installed (edition: ${BRIGHT_EDITION})"

@@ -1,24 +1,42 @@
 #!/bin/bash
-# Bright Desktop Shell launcher
-# Starts KWin with our custom QML shell
+# Bright Desktop Shell entry point
+# This is the main desktop session entry. It sets up environment
+# and launches KWin with our QML shell on Wayland.
 
-# If KWin is already running, just launch the shell
-if pgrep -x kwin_wayland > /dev/null 2>&1; then
+export XDG_CURRENT_DESKTOP=Bright:KDE
+export XDG_SESSION_TYPE="${XDG_SESSION_TYPE:-wayland}"
+export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-wayland;xcb}"
+export QT_QPA_PLATFORMTHEME=qt6ct
+export QT_STYLE_OVERRIDE=Fusion
+export XCURSOR_THEME=breeze_cursors
+export XCURSOR_SIZE=24
+export DESKTOP_SESSION=bright
+
+# Update user directories
+if [ -x /usr/bin/xdg-user-dirs-update ]; then
+    xdg-user-dirs-update --force 2>/dev/null
+fi
+
+# Set screen scale factor
+export QT_AUTO_SCREEN_SCALE_FACTOR=1
+
+# Session script is at /usr/share/bright-os/bright-desktop-session.sh
+# If running within kwin_wayland (started by SDDM), just exec the shell directly
+if [ "$1" = "--shell-only" ]; then
     exec python3 /usr/share/bright-os/bright-desktop-shell.py "$@"
 fi
 
-# Set Qt platform
-export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-wayland}"
-export QT_WAYLAND_DISABLE_WINDOWDECORATION=1
-export XDG_CURRENT_DESKTOP=Bright
-export XDG_SESSION_TYPE=wayland
-
-# Start the shell with KWin as compositor
-# If kwin_wayland is not available, fall back to starting the shell directly
-if command -v kwin_wayland &>/dev/null; then
-    exec kwin_wayland --wayland-fd --no-lockscreen -- \
-        python3 /usr/share/bright-os/bright-desktop-shell.py "$@"
+# If kwin_wayland is available and we're on Wayland, start the full session
+if command -v kwin_wayland >/dev/null 2>&1 && [ "${XDG_SESSION_TYPE}" = "wayland" ] && [ -z "${KWIN_STARTED}" ]; then
+    # Start PipeWire if not running
+    if ! pgrep -x pipewire >/dev/null 2>&1; then
+        pipewire &>/dev/null &
+        wireplumber &>/dev/null &
+        pipewire-pulse &>/dev/null &
+    fi
+    export KWIN_STARTED=1
+    exec kwin_wayland --no-lockscreen --exit-with-session="/usr/bin/bright-desktop-shell --shell-only"
 else
-    # Fallback for systems without kwin_wayland - run on X11 or start shell directly
+    # We're already inside a compositor (e.g. X11 or started from terminal)
     exec python3 /usr/share/bright-os/bright-desktop-shell.py "$@"
 fi

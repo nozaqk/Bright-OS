@@ -1,0 +1,56 @@
+# Bright OS KWin Window Rules
+# Ensures panel and dock are treated as proper panels/docks
+# and application windows don't overlap them.
+
+[Bright Desktop Panel]
+Description=Bright OS top panel
+wmclass=bright-desktop-shell
+types=1  # Normal Window
+title=
+clientmachinematch=0
+wmclasscomplete=false
+windowrole=
+desktop=0
+desktoprule=2
+activity=
+activityrule=0
+aboverule=1
+above=true
+fsplevel=0
+fsplevelrule=2
+fpplevel=0
+fpplevelrule=2
+shortcuts=
+keepaboverule=1
+keepabove=true
+skipswitcher=true
+skipswitcherrule=1
+skippager=true
+skippagerrule=1
+skipTaskbar=true
+skipTaskbarRule=1
+noborder=true
+noborderrule=1
+type=13  # Dock
+typerule=2
+position=0,0
+positionrule=2
+
+[Bright Desktop Dock]
+Description=Bright OS bottom dock
+wmclass=bright-desktop-shell
+types=1
+clientmachinematch=0
+wmclasscomplete=false
+aboverule=1
+above=true
+skipswitcher=true
+skipswitcherrule=1
+skippager=true
+skippagerrule=1
+skipTaskbar=true
+skipTaskbarRule=1
+noborder=true
+noborderrule=1
+type=13  # Dock
+typerule=2
