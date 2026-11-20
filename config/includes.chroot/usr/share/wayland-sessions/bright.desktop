@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Bright Desktop
+Comment=Bright OS Desktop Environment
+Exec=/usr/bin/bright-desktop-shell
+TryExec=/usr/bin/bright-desktop-shell
+Type=Application
+DesktopNames=Bright

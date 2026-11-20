@@ -1,0 +1,24 @@
+#!/bin/bash
+# Bright Desktop Shell launcher
+# Starts KWin with our custom QML shell
+
+# If KWin is already running, just launch the shell
+if pgrep -x kwin_wayland > /dev/null 2>&1; then
+    exec python3 /usr/share/bright-os/bright-desktop-shell.py "$@"
+fi
+
+# Set Qt platform
+export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-wayland}"
+export QT_WAYLAND_DISABLE_WINDOWDECORATION=1
+export XDG_CURRENT_DESKTOP=Bright
+export XDG_SESSION_TYPE=wayland
+
+# Start the shell with KWin as compositor
+# If kwin_wayland is not available, fall back to starting the shell directly
+if command -v kwin_wayland &>/dev/null; then
+    exec kwin_wayland --wayland-fd --no-lockscreen -- \
+        python3 /usr/share/bright-os/bright-desktop-shell.py "$@"
+else
+    # Fallback for systems without kwin_wayland - run on X11 or start shell directly
+    exec python3 /usr/share/bright-os/bright-desktop-shell.py "$@"
+fi

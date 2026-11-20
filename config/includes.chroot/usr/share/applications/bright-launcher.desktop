@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Bright Launcher
+Comment=Bright Launcher for Bright OS
+Exec=bright-launcher
+Icon=system-search
+Terminal=false
+Type=Application
+Categories=System;Settings;Utility;
+StartupNotify=true

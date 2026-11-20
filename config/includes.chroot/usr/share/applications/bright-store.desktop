@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Bright Store
+Comment=Bright Store for Bright OS
+Exec=bright-store
+Icon=system-software-install
+Terminal=false
+Type=Application
+Categories=System;Settings;Utility;
+StartupNotify=true

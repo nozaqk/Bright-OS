@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=About Bright OS
+Comment=About Bright OS
+Exec=bright-about
+Icon=dialog-information
+Terminal=false
+Type=Application
+Categories=System;About;

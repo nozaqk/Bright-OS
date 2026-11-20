@@ -1,0 +1,6 @@
+#!/bin/sh
+# Bright OS live-build auto/clean
+
+set -e
+lb clean noauto "${@}"
+echo "=== Clean complete ==="

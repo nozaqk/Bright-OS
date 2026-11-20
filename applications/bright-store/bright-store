@@ -1,0 +1,156 @@
+#!/usr/bin/env python3
+"""
+Bright Store - Application marketplace for Bright OS
+Supports APT and Flatpak applications
+"""
+import sys
+import subprocess
+from PyQt6.QtWidgets import *
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+
+APP_NAME = "Bright Store"
+STYLE = """
+QMainWindow, QWidget { background: #0f172a; color: #e2e8f0; font-size: 13px; }
+QLineEdit { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 12px; padding: 10px 16px; font-size: 14px; }
+QPushButton { background: #3b82f6; color: white; border: none; border-radius: 8px; padding: 8px 16px; font-weight: bold; }
+QPushButton:hover { background: #2563eb; }
+QPushButton#installed { background: #22c55e; }
+QListWidget { background: transparent; border: none; }
+QListWidget::item { background: #1e293b; border-radius: 12px; padding: 12px; margin-bottom: 8px; }
+QListWidget::item:hover { background: #334155; }
+QLabel#appName { font-size: 16px; font-weight: bold; color: #f1f5f9; }
+QLabel#appDesc { color: #94a3b8; font-size: 12px; }
+QLabel#appTag { background: #334155; color: #94a3b8; border-radius: 4px; padding: 2px 8px; font-size: 11px; }
+QTabWidget::pane { border: none; }
+QTabBar::tab { background: transparent; color: #94a3b8; padding: 10px 20px; border: none; border-bottom: 2px solid transparent; }
+QTabBar::tab:selected { color: #e2e8f0; border-bottom-color: #3b82f6; }
+"""
+
+# Curated app catalog
+APPS = [
+    {"name": "Firefox", "desc": "Fast, private web browser", "pkg": "firefox-esr", "source": "apt", "tag": "Browser"},
+    {"name": "Thunderbird", "desc": "Email client with calendar", "pkg": "thunderbird", "source": "apt", "tag": "Email"},
+    {"name": "LibreOffice", "desc": "Full office productivity suite", "pkg": "libreoffice", "source": "apt", "tag": "Office"},
+    {"name": "VLC Media Player", "desc": "Play any media format", "pkg": "vlc", "source": "apt", "tag": "Media"},
+    {"name": "GIMP", "desc": "GNU Image Manipulation Program", "pkg": "gimp", "source": "apt", "tag": "Graphics"},
+    {"name": "Inkscape", "desc": "Vector graphics editor", "pkg": "inkscape", "source": "apt", "tag": "Graphics"},
+    {"name": "VS Code", "desc": "Powerful code editor", "pkg": "code", "source": "apt", "tag": "Development"},
+    {"name": "Arduino IDE", "desc": "Electronics prototyping", "pkg": "arduino", "source": "apt", "tag": "Electronics"},
+    {"name": "KiCad", "desc": "PCB design and electronics", "pkg": "kicad", "source": "apt", "tag": "Electronics"},
+    {"name": "Docker", "desc": "Container platform", "pkg": "docker.io", "source": "apt", "tag": "Development"},
+    {"name": "WINE", "desc": "Run Windows applications", "pkg": "wine", "source": "apt", "tag": "Compatibility"},
+    {"name": "Steam", "desc": "Gaming platform", "pkg": "steam", "source": "flatpak", "tag": "Gaming"},
+    {"name": "Discord", "desc": "Voice and text chat", "pkg": "com.discordapp.Discord", "source": "flatpak", "tag": "Social"},
+    {"name": "Spotify", "desc": "Music streaming", "pkg": "com.spotify.Client", "source": "flatpak", "tag": "Media"},
+]
+
+
+class InstallWorker(QThread):
+    done = pyqtSignal(bool, str)
+    def __init__(self, pkg, source, action):
+        super().__init__()
+        self.pkg = pkg; self.source = source; self.action = action
+    def run(self):
+        try:
+            if self.source == "apt":
+                cmd = ["pkexec", "apt-get", "-y", "install" if self.action=="install" else "remove", self.pkg]
+            else:
+                cmd = ["flatpak", "-y", self.action, self.pkg]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            self.done.emit(r.returncode == 0, r.stdout + r.stderr)
+        except Exception as e:
+            self.done.emit(False, str(e))
+
+
+class AppListItem(QWidget):
+    def __init__(self, app, store):
+        super().__init__()
+        self.app = app; self.store = store
+        lay = QHBoxLayout(self)
+        icon = QLabel("\U0001F4E6"); icon.setStyleSheet("font-size: 32px;")
+        lay.addWidget(icon)
+        info = QVBoxLayout()
+        name = QLabel(app["name"]); name.setObjectName("appName")
+        desc = QLabel(app["desc"]); desc.setObjectName("appDesc")
+        tag = QLabel(app["tag"].upper()); tag.setObjectName("appTag")
+        info.addWidget(name); info.addWidget(desc); info.addWidget(tag)
+        lay.addLayout(info, 1)
+        self.btn = QPushButton("Install")
+        self.btn.clicked.connect(self.install)
+        lay.addWidget(self.btn)
+    
+    def install(self):
+        self.btn.setEnabled(False)
+        self.btn.setText("Installing...")
+        self.worker = InstallWorker(self.app["pkg"], self.app["source"], "install")
+        self.worker.done.connect(self.done)
+        self.worker.start()
+    
+    def done(self, ok, msg):
+        self.btn.setEnabled(True)
+        self.btn.setText("Installed" if ok else "Failed")
+        if ok:
+            self.btn.setObjectName("installed")
+            self.btn.style().unpolish(self.btn); self.btn.style().polish(self.btn)
+
+
+class BrightStore(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle(APP_NAME)
+        self.setMinimumSize(800, 600)
+        self.resize(900, 650)
+        self.setStyleSheet(STYLE)
+        
+        central = QWidget()
+        self.setCentralWidget(central)
+        lay = QVBoxLayout(central)
+        lay.setContentsMargins(24, 24, 24, 24)
+        
+        header = QLabel("Bright Store")
+        header.setStyleSheet("font-size: 24px; font-weight: bold;")
+        lay.addWidget(header)
+        
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Search applications...")
+        self.search.textChanged.connect(self.filter)
+        lay.addWidget(self.search)
+        
+        self.tabs = QTabWidget()
+        self.all_list = QListWidget(); self.all_list.setSpacing(0)
+        self.populate_list(self.all_list, APPS)
+        self.tabs.addTab(self.all_list, "All")
+        
+        for tag in ["Development", "Graphics", "Media", "Gaming", "Electronics"]:
+            lst = QListWidget()
+            self.populate_list(lst, [a for a in APPS if a["tag"] == tag])
+            self.tabs.addTab(lst, tag)
+        
+        lay.addWidget(self.tabs)
+    
+    def populate_list(self, list_widget, apps):
+        for app in apps:
+            item = QListWidgetItem()
+            item.setSizeHint(item.sizeHint().expandedTo(list_widget.sizeHintForRow(0)))
+            row = AppListItem(app, self)
+            item.setSizeHint(row.sizeHint())
+            list_widget.addItem(item)
+            list_widget.setItemWidget(item, row)
+    
+    def filter(self, text):
+        text = text.lower()
+        for i in range(self.all_list.count()):
+            item = self.all_list.item(i)
+            widget = self.all_list.itemWidget(item)
+            item.setHidden(text != "" and text not in widget.app["name"].lower() and text not in widget.app["desc"].lower())
+
+
+def main():
+    QApplication.setApplicationName("bright-store")
+    app = QApplication(sys.argv)
+    w = BrightStore(); w.show()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+"""Bright OS About dialog"""
+import sys
+import subprocess
+from PyQt6.QtWidgets import QApplication, QDialog, QVBoxLayout, QLabel, QPushButton, QHBoxLayout
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QFont, QPixmap
+
+def main():
+    app = QApplication(sys.argv)
+    d = QDialog()
+    d.setWindowTitle("About Bright OS")
+    d.setMinimumSize(480, 380)
+    d.setStyleSheet("QDialog { background: #0f172a; } QLabel { color: #e2e8f0; } QPushButton { background: #3b82f6; color: white; border: none; border-radius: 8px; padding: 8px 24px; }")
+    lay = QVBoxLayout(d)
+    lay.setContentsMargins(40, 40, 40, 40)
+    
+    logo = QLabel("☀")
+    logo.setStyleSheet("font-size: 72px; color: #3b82f6;")
+    logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    lay.addWidget(logo)
+    
+    title = QLabel("Bright OS")
+    title.setStyleSheet("font-size: 28px; font-weight: bold; color: #f1f5f9;")
+    title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    lay.addWidget(title)
+    
+    ver = QLabel("Alpha 0.1.0 \"Dawn\"")
+    ver.setStyleSheet("font-size: 14px; color: #3b82f6;")
+    ver.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    lay.addWidget(ver)
+    
+    try:
+        kernel = subprocess.run(["uname", "-r"], capture_output=True, text=True).stdout.strip()
+    except: kernel = "unknown"
+    info = QLabel(f"Linux kernel {kernel}\nDebian Bookworm base\nQt 6 / Wayland desktop\n\nAn independent operating system\nfor developers and makers.")
+    info.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    info.setStyleSheet("color: #94a3b8; font-size: 13px; margin-top: 16px;")
+    lay.addWidget(info)
+    
+    btn = QPushButton("Close")
+    btn.clicked.connect(d.accept)
+    lay.addWidget(btn)
+    lay.setAlignment(btn, Qt.AlignmentFlag.AlignCenter)
+    
+    d.exec()
+
+if __name__ == "__main__":
+    main()

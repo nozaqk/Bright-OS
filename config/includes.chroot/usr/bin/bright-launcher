@@ -1,0 +1,124 @@
+#!/usr/bin/env python3
+"""
+Bright Launcher - Standalone application launcher
+Can be triggered separately from the shell
+"""
+import sys
+import os
+import subprocess
+from pathlib import Path
+from PyQt6.QtWidgets import *
+from PyQt6.QtCore import Qt, QProcess, QUrl
+from PyQt6.QtGui import QDesktopServices
+
+STYLE = """
+QWidget { background: #0a0e1aee; color: #e2e8f0; }
+QLineEdit { background: #1e293b; color: #e2e8f0; border: 2px solid #334155; border-radius: 16px; padding: 12px 20px; font-size: 18px; }
+QLineEdit:focus { border-color: #3b82f6; }
+QPushButton { background: transparent; color: #e2e8f0; border: none; border-radius: 12px; padding: 16px; font-size: 13px; }
+QPushButton:hover { background: #1e293b; }
+QScrollArea { border: none; }
+"""
+
+def get_applications():
+    apps = []
+    seen = set()
+    app_dirs = [
+        "/usr/share/applications",
+        "/usr/local/share/applications",
+        str(Path.home() / ".local" / "share" / "applications"),
+    ]
+    for d in app_dirs:
+        dp = Path(d)
+        if dp.exists():
+            for f in dp.glob("*.desktop"):
+                if f.stem in seen:
+                    continue
+                seen.add(f.stem)
+                name = ""
+                exec_cmd = ""
+                icon = ""
+                nodisplay = False
+                try:
+                    for line in f.read_text(errors="ignore").split("\n"):
+                        if line.startswith("Name="): name = line[5:]
+                        elif line.startswith("Exec="): exec_cmd = line[5:].split("%")[0].strip()
+                        elif line.startswith("Icon="): icon = line[5:]
+                        elif line.startswith("NoDisplay=true"): nodisplay = True
+                except Exception:
+                    continue
+                if name and not nodisplay:
+                    apps.append({"name": name, "exec": exec_cmd, "icon": icon, "file": str(f)})
+    return sorted(apps, key=lambda x: x["name"].lower())
+
+
+class BrightLauncher(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool | Qt.WindowType.WindowStaysOnTopHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.resize(720, 550)
+        self.setStyleSheet(STYLE)
+        self.apps = get_applications()
+        
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(40, 40, 40, 40)
+        
+        container = QFrame()
+        container.setStyleSheet("QFrame { background: #0a0e1acc; border-radius: 20px; border: 1px solid #334155; }")
+        cl = QVBoxLayout(container)
+        cl.setContentsMargins(24, 24, 24, 24)
+        
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Type to search applications...")
+        self.search.textChanged.connect(self.filter)
+        cl.addWidget(self.search)
+        
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.grid_widget = QWidget()
+        self.grid = QGridLayout(self.grid_widget)
+        self.scroll.setWidget(self.grid_widget)
+        cl.addWidget(self.scroll)
+        
+        outer.addWidget(container)
+        self.populate(self.apps)
+        self.search.setFocus()
+    
+    def populate(self, apps):
+        for i in reversed(range(self.grid.count())):
+            self.grid.itemAt(i).widget().setParent(None)
+        cols = 5
+        for i, app in enumerate(apps[:25]):
+            btn = QPushButton(app["name"])
+            btn.clicked.connect(lambda checked, a=app: self.launch(a))
+            self.grid.addWidget(btn, i // cols, i % cols)
+    
+    def filter(self, text):
+        text = text.lower()
+        if not text:
+            self.populate(self.apps)
+        else:
+            filtered = [a for a in self.apps if text in a["name"].lower()]
+            self.populate(filtered)
+    
+    def launch(self, app):
+        if app["exec"]:
+            QProcess.startDetached(app["exec"].split()[0], app["exec"].split()[1:])
+        self.close()
+    
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key.Key_Escape:
+            self.close()
+
+
+def main():
+    app = QApplication(sys.argv)
+    QApplication.setApplicationName("bright-launcher")
+    w = BrightLauncher()
+    w.show()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

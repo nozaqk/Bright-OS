@@ -1,0 +1,31 @@
+# Bright OS Home Edition - Additional Packages
+# Standard desktop experience for everyday users
+
+# Web and communication
+firefox-esr
+thunderbird
+
+# Media
+vlc
+audacity
+gimp
+inkscape
+
+# Office
+libreoffice-base
+libreoffice-draw
+libreoffice-math
+
+# System
+gnome-calculator
+gnome-screenshot
+gnome-weather
+gnome-calendar
+simple-scan
+transmission-gtk
+cheese
+
+# Wine for Windows compatibility
+wine
+wine64
+winetricks

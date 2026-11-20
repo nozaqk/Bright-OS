@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 3840 2160" width="3840" height="2160">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0a0e1a"/>
+      <stop offset="50%" style="stop-color:#111827"/>
+      <stop offset="100%" style="stop-color:#1e293b"/>
+    </linearGradient>
+    <radialGradient id="glow1" cx="20%" cy="30%" r="40%">
+      <stop offset="0%" style="stop-color:#3b82f6;stop-opacity:0.15"/>
+      <stop offset="100%" style="stop-color:#3b82f6;stop-opacity:0"/>
+    </radialGradient>
+    <radialGradient id="glow2" cx="80%" cy="70%" r="45%">
+      <stop offset="0%" style="stop-color:#8b5cf6;stop-opacity:0.12"/>
+      <stop offset="100%" style="stop-color:#8b5cf6;stop-opacity:0"/>
+    </radialGradient>
+    <radialGradient id="glow3" cx="60%" cy="20%" r="25%">
+      <stop offset="0%" style="stop-color:#06b6d4;stop-opacity:0.08"/>
+      <stop offset="100%" style="stop-color:#06b6d4;stop-opacity:0"/>
+    </radialGradient>
+    <filter id="blur1"><feGaussianBlur stdDeviation="60"/></filter>
+    <filter id="blur2"><feGaussianBlur stdDeviation="40"/></filter>
+  </defs>
+  
+  <rect width="3840" height="2160" fill="url(#bg)"/>
+  
+  <!-- Ambient glows -->
+  <circle cx="768" cy="648" r="800" fill="url(#glow1)" filter="url(#blur1)"/>
+  <circle cx="3072" cy="1512" r="900" fill="url(#glow2)" filter="url(#blur1)"/>
+  <circle cx="2304" cy="432" r="500" fill="url(#glow3)" filter="url(#blur2)"/>
+  
+  <!-- Subtle grid pattern -->
+  <g opacity="0.03" stroke="#60a5fa" stroke-width="0.5">
+    <path d="M0 0 L3840 0 M0 216 L3840 216 M0 432 L3840 432 M0 648 L3840 648 M0 864 L3840 864 M0 1080 L3840 1080 M0 1296 L3840 1296 M0 1512 L3840 1512 M0 1728 L3840 1728 M0 1944 L3840 1944"/>
+    <path d="M0 0 L0 2160 M384 0 L384 2160 M768 0 L768 2160 M1152 0 L1152 2160 M1536 0 L1536 2160 M1920 0 L1920 2160 M2304 0 L2304 2160 M2688 0 L2688 2160 M3072 0 L3072 2160 M3456 0 L3456 2160"/>
+  </g>
+  
+  <!-- Bright OS geometric accent - subtle diamond in corner -->
+  <g transform="translate(3400,1800)" opacity="0.06">
+    <polygon points="0,-200 200,0 0,200 -200,0" fill="none" stroke="#60a5fa" stroke-width="2"/>
+    <polygon points="0,-120 120,0 0,120 -120,0" fill="none" stroke="#60a5fa" stroke-width="1"/>
+    <polygon points="0,-40 40,0 0,40 -40,0" fill="#60a5fa"/>
+  </g>
+  
+  <!-- Watermark logo center-top (very subtle) -->
+  <g transform="translate(1920,300)" opacity="0.04" fill="#60a5fa">
+    <circle cx="0" cy="0" r="120" fill="none" stroke="#60a5fa" stroke-width="3"/>
+    <circle cx="0" cy="0" r="80" fill="none" stroke="#60a5fa" stroke-width="2"/>
+    <circle cx="0" cy="0" r="20" fill="#60a5fa"/>
+    <line x1="0" y1="-120" x2="0" y2="-80" stroke="#60a5fa" stroke-width="3"/>
+    <line x1="0" y1="80" x2="0" y2="120" stroke="#60a5fa" stroke-width="3"/>
+    <line x1="-120" y1="0" x2="-80" y2="0" stroke="#60a5fa" stroke-width="3"/>
+    <line x1="80" y1="0" x2="120" y2="0" stroke="#60a5fa" stroke-width="3"/>
+  </g>
+</svg>

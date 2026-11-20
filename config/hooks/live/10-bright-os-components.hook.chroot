@@ -1,0 +1,97 @@
+#!/bin/sh
+# Bright OS component installation hook
+# Runs during live-build to install our custom applications and shell into the image
+set -e
+
+echo "Installing Bright OS components into live image..."
+
+# Create directories
+mkdir -p /usr/share/bright-os/shell
+mkdir -p /usr/share/bright-os/icons
+mkdir -p /usr/share/bright-os/wallpapers
+mkdir -p /usr/lib/bright-os
+mkdir -p /etc/bright-os
+
+# Copy shell
+cat > /usr/bin/bright-desktop-shell << 'SHELL_SCRIPT'
+#!/bin/bash
+exec python3 /usr/share/bright-os/bright-desktop-shell.py "$@"
+SHELL_SCRIPT
+chmod 755 /usr/bin/bright-desktop-shell
+
+# The actual Python shell and QML will be installed via the install script
+# that runs during build. Here we ensure they exist.
+
+# Copy wallpapers
+# (Done via config/includes.chroot in live-build)
+
+# Set edition
+BRIGHT_EDITION=$(cat /etc/bright-os/edition 2>/dev/null || echo "home")
+
+# Create skel config
+mkdir -p /etc/skel/.config/bright-os
+cat > /etc/skel/.config/bright-os/shell.conf << 'EOF'
+# Bright OS Shell Configuration
+theme=dark
+wallpaper=/usr/share/bright-os/wallpapers/bright-default-dark.svg
+panel_height=40
+dock_icon_size=48
+dock_position=bottom
+animations=true
+EOF
+
+# Default SDDM config for autologin (live user)
+mkdir -p /etc/sddm.conf.d
+cat > /etc/sddm.conf.d/bright-live-autologin.conf << EOF
+[Autologin]
+User=user
+Session=bright.desktop
+Relogin=true
+
+[Theme]
+Current=breeze
+EOF
+
+# Sysctl security hardening
+mkdir -p /etc/sysctl.d
+cat > /etc/sysctl.d/99-bright-os.conf << 'EOF'
+kernel.kptr_restrict = 2
+kernel.dmesg_restrict = 1
+kernel.yama.ptrace_scope = 1
+kernel.sysrq = 0
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.tcp_syncookies = 1
+vm.swappiness = 10
+fs.inotify.max_user_watches = 524288
+EOF
+
+# NetworkManager config
+mkdir -p /etc/NetworkManager/conf.d
+cat > /etc/NetworkManager/conf.d/99-bright-os.conf << 'EOF'
+[main]
+dns=default
+plugins=keyfile
+[connectivity]
+uri=http://network-test.debian.org/nm
+interval=300
+enabled=true
+EOF
+
+# Enable services
+systemctl enable NetworkManager.service 2>/dev/null || true
+systemctl enable sddm.service 2>/dev/null || true
+systemctl enable firewalld.service 2>/dev/null || true
+systemctl enable bluetooth.service 2>/dev/null || true
+systemctl enable cups.service 2>/dev/null || true
+systemctl enable udisks2.service 2>/dev/null || true
+systemctl enable bright-os-firstboot.service 2>/dev/null || true
+systemctl set-default graphical.target 2>/dev/null || true
+
+# Apply firewall defaults
+if command -v firewall-cmd &>/dev/null; then
+    firewall-cmd --permanent --add-service=ssh 2>/dev/null || true
+    firewall-cmd --permanent --add-service=dhcpv6-client 2>/dev/null || true
+fi
+
+echo "Bright OS components installed (edition: ${BRIGHT_EDITION})"
