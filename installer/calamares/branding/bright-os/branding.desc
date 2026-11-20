@@ -1,6 +1,5 @@
-# Bright OS Calamares branding descriptor
-# This is a placeholder for the Calamares installer branding
-# (Alpha 0.1 uses live environment without Calamares installer yet)
+# Bright OS Calamares Branding Descriptor
+# Defines branding shown in the Calamares installer window.
 
 ---
 componentName: bright-os
@@ -16,12 +15,24 @@ branding:
 
   strings:
     welcome: "Welcome to Bright OS"
+    # Product-specific strings for Calamares UI
+    next: "Next"
+    back: "Back"
+    install: "Install Now"
+    done: "Done"
+    cancel: "Cancel"
+
   images:
     productLogo: "bright-os-logo.svg"
     productIcon: "bright-os-logo.svg"
+
   style:
     sidebarBackground: "#0f172a"
     sidebarText: "#e2e8f0"
     sidebarTextSelect: "#3b82f6"
+    # Match Bright Design System
+    sidebarBackgroundSelected: "#3b82f6"
+    sidebarTextHover: "#94a3b8"
+
   slideshowAPI: 1
   slideshow: "show.qml"

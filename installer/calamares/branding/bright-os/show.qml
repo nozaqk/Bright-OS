@@ -2,76 +2,87 @@ import QtQuick 2.10
 import QtQuick.Controls 2.3 as QtControls
 import CalamaresSlideshow 1.0
 
-/* Bright OS Calamares Slideshow */
+/* Bright OS Calamares Slideshow - Installation Progress Slides */
+
 Presentation {
     id: presentation
     height: 400
     width: 600
-    
+
     // Slide 1: Welcome
     Slide {
         title: "Welcome to Bright OS"
         centeredText: true
         content: [
-            text("Bright OS is an independent Linux desktop for developers, engineers, and technical professionals."),
+            text("Bright OS is an independent Linux desktop for developers,"),
+            text("engineers, and technical professionals — built on Debian Linux"),
+            text("with an original desktop environment called Bright Desktop."),
             text(""),
-            text("This installer will guide you through setting up Bright OS on your computer.")
+            text("This installer will set up Bright OS on your computer.")
         ]
     }
-    
-    // Slide 2: Desktop
+
+    // Slide 2: Three Editions
+    Slide {
+        title: "Three Editions, One Identity"
+        centeredText: true
+        content: [
+            text("All editions share the same Bright visual identity:"),
+            text(""),
+            text("• Home — Friendly desktop for everyday users"),
+            text("• Developer — Terminal, coding, and engineering tools"),
+            text("• Lite — Lightweight profile for older hardware"),
+            text(""),
+            text("The installed edition is determined by the ISO you booted.")
+        ]
+    }
+
+    // Slide 3: Bright Desktop
     Slide {
         title: "Bright Desktop"
         centeredText: true
         content: [
-            text("A clean, modern desktop environment built with Qt and QML."),
+            text("A clean, modern desktop built with Qt 6 and QML:"),
             text(""),
-            text("• Top panel with clock and system tray"),
+            text("• Panel with clock and system tray"),
             text("• Dock with your favorite applications"),
-            text("• Full-screen launcher"),
+            text("• Full-screen application launcher"),
             text("• Dark and light themes"),
-            text("• Smooth animations")
+            text("• Notification center and power controls")
         ]
     }
-    
-    // Slide 3: Applications
+
+    // Slide 4: Ready-to-use Applications
     Slide {
-        title: "Ready-to-use Applications"
+        title: "Ready-to-Use Applications"
         centeredText: true
         content: [
-            text("Bright OS comes with everything you need:"),
+            text("Included applications depend on your edition:"),
             text(""),
             text("• Firefox web browser"),
-            text("• LibreOffice suite"),
-            text("• VLC media player"),
-            text("• Terminal, file manager, and system tools"),
-            text("• Optional developer & electronics toolchains")
+            text("• Office suite (Home/Developer)"),
+            text("• Media player and utilities"),
+            text("• Terminal and file manager"),
+            text("• Development tools (Developer edition)"),
+            text("• Flathub for additional applications")
         ]
     }
-    
-    // Slide 4: Windows Compatibility
-    Slide {
-        title: "Windows Compatibility"
-        centeredText: true
-        content: [
-            text("Run Windows applications with Wine."),
-            text(""),
-            text("Install your favorite games and applications from the Windows ecosystem.")
-        ]
-    }
-    
+
     // Slide 5: Ready
     Slide {
-        title: "Enjoy Bright OS"
+        title: "Almost There"
         centeredText: true
         content: [
-            text("Your system will be ready shortly."),
+            text("Your system is being installed."),
             text(""),
-            text("After installation, log in and explore Bright OS.")
+            text("After installation, your computer will restart"),
+            text("and you can log in to Bright OS."),
+            text(""),
+            text("Thank you for trying Bright OS!")
         ]
     }
-    
-    // Timer to advance slides automatically
+
+    // Auto-advance slides during installation
     Timer {
         interval: 8000
         running: true

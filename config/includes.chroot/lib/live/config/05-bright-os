@@ -98,7 +98,7 @@ SUPPORT_URL="https://github.com/nozaqk/Bright-OS/issues"
 BUG_REPORT_URL="https://github.com/nozaqk/Bright-OS/issues"
 BRIGHT_EDITION="${EDITION}"
 BRIGHT_VERSION="0.1.0-alpha"
-DEBIAN_CODENAME=bookworm
+DEBIAN_CODENAME=trixie
 EOF
 
 # Ensure user config directories exist

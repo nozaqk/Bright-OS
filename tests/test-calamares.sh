@@ -92,9 +92,18 @@ fi
 echo ""
 echo "--- Module config files ---"
 
-# Standard Calamares modules that don't require a .conf in /etc/calamares/modules
-# (they use internal defaults or are view modules)
-BUILTIN_NO_CONF="welcome locale keyboard partition users summary finished mount unpackfs fstab"
+# Standard Calamares modules that don't require a custom .conf file
+# (they use internal Calamares defaults or are view modules).
+# Modules that have defaults in Calamares 3.3 and don't strictly require config:
+# umount: unconditionally unmounts target
+# machineid: generates /etc/machine-id automatically
+# packages: can run without explicit install/remove lists (we provide lists for safety)
+# initramfs: runs update-initramfs with defaults
+# initramfscfg: sets up initramfs-tools hooks with defaults
+# luksbootkeyfile: creates LUKS keyfile with defaults
+# users, networkcfg, hwclock, services-systemd, displaymanager, grubcfg, bootloader:
+#   all have sensible defaults; we provide .conf files for explicit configuration.
+BUILTIN_NO_CONF="welcome locale keyboard partition users summary finished mount unpackfs fstab umount machineid initramfs initramfscfg luksbootkeyfile packages networkcfg hwclock services-systemd displaymanager grubcfg bootloader"
 
 for mod in $EXEC_MODULES; do
     # Check if this is an instance ID rather than a module name

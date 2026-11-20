@@ -128,6 +128,14 @@ Edition profiles (`desktop/shell/profiles/EditionProfiles.js`) define per-editio
 - ✅ Lite edition optimizations: reduced animations, basic Qt render loop, smaller UI, lighter fallback apps
 - ✅ Light and dark themes that respect design tokens consistently
 - ✅ Edition-aware About dialog showing correct edition name and tagline
+- ✅ Calamares installer with correct module ordering for Debian Trixie
+- ✅ UEFI + Legacy BIOS boot support; safe EFI partition reuse; dual-boot compatible
+- ✅ LUKS2 full-disk encryption (no deprecated keyscript; GRUB cryptodisk enabled)
+- ✅ SDDM display manager auto-configuration (Bright Desktop as default session)
+- ✅ Robust first-boot service (idempotent, non-blocking, runs once before login)
+- ✅ Post-installation script removes live packages, regenerates initramfs, configures GRUB
+- ✅ fstrim.timer for SSD TRIM (instead of continuous discard mount option)
+- ✅ Installer documentation: [docs/INSTALLER.md](docs/INSTALLER.md)
 
 ## Quick Start: Building the ISO
 

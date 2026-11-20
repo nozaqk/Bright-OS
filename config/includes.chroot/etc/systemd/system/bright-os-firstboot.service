@@ -1,12 +1,22 @@
 [Unit]
 Description=Bright OS First Boot Setup
+Documentation=https://github.com/nozaqk/Bright-OS
 Before=display-manager.service
+After=systemd-tmpfiles-setup.service systemd-resolved.service NetworkManager.service
 ConditionPathExists=!/etc/bright-os/firstboot-done
+# Never fail the boot if firstboot setup encounters an issue
+FailureAction=none
 
 [Service]
 Type=oneshot
 ExecStart=/usr/lib/bright-os/firstboot-setup
 RemainAfterExit=yes
+# Give it 2 minutes max to complete
+TimeoutStartSec=120
+# Run as root
+User=root
+# Don't block on network being up (it's optional for Flatpak)
+NetworkRequired=no
 
 [Install]
 WantedBy=graphical.target

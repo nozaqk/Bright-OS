@@ -1,44 +1,88 @@
 # Files/directories to exclude when copying live system to installation target
-# Used by rsync during Calamares unpackfs step
+# Used by rsync during Calamares unpackfs step.
+#
+# IMPORTANT: This list must be comprehensive enough to prevent live system
+# artifacts (live user, mounted filesystems, hardware state) from being
+# copied to the target. Missing exclusions can cause boot failures.
 
-# Live system paths that shouldn't be copied
+# --- Live system paths ---
 /live/
 /cdrom/
 /run/live*
 /run/tmpfiles.d/*
 /run/utmp
+/run/wpa_supplicant/*
 /run/systemd/ask-password*
+/run/systemd/sessions/*
+/run/systemd/machines/*
+/run/systemd/users/*
+/run/systemd/seats/*
 /run/mount/*
 /run/media/*
 /run/udisks2/*
+/run/lock/*
+/run/screen/*
+/run/user/*
 
-# Temporary files
+# --- Temporary files ---
 /tmp/*
 /var/tmp/*
 /var/cache/apt/archives/*.deb
+/var/cache/apt/archives/partial/*
 /var/cache/debconf/*-old
 /var/lib/dpkg/*-old
+/var/cache/ldconfig/aux-cache
 /var/log/*
 /var/log/live-installer*
+/var/backups/*
 
-# Live user
+# --- Live user home (created fresh by users module) ---
 /home/user/
+/home/user/.*
 /root/*
-/etc/sudoers.d/bright-live
+/root/.cache/*
+/root/.local/share/Trash/*
 
-# System state that should be regenerated
+# --- Live sudoers config ---
+/etc/sudoers.d/bright-live
+/etc/sudoers.d/00-live-installer
+
+# --- Live SDDM autologin ---
+/etc/sddm.conf.d/bright-live-autologin.conf
+
+# --- System state that must be regenerated on target ---
 /etc/machine-id
 /var/lib/dbus/machine-id
 /etc/udev/rules.d/70-persistent*
 /var/lib/systemd/random-seed
+/var/lib/systemd/coredump/*
+/var/lib/private/*
+/var/lib/polkit-1/*
+/var/lib/AccountsService/users/*
 
-# Mount points
+# --- Mount points (pseudo-filesystems) ---
 /proc/*
 /sys/*
 /dev/*
-/run/*
+/dev/pts/*
+/dev/shm/*
 /media/*
 /mnt/*
+/lost+found
 
-# Swap
+# --- Swap ---
 /swapfile
+/swap.img
+
+# --- Installer and build artifacts ---
+/var/log/calamares/*
+/var/log/installer/*
+/etc/calamares/modules/finished.conf
+
+# --- Resolv.conf (will be recreated by NetworkManager) ---
+/etc/resolv.conf
+/run/resolvconf/*
+
+# --- Calamares logs (avoid copying install logs to target) ---
+/home/user/.cache/Calamares
+/root/.cache/Calamares
