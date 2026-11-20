@@ -38,13 +38,13 @@ info()    { echo -e "  ${BLUE}[INFO]${NC} $*"; }
 # ---- Dependency lists ----
 # Essential tools that MUST be present
 REQUIRED_TOOLS="lb debootstrap mksquashfs xorriso"
-# Bootloader packages needed for BIOS+UEFI dual-boot ISO creation
-REQUIRED_BOOT_PKGS="isolinux syslinux-common mtools dosfstools"
+# Bootloader and ISO creation packages needed for BIOS+UEFI dual-boot ISO creation
+REQUIRED_BOOT_PKGS="isolinux syslinux-common syslinux-efi mtools dosfstools genisoimage"
 # GRUB packages for generating boot images
 REQUIRED_GRUB_PKGS="grub-pc-bin grub-efi-amd64-bin"
 # Optional but recommended
-RECOMMENDED_PKGS="shim-signed grub-efi-amd64-signed ovmf qemu-system-x86 qemu-utils genisoimage file"
-# Validation tools
+RECOMMENDED_PKGS="shim-signed grub-efi-amd64-signed ovmf qemu-system-x86 qemu-utils file"
+# Validation tools (isoinfo is provided by genisoimage; sha256sum by coreutils)
 VALIDATION_TOOLS="sha256sum isoinfo"
 
 # Minimum requirements
@@ -260,10 +260,25 @@ else
     info "  Check your network connection, proxy settings, and firewall rules."
 fi
 
-if curl -sI --connect-timeout 10 -L "http://security.debian.org/debian-security/dists/trixie-security/Release" 2>&1 | head -1 | grep -qE "HTTP/.* 200|HTTP/.*30"; then
+# Check security mirror reachability. Suite name depends on whether Trixie is
+# released as stable ("trixie-security") or still in testing ("testing-security").
+# Try multiple paths; the mirror is reachable if any returns a valid response.
+SECURITY_OK=false
+for sec_path in "dists/trixie-security/Release" "dists/testing-security/Release" "dists/stable-security/Release"; do
+    if curl -sI --connect-timeout 5 -L "http://security.debian.org/debian-security/${sec_path}" 2>&1 | head -1 | grep -qE "HTTP/.* 200|HTTP/.*30"; then
+        SECURITY_OK=true
+        break
+    fi
+done
+if [ "$SECURITY_OK" = "true" ]; then
     pass "Debian security mirror (security.debian.org) is reachable"
 else
-    fail "Cannot reach Debian security mirror"
+    # Last resort: just check the mirror root
+    if curl -sI --connect-timeout 5 -L "http://security.debian.org/debian-security/" 2>&1 | head -1 | grep -qE "HTTP/.* 200|HTTP/.*30"; then
+        warn "Debian security mirror reachable but Release file not found (suite name may differ)"
+    else
+        fail "Cannot reach Debian security mirror (security.debian.org)"
+    fi
 fi
 
 # ============================================================

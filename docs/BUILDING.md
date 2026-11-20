@@ -30,12 +30,15 @@ This document describes how to build bootable Bright OS ISO images from source.
 
 ## Quick Start (First ISO Build)
 
+For a complete step-by-step walkthrough with screenshots, troubleshooting, and
+QEMU testing instructions, see **[FIRST-ISO-HANDOFF.md](FIRST-ISO-HANDOFF.md)**.
+
 ```bash
 # 1. Clone the repository
 git clone https://github.com/nozaqk/Bright-OS.git
 cd Bright-OS
 
-# 2. Check out the latest release branch or tag
+# 2. Check out main
 git checkout main
 
 # 3. Run the build doctor to verify your system
@@ -44,7 +47,7 @@ git checkout main
 # 4. If the doctor says NOT READY, install missing dependencies:
 sudo apt-get update
 sudo apt-get install -y live-build debootstrap squashfs-tools xorriso \
-    isolinux syslinux-common mtools dosfstools genisoimage \
+    isolinux syslinux-common syslinux-efi mtools dosfstools genisoimage \
     grub-pc-bin grub-efi-amd64-bin shim-signed grub-efi-amd64-signed \
     qemu-system-x86 qemu-utils ovmf file
 
