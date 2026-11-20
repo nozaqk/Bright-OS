@@ -57,6 +57,9 @@ if [ "$1" = "config" ] && [ "$2" = "--help" ]; then
     echo "  --bootloaders grub-legacy|grub-pc|syslinux|grub-efi"
     echo "  --uefi-secure-boot auto|enable|disable"
     echo "  --parent-archive-areas AREAS"
+    echo "  --mode debian"
+    echo "  --keyring-packages PACKAGE"
+    echo "  --distribution CODENAME"
     echo "  --debian-installer cdrom|netinst|netboot|live|none|false"
     echo "  --checksums md5|sha1|sha256|none"
     echo "  --iso-application NAME"
@@ -139,12 +142,21 @@ check_option "--binary-image iso-hybrid" "Uses iso-hybrid binary image"
 check_option "--archive-areas.*non-free-firmware" "Includes non-free-firmware archive area"
 check_option "--bootloaders grub-pc,grub-efi" "Bootloaders set to grub-pc,grub-efi for BIOS+UEFI"
 check_option "--uefi-secure-boot auto" "Secure boot set to auto"
+check_option "--mode debian" "Forces debian mode (prevents Ubuntu host auto-detection)"
+check_option "--keyring-packages debian-archive-keyring" "Uses debian-archive-keyring (not ubuntu-keyring)"
 check_option "--firmware-binary true" "Firmware enabled in binary"
 check_option "--firmware-chroot true" "Firmware enabled in chroot"
 check_option "--checksums sha256" "SHA256 checksums"
 check_option "--debian-installer false" "Debian installer disabled (Calamares is our installer)"
 check_option "--win32-loader false" "win32-loader disabled"
 check_option "--memtest none" "Memtest disabled"
+
+# Verify no ubuntu references in arguments
+if echo "$ARGS" | grep -qi "ubuntu"; then
+    fail "Arguments contain 'ubuntu' (would produce Ubuntu derivative)"
+else
+    pass "No 'ubuntu' references in lb config arguments"
+fi
 
 echo ""
 echo "--- Forbidden options (removed as incorrect/unsupported) ---"
@@ -158,6 +170,8 @@ check_forbidden() {
 }
 
 check_forbidden "--bootloader " "Old singular --bootloader (should be plural --bootloaders)"
+check_forbidden "--mode ubuntu" "Ubuntu mode (must always use debian mode)"
+check_forbidden "ubuntu-keyring" "Ubuntu keyring (must use debian-archive-keyring)"
 check_forbidden "--efi-boot-partition-size" "Unsupported --efi-boot-partition-size"
 check_forbidden "--swap-file-size" "Unnecessary --swap-file-size"
 

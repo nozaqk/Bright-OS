@@ -379,6 +379,31 @@ if command -v lb >/dev/null 2>&1; then
         LB_HAS_SECURE_BOOT=false
     fi
     
+    # Check --mode support: CRITICAL to prevent Ubuntu host auto-detection.
+    # On Ubuntu hosts, live-build defaults to ubuntu mode via /etc/os-release
+    # detection (even with --distribution trixie). Bright OS auto/config forces
+    # --mode debian to ensure the build always targets Debian, not Ubuntu.
+    if lb_has_opt "--mode"; then
+        pass "live-build supports --mode (debian mode will be forced)"
+        if [ -f /etc/os-release ] && grep -qi "ubuntu" /etc/os-release 2>/dev/null; then
+            info "Ubuntu host detected: auto/config will force --mode debian"
+            info "  This prevents the build from producing an Ubuntu-mode configuration"
+            info "  (LB_MODE=ubuntu, ubuntu-keyring, UBUNTU label, ubuntu-oneiric theme)."
+        fi
+    else
+        warn "live-build does not support --mode (old version)"
+        warn "  If building on Ubuntu, the build may default to Ubuntu mode instead of debian."
+        warn "  Consider upgrading live-build or building on Debian Trixie."
+    fi
+    
+    # Check --keyring-packages support: ensures debian-archive-keyring is used
+    if lb_has_opt "--keyring-packages"; then
+        pass "live-build supports --keyring-packages (debian-archive-keyring will be used)"
+    else
+        warn "live-build does not support --keyring-packages"
+        warn "  Keyring will default to host distribution; verify build targets Debian."
+    fi
+    
     if [ "$LB_HAS_MODERN_BOOTLOADERS" = false ]; then
         # Check for tools needed to create EFI boot image on legacy live-build
         if command -v grub-mkstandalone >/dev/null 2>&1 && \
