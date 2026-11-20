@@ -681,6 +681,175 @@ else
     fail "Bold-marked help: --bootloader NOT detected (** markers confuse parser)"
 fi
 
+echo ""
+echo "--- Build doctor --mode critical failure (mock integration) ---"
+
+# Create a temp directory with mock lb binaries to test doctor's live-build
+# capability detection with controlled help output.
+MOCK_TMPDIR=$(mktemp -d)
+MOCK_TEST_DIR="$MOCK_TMPDIR/doctor-mode-mock"
+rm -rf "$MOCK_TEST_DIR"
+mkdir -p "$MOCK_TEST_DIR/mock-bin"
+mkdir -p "$MOCK_TEST_DIR/proj"
+
+# Mock 1: Modern live-build WITHOUT --mode (ancient/unsupported version)
+cat > "$MOCK_TEST_DIR/mock-bin/lb-nomode" << 'MOCKEOF'
+#!/bin/bash
+if [ "$1" = "config" ] && [ "$2" = "--help" ]; then
+cat << 'HELP'
+Usage: lb config [options]
+  -a|--architecture ARCHITECTURE
+  -b|--binary-image iso|iso-hybrid
+  --archive-areas AREAS
+  --bootloaders grub-pc|syslinux|grub-efi
+  --uefi-secure-boot auto|enable|disable
+  --parent-archive-areas AREAS
+  --distribution CODENAME
+  --checksums md5|sha1|sha256
+  --debian-installer false
+  --firmware-binary true|false
+  --firmware-chroot true|false
+HELP
+    exit 0
+fi
+exit 1
+MOCKEOF
+chmod +x "$MOCK_TEST_DIR/mock-bin/lb-nomode"
+
+# Mock 2: Modern live-build WITH --mode (proper Debian Trixie)
+cat > "$MOCK_TEST_DIR/mock-bin/lb-withmode" << 'MOCKEOF'
+#!/bin/bash
+if [ "$1" = "config" ] && [ "$2" = "--help" ]; then
+cat << 'HELP'
+Usage: lb config [options]
+  -a|--architecture ARCHITECTURE
+  -b|--binary-image iso|iso-hybrid
+  --archive-areas AREAS
+  --bootloaders grub-pc|syslinux|grub-efi
+  --uefi-secure-boot auto|enable|disable
+  --parent-archive-areas AREAS
+  --mode debian
+  --keyring-packages PACKAGE
+  --distribution CODENAME
+  --checksums md5|sha1|sha256
+  --debian-installer false
+  --firmware-binary true|false
+  --firmware-chroot true|false
+HELP
+    exit 0
+fi
+exit 1
+MOCKEOF
+chmod +x "$MOCK_TEST_DIR/mock-bin/lb-withmode"
+
+# Point 'lb' to each mock in turn and run the doctor.
+# We need a minimal project skeleton for doctor file checks.
+mkdir -p "$MOCK_TEST_DIR/proj/build/live-build/auto"
+mkdir -p "$MOCK_TEST_DIR/proj/build/scripts"
+mkdir -p "$MOCK_TEST_DIR/proj/config/package-lists"
+mkdir -p "$MOCK_TEST_DIR/proj/config/hooks/live"
+mkdir -p "$MOCK_TEST_DIR/proj/config/includes.chroot/etc/bright-os"
+mkdir -p "$MOCK_TEST_DIR/proj/config/includes.binary/boot/grub"
+mkdir -p "$MOCK_TEST_DIR/proj/installer/calamares/modules"
+mkdir -p "$MOCK_TEST_DIR/proj/editions/lite"
+mkdir -p "$MOCK_TEST_DIR/proj/editions/home"
+mkdir -p "$MOCK_TEST_DIR/proj/editions/developer"
+touch "$MOCK_TEST_DIR/proj/build/live-build/auto/config"
+touch "$MOCK_TEST_DIR/proj/build/live-build/auto/build"
+touch "$MOCK_TEST_DIR/proj/build/live-build/auto/clean"
+cp build/scripts/bright-build-doctor.sh "$MOCK_TEST_DIR/proj/build/scripts/"
+echo "test" > "$MOCK_TEST_DIR/proj/config/package-lists/core.list.chroot"
+echo "test" > "$MOCK_TEST_DIR/proj/config/package-lists/desktop.list.chroot"
+echo "test" > "$MOCK_TEST_DIR/proj/config/package-lists/desktop-lite.list.chroot"
+touch "$MOCK_TEST_DIR/proj/config/hooks/live/00-bright-os-branding.hook.chroot"
+touch "$MOCK_TEST_DIR/proj/config/hooks/live/10-bright-os-components.hook.chroot"
+touch "$MOCK_TEST_DIR/proj/config/hooks/live/20-installer-setup.hook.chroot"
+touch "$MOCK_TEST_DIR/proj/config/hooks/live/30-efi-boot-setup.hook.binary"
+touch "$MOCK_TEST_DIR/proj/config/includes.binary/boot/grub/grub.cfg"
+echo "home" > "$MOCK_TEST_DIR/proj/config/includes.chroot/etc/bright-os/edition"
+touch "$MOCK_TEST_DIR/proj/config/includes.chroot/usr/bin/bright-desktop-shell"
+touch "$MOCK_TEST_DIR/proj/config/includes.chroot/usr/share/bright-os/Shell.qml"
+touch "$MOCK_TEST_DIR/proj/config/includes.chroot/usr/share/bright-os/bright-desktop-shell.py"
+mkdir -p "$MOCK_TEST_DIR/proj/config/includes.chroot/usr/share/bright-os/design"
+mkdir -p "$MOCK_TEST_DIR/proj/config/includes.chroot/usr/share/bright-os/profiles"
+mkdir -p "$MOCK_TEST_DIR/proj/config/includes.chroot/usr/share/bright-os/installer/modules"
+touch "$MOCK_TEST_DIR/proj/config/includes.chroot/usr/share/bright-os/design/DesignTokens.js"
+touch "$MOCK_TEST_DIR/proj/config/includes.chroot/usr/share/bright-os/profiles/EditionProfiles.js"
+touch "$MOCK_TEST_DIR/proj/config/includes.chroot/usr/share/bright-os/installer/settings.conf"
+touch "$MOCK_TEST_DIR/proj/config/includes.chroot/usr/share/bright-os/installer/modules/bootloader.conf"
+touch "$MOCK_TEST_DIR/proj/config/includes.chroot/usr/share/bright-os/installer/modules/displaymanager.conf"
+touch "$MOCK_TEST_DIR/proj/installer/calamares/settings.conf"
+touch "$MOCK_TEST_DIR/proj/installer/calamares/modules/displaymanager.conf"
+touch "$MOCK_TEST_DIR/proj/installer/calamares/modules/bootloader.conf"
+touch "$MOCK_TEST_DIR/proj/installer/calamares/modules/fstab.conf"
+touch "$MOCK_TEST_DIR/proj/installer/calamares/modules/packages.conf"
+touch "$MOCK_TEST_DIR/proj/editions/lite/packages.list"
+touch "$MOCK_TEST_DIR/proj/editions/home/packages.list"
+touch "$MOCK_TEST_DIR/proj/editions/developer/packages.list"
+
+# Provide other common tools so those checks pass
+for tool in debootstrap mksquashfs xorriso sha256sum; do
+    cat > "$MOCK_TEST_DIR/mock-bin/$tool" << TOOLEOF
+#!/bin/bash
+exit 0
+TOOLEOF
+    chmod +x "$MOCK_TEST_DIR/mock-bin/$tool"
+done
+for pkg_tool in isolinux syslinux-common syslinux-efi mtools dosfstools genisoimage grub-pc-bin grub-efi-amd64-bin isoinfo; do
+    ln -sf /bin/true "$MOCK_TEST_DIR/mock-bin/$pkg_tool" 2>/dev/null || true
+done
+
+# Test 1: lb WITHOUT --mode → doctor must report critical failure
+ln -sf "$MOCK_TEST_DIR/mock-bin/lb-nomode" "$MOCK_TEST_DIR/mock-bin/lb"
+DOCTOR_OUT="$MOCK_TEST_DIR/doctor-nomode.log"
+set +e
+(
+    cd "$MOCK_TEST_DIR/proj"
+    PATH="$MOCK_TEST_DIR/mock-bin:/usr/bin:/bin" \
+        ./build/scripts/bright-build-doctor.sh > "$DOCTOR_OUT" 2>&1
+)
+DOCTOR_EXIT=$?
+set -e
+
+if [ "$DOCTOR_EXIT" != "0" ]; then
+    pass "Doctor (no --mode lb): exits non-zero ($DOCTOR_EXIT) due to critical failure"
+else
+    fail "Doctor (no --mode lb): exits 0 but MUST report critical failure"
+fi
+if grep -q "FAIL.*does NOT support.*--mode\|FAIL.*cannot safely guarantee" "$DOCTOR_OUT"; then
+    pass "Doctor (no --mode lb): reports FAIL for missing --mode"
+else
+    fail "Doctor (no --mode lb): does not report FAIL for missing --mode"
+fi
+if grep -qi "trixie\|compatible\|docker\|upgrade" "$DOCTOR_OUT"; then
+    pass "Doctor (no --mode lb): recommends fix (Trixie/Docker/upgrade)"
+else
+    fail "Doctor (no --mode lb): does not recommend a fix path"
+fi
+
+# Test 2: lb WITH --mode → doctor must pass (no critical failure for --mode)
+ln -sf "$MOCK_TEST_DIR/mock-bin/lb-withmode" "$MOCK_TEST_DIR/mock-bin/lb"
+DOCTOR_OUT2="$MOCK_TEST_DIR/doctor-withmode.log"
+set +e
+(
+    cd "$MOCK_TEST_DIR/proj"
+    PATH="$MOCK_TEST_DIR/mock-bin:/usr/bin:/bin" \
+        ./build/scripts/bright-build-doctor.sh > "$DOCTOR_OUT2" 2>&1
+)
+DOCTOR_EXIT2=$?
+set -e
+
+if grep -q "PASS.*supports --mode" "$DOCTOR_OUT2"; then
+    pass "Doctor (with --mode lb): reports PASS for --mode support"
+else
+    fail "Doctor (with --mode lb): does not report PASS for --mode"
+fi
+if grep -q "FAIL.*does NOT support.*--mode\|FAIL.*cannot safely guarantee" "$DOCTOR_OUT2"; then
+    fail "Doctor (with --mode lb): incorrectly reports FAIL for --mode"
+else
+    pass "Doctor (with --mode lb): no false FAIL for --mode"
+fi
+
 # --- Report ---
 echo ""
 echo "========================================"

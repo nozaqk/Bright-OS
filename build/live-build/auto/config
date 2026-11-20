@@ -112,26 +112,42 @@ else
     echo "  WARNING: --parent-archive-areas not supported; omitting."
 fi
 
-# Mode option: must always set --mode debian to prevent live-build from
-# auto-detecting Ubuntu mode when building on an Ubuntu host. Without this,
-# running on Ubuntu sets LB_MODE=ubuntu, ubuntu-keyring, UBUNTU labels, and
-# ubuntu syslinux theme — producing an Ubuntu derivative rather than Bright OS.
+# Mode option: REQUIRED. Bright OS MUST always build in Debian mode to prevent
+# live-build from auto-detecting Ubuntu mode based on the host's /etc/os-release.
+# Without --mode debian on Ubuntu hosts, live-build produces LB_MODE=ubuntu,
+# ubuntu-keyring, UBUNTU labels, and ubuntu syslinux theme — generating an
+# Ubuntu derivative rather than Debian Trixie. This is a hard failure because
+# we cannot guarantee a correct Debian build without explicit --mode support.
 if has_option "--mode"; then
     LB_HAS_MODE=true
     echo "  Detected --mode support (forcing debian mode)"
 else
     LB_HAS_MODE=false
-    echo "  WARNING: --mode not supported by this live-build version"
-    echo "    (build may inherit host OS defaults; use Debian host for reliable builds)"
+    echo ""
+    echo "ERROR: This live-build version does not support the --mode option."
+    echo "  Bright OS requires live-build with --mode support to guarantee a Debian build."
+    echo "  Without --mode debian, live-build may default to Ubuntu mode on Ubuntu hosts,"
+    echo "  producing LB_MODE=ubuntu, ubuntu-keyring, UBUNTU labels, and Ubuntu branding."
+    echo ""
+    echo "  To fix this:"
+    echo "    - Build on Debian 13 Trixie (recommended): install live-build from Debian repos"
+    echo "    - On Ubuntu 24.04: live-build 3.0~a57-1ubuntu49 or later supports --mode"
+    echo "    - Use the Docker-based build environment with a Debian Trixie base image"
+    echo ""
+    echo "  Build cannot proceed safely without explicit --mode debian support."
+    exit 1
 fi
 
-# Keyring packages: specify debian-archive-keyring explicitly when in Debian mode
+# Keyring packages: specify debian-archive-keyring explicitly when in Debian mode.
+# If unsupported, we still fail-safe (LB_HAS_KEYRING_PACKAGES=false means we
+# don't pass the option, but --mode debian alone causes modern live-build to
+# default to debian-archive-keyring). This is advisory, not a hard error.
 if has_option "--keyring-packages"; then
     LB_HAS_KEYRING_PACKAGES=true
     echo "  Detected --keyring-packages support (using debian-archive-keyring)"
 else
     LB_HAS_KEYRING_PACKAGES=false
-    echo "  WARNING: --keyring-packages not supported"
+    echo "  WARNING: --keyring-packages not supported; relying on mode-based keyring default"
 fi
 
 # ==============================================================================

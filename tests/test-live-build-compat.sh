@@ -504,27 +504,42 @@ else
 fi
 
 echo ""
-echo "--- Testing no-mode live-build (very old, no --mode option) ---"
+echo "--- Testing no-mode live-build (must fail: --mode is REQUIRED) ---"
 run_config_test "no-mode"
 
 ARGS=$(get_args "no-mode")
 EXIT=$(get_exit "no-mode")
+OUTPUT=$(get_output "no-mode")
 
-if [ "$EXIT" = "0" ]; then
-    pass "No-mode: auto/config exits 0 (graceful fallback)"
+# --mode is now a hard requirement; auto/config must exit non-zero
+if [ "$EXIT" != "0" ]; then
+    pass "No-mode: auto/config exits non-zero ($EXIT) as required"
 else
-    fail "No-mode: auto/config exits $EXIT (should succeed, just skip --mode)"
+    fail "No-mode: auto/config exited 0 but MUST fail without --mode support"
 fi
-if echo "$ARGS" | grep -q -- "--mode"; then
-    fail "No-mode: should NOT pass --mode (unsupported in this version)"
+# Error message must clearly explain why
+if echo "$OUTPUT" | grep -qi "ERROR.*mode\|mode.*debian\|cannot guarantee.*debian\|requires.*--mode"; then
+    pass "No-mode: clear error message explains --mode is required for Debian builds"
 else
-    pass "No-mode: correctly omits --mode when not supported"
+    fail "No-mode: error message does not clearly explain the --mode requirement"
 fi
-# Even without --mode, should NOT contain any ubuntu references
-if echo "$ARGS" | grep -qi "ubuntu"; then
-    fail "No-mode: arguments contain 'ubuntu'"
+# Error message must mention the Ubuntu-mode risk
+if echo "$OUTPUT" | grep -qi "ubuntu"; then
+    pass "No-mode: error message warns about Ubuntu mode risk"
 else
-    pass "No-mode: no ubuntu references"
+    fail "No-mode: error message does not warn about Ubuntu mode auto-detection"
+fi
+# Error must recommend a fix (Debian Trixie, Ubuntu new enough, or Docker)
+if echo "$OUTPUT" | grep -qi "trixie\|upgrade\|docker"; then
+    pass "No-mode: error recommends an upgrade path"
+else
+    fail "No-mode: error does not recommend a fix path"
+fi
+# Must NOT have invoked lb config (fails before running lb)
+if [ -z "$ARGS" ] || ! echo "$ARGS" | grep -q "^LB_ARGS:"; then
+    pass "No-mode: lb config NOT invoked (build aborted safely before running lb)"
+else
+    fail "No-mode: lb config was invoked despite missing --mode support (unsafe!)"
 fi
 
 echo ""
@@ -704,10 +719,31 @@ if grep -q "\-\-mode.*debian\|debian.*mode" build/scripts/bright-build-doctor.sh
 else
     fail "Build doctor missing --mode debian check"
 fi
+# Missing --mode MUST be a critical failure (fail), not a warning.
+# Extract the else branch of the --mode check and verify it calls fail(), not warn().
+MODE_BLOCK=$(sed -n '/lb_has_opt "--mode"/,/^    fi$/p' build/scripts/bright-build-doctor.sh)
+if echo "$MODE_BLOCK" | grep -q "fail \"live-build does NOT support --mode" && \
+   ! echo "$MODE_BLOCK" | grep -q "^[[:space:]]*warn.*mode"; then
+    pass "Build doctor treats missing --mode as critical FAILURE (not warning)"
+else
+    fail "Build doctor does NOT treat missing --mode as a critical failure"
+fi
+# Missing --mode error should recommend Debian Trixie or compatible version
+if grep -q "Trixie\|compatible.*live-build\|install.*live-build" build/scripts/bright-build-doctor.sh; then
+    pass "Build doctor recommends Debian Trixie or compatible live-build for missing --mode"
+else
+    fail "Build doctor does not recommend fix path for missing --mode"
+fi
 if grep -q "debian-archive-keyring\|keyring-packages" build/scripts/bright-build-doctor.sh; then
     pass "Build doctor checks for debian-archive-keyring"
 else
     fail "Build doctor missing keyring/debian-archive-keyring check"
+fi
+# Keyring is advisory (warn), not critical
+if grep -q "warn.*does not support.*keyring\|warn.*keyring-packages" build/scripts/bright-build-doctor.sh; then
+    pass "Build doctor treats missing --keyring-packages as warning (advisory)"
+else
+    fail "Build doctor does not correctly treat missing keyring as advisory"
 fi
 if grep -q "ubuntu" build/scripts/bright-build-doctor.sh; then
     pass "Build doctor warns about Ubuntu host/mode risk"
