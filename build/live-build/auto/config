@@ -150,6 +150,19 @@ else
     echo "  WARNING: --keyring-packages not supported; relying on mode-based keyring default"
 fi
 
+# HDD label: set a Bright OS-specific label for the live filesystem partition.
+# On Ubuntu hosts, live-build defaults LB_HDD_LABEL to "UBUNTU" (even in Debian
+# mode in some versions), which leaks Ubuntu branding. Setting --hdd-label
+# BRIGHT_OS overrides this with the Bright OS name. This is optional branding
+# and does NOT cause a build failure if unsupported.
+if has_option "--hdd-label"; then
+    LB_HAS_HDD_LABEL=true
+    echo "  Detected --hdd-label support (using BRIGHT_OS label)"
+else
+    LB_HAS_HDD_LABEL=false
+    echo "  WARNING: --hdd-label not supported; using live-build default HDD label"
+fi
+
 # ==============================================================================
 # Build lb config argument list
 # ==============================================================================
@@ -197,6 +210,11 @@ if [ "$LB_HAS_PARENT_ARCHIVE_AREAS" = true ]; then
     set -- "$@" --parent-archive-areas "main contrib non-free non-free-firmware"
 fi
 
+# Set Bright OS HDD label when supported (overrides default DEBIAN_LIVE/UBUNTU)
+if [ "$LB_HAS_HDD_LABEL" = true ]; then
+    set -- "$@" --hdd-label "BRIGHT_OS"
+fi
+
 # Debian installer option:
 # - Modern live-build uses 'none' to disable; legacy accepts 'false'
 # - 'false' works across all known versions.
@@ -226,6 +244,13 @@ else
     echo "  Secure Boot: not configurable via lb flag"
     echo "    (shim-signed + grub-efi-amd64-signed installed in chroot;"
     echo "     for full Secure Boot, build on Debian Trixie)"
+fi
+
+# HDD label status
+if [ "$LB_HAS_HDD_LABEL" = true ]; then
+    echo "  HDD label: BRIGHT_OS (custom Bright OS label)"
+else
+    echo "  HDD label: using live-build default (--hdd-label unsupported)"
 fi
 
 # Append any extra arguments passed through to auto/config

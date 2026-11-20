@@ -55,6 +55,7 @@ create_mock_lb() {
     local has_parent_areas="yes"
     local has_mode="yes"
     local has_keyring="yes"
+    local has_hdd_label="yes"
     local mode_opt="--mode debian"
     local keyring_opt="--keyring-packages"
     
@@ -72,6 +73,8 @@ create_mock_lb() {
             mode_opt="--mode debian|emdebian|ubuntu|kubuntu"
             # Ubuntu legacy DOES support --parent-archive-areas (confirmed from manpage)
             has_parent_areas="yes"
+            # Ubuntu legacy 3.0~a57 may not support --hdd-label (has --hdd-size instead)
+            has_hdd_label="no"
             ;;
         partial-bootloaders)
             # Has modern bootloaders but no secure boot
@@ -90,6 +93,12 @@ create_mock_lb() {
             bootloader_help="--bootloaders grub-legacy|grub-pc|syslinux|grub-efi"
             secureboot_help="--uefi-secure-boot auto|enable|disable"
             has_mode="no"
+            ;;
+        no-hdd-label)
+            # Has mode/bootloaders but no --hdd-label option (older version)
+            bootloader_help="--bootloaders grub-legacy|grub-pc|syslinux|grub-efi"
+            secureboot_help="--uefi-secure-boot auto|enable|disable"
+            has_hdd_label="no"
             ;;
         singular-arch)
             # Modern bootloaders but uses --architectures (plural)
@@ -112,6 +121,7 @@ if [ "\$1" = "config" ] && [ "\$2" = "--help" ]; then
     [ "$has_parent_areas" = "yes" ] && echo "  --parent-archive-areas AREAS"
     [ "$has_mode" = "yes" ] && echo "  $mode_opt"
     [ "$has_keyring" = "yes" ] && echo "  $keyring_opt PACKAGE"
+    [ "$has_hdd_label" = "yes" ] && echo "  --hdd-label LABEL"
     echo "  --debian-installer cdrom|netinst|netboot|live|none|false"
     echo "  --distribution CODENAME"
     echo "  --checksums md5|sha1|sha256|none"
@@ -254,6 +264,12 @@ if echo "$ARGS" | grep -qi "ubuntu"; then
 else
     pass "Modern: no ubuntu references in arguments"
 fi
+# Must pass --hdd-label BRIGHT_OS (custom Bright OS HDD label)
+if echo "$ARGS" | grep -q -- "--hdd-label BRIGHT_OS"; then
+    pass "Modern: passes --hdd-label BRIGHT_OS (custom HDD label)"
+else
+    fail "Modern: --hdd-label BRIGHT_OS missing"
+fi
 # Must use plural bootloaders
 if echo "$ARGS" | grep -q -- "--bootloaders grub-pc,grub-efi"; then
     pass "Modern: uses --bootloaders grub-pc,grub-efi (BIOS+UEFI)"
@@ -350,6 +366,17 @@ if echo "$OUTPUT" | grep -qi "secure boot"; then
     pass "Legacy: reports Secure Boot limitation"
 else
     fail "Legacy: does not warn about Secure Boot limitation"
+fi
+# Legacy (Ubuntu 24.04) does NOT support --hdd-label; should warn and omit
+if echo "$ARGS" | grep -q -- "--hdd-label"; then
+    fail "Legacy: should NOT pass --hdd-label (not supported in this version)"
+else
+    pass "Legacy: correctly omits --hdd-label (not supported)"
+fi
+if echo "$OUTPUT" | grep -qi "hdd-label.*not support\|hdd-label.*unsupported\|default HDD label"; then
+    pass "Legacy: warns about --hdd-label not supported"
+else
+    fail "Legacy: does not warn about missing --hdd-label support"
 fi
 
 echo ""
@@ -540,6 +567,51 @@ if [ -z "$ARGS" ] || ! echo "$ARGS" | grep -q "^LB_ARGS:"; then
     pass "No-mode: lb config NOT invoked (build aborted safely before running lb)"
 else
     fail "No-mode: lb config was invoked despite missing --mode support (unsafe!)"
+fi
+
+echo ""
+echo "--- Testing no-hdd-label live-build (warns but continues) ---"
+run_config_test "no-hdd-label"
+
+ARGS=$(get_args "no-hdd-label")
+EXIT=$(get_exit "no-hdd-label")
+OUTPUT=$(get_output "no-hdd-label")
+
+# --hdd-label is optional (branding only); build MUST succeed
+if [ "$EXIT" = "0" ]; then
+    pass "No-hdd-label: auto/config exits 0 (branding flag is optional, not fatal)"
+else
+    fail "No-hdd-label: auto/config exits $EXIT (should succeed; --hdd-label is optional)"
+fi
+# Must NOT pass --hdd-label when unsupported
+if echo "$ARGS" | grep -q -- "--hdd-label"; then
+    fail "No-hdd-label: should NOT pass --hdd-label (unsupported in this version)"
+else
+    pass "No-hdd-label: correctly omits --hdd-label (unsupported)"
+fi
+# Must still pass --mode debian (unrelated to hdd-label)
+if echo "$ARGS" | grep -q -- "--mode debian"; then
+    pass "No-hdd-label: still passes --mode debian (mode enforcement intact)"
+else
+    fail "No-hdd-label: --mode debian missing (mode enforcement broken)"
+fi
+# Must still pass --keyring-packages debian-archive-keyring
+if echo "$ARGS" | grep -q -- "--keyring-packages debian-archive-keyring"; then
+    pass "No-hdd-label: still passes --keyring-packages debian-archive-keyring"
+else
+    fail "No-hdd-label: keyring option missing"
+fi
+# Must print a warning about hdd-label
+if echo "$OUTPUT" | grep -qi "hdd-label.*not support\|hdd-label.*unsupported\|default HDD label"; then
+    pass "No-hdd-label: warns about missing --hdd-label support"
+else
+    fail "No-hdd-label: does not warn about missing --hdd-label"
+fi
+# Must still print the HDD label status line
+if echo "$OUTPUT" | grep -qi "HDD label.*default\|HDD label.*live-build default"; then
+    pass "No-hdd-label: reports default HDD label status"
+else
+    fail "No-hdd-label: does not report HDD label status"
 fi
 
 echo ""
