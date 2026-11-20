@@ -119,11 +119,18 @@ log_step "Step 2: Run Build Doctor"
 # ============================================================
 
 echo ""
-if ! "$DOCTOR_SCRIPT"; then
-    DOCTOR_EXIT=$?
-    echo ""
-    if [ $DOCTOR_EXIT -eq 1 ]; then
-        log_error "Build doctor found CRITICAL issues."
+# Run build doctor and capture exit code IMMEDIATELY (do NOT use 'if ! cmd' — that
+# inverts the exit code and $? inside the then-block is always 0)
+"$DOCTOR_SCRIPT"
+DOCTOR_EXIT=$?
+echo ""
+
+case "$DOCTOR_EXIT" in
+    0)
+        log_ok "Build doctor: all checks passed"
+        ;;
+    1)
+        log_error "Build doctor found CRITICAL issues (exit code ${DOCTOR_EXIT})."
         log_error "Fix the issues above and run this script again."
         echo ""
         echo "To install missing dependencies on Debian:"
@@ -136,10 +143,12 @@ if ! "$DOCTOR_SCRIPT"; then
         echo "  Or run: ./build/scripts/setup-build-env.sh"
         echo ""
         exit 1
-    elif [ $DOCTOR_EXIT -eq 2 ]; then
+        ;;
+    2)
         if [ "$FORCE" != "true" ]; then
+            log_warn "Build doctor found warnings but no critical failures (exit code ${DOCTOR_EXIT})."
             echo ""
-            log_warn "Build doctor found warnings. Do you want to continue? [y/N]"
+            echo "Do you want to continue? [y/N]"
             read -r CONTINUE
             case "$CONTINUE" in
                 y|Y|yes|YES) ;;
@@ -148,10 +157,13 @@ if ! "$DOCTOR_SCRIPT"; then
         else
             log_warn "Build doctor found warnings; continuing due to --force"
         fi
-    fi
-else
-    log_ok "Build doctor: all checks passed"
-fi
+        ;;
+    *)
+        log_error "Build doctor exited with unexpected code ${DOCTOR_EXIT} (possible crash)."
+        log_error "Please report this as a bug."
+        exit 1
+        ;;
+esac
 
 # ============================================================
 log_step "Step 3: Check for existing ISO"
