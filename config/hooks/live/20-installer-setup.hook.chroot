@@ -1,0 +1,35 @@
+#!/bin/sh
+# Post-install setup: Ensure Calamares and post-install scripts are accessible
+set -e
+
+echo "Setting up Calamares installer..."
+
+# Make sure postcfg script is executable
+chmod +x /usr/share/bright-os/installer/postcfg.sh 2>/dev/null || true
+
+# Create default Calamares config symlink if needed
+if [ -f /usr/share/bright-os/installer/settings.conf ] && [ ! -f /etc/calamares/settings.conf ]; then
+    cp /usr/share/bright-os/installer/settings.conf /etc/calamares/settings.conf
+fi
+
+# Set up Calamares to find our branding
+if [ ! -d /etc/calamares/branding/bright-os ]; then
+    ln -sf /usr/share/bright-os/installer/branding/bright-os /etc/calamares/branding/bright-os 2>/dev/null || true
+fi
+
+# Create desktop icon for live user
+if [ ! -f /home/user/Desktop/install-bright-os.desktop ]; then
+    mkdir -p /home/user/Desktop
+    cp /etc/skel/Desktop/install-bright-os.desktop /home/user/Desktop/
+    chown user:user /home/user/Desktop/install-bright-os.desktop
+    chmod +x /home/user/Desktop/install-bright-os.desktop
+fi
+
+# Set Plymouth theme
+if [ -d /usr/share/plymouth/themes/bright-os ]; then
+    update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth \
+        /usr/share/plymouth/themes/bright-os/bright-os.plymouth 100 2>/dev/null || true
+    update-alternatives --set default.plymouth /usr/share/plymouth/themes/bright-os/bright-os.plymouth 2>/dev/null || true
+fi
+
+echo "Installer setup complete."

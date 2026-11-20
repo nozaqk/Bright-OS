@@ -1,8 +1,19 @@
 [Plymouth Theme]
 Name=Bright OS
-Description=Bright OS boot splash theme
-ModuleName=script
+Description=Bright OS boot splash - clean dark theme with spinner
+ModuleName=spinner
 
-[script]
-ImageDir=/usr/share/plymouth/themes/bright-os
-ScriptFile=/usr/share/plymouth/themes/bright-os/bright-os.script
+[spinner]
+# Spinner theme with custom colors (no images required)
+# Background color - deep navy blue
+Show-Alternative-Progress-Bar=false
+Show-Splash=true
+Title=BRIGHT OS
+# Background RGB
+Background=0x0a0e1a
+# Foreground/title color white-ish
+Foreground=0xf1f5f9
+# Accent/spinner color - Bright blue (#3b82f6)
+Accent=0x3b82f6
+# TTY number
+Tty=1

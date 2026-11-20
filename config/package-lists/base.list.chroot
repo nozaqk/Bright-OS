@@ -217,3 +217,35 @@ bluez
 bluetooth
 bluedevil
 bluez-obexd
+
+# Installer
+calamares
+calamares-settings-debian
+
+# Boot splash
+plymouth
+plymouth-themes
+plymouth-x11
+
+# Theme engine for Qt apps
+qt5-style-kvantum
+qt5-style-kvantum-themes
+gtk2-engines-breeze
+gtk2-engines-murrine
+sassc
+optipng
+rsync  # used by Calamares unpackfs
+os-prober  # for dual-boot detection
+
+# Image tools for GRUB/grub-theme
+imagemagick
+
+# Additional essentials
+command-not-found
+bash-completion
+plasma-discover
+partitionmanager
+print-manager
+kcalc
+kwrite
+ark

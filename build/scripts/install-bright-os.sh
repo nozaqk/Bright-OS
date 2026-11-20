@@ -48,6 +48,9 @@ apt-get install -y --no-install-recommends \
     firewalld upower powerdevil \
     fonts-dejavu fonts-noto fonts-hack fonts-liberation2 \
     flatpak \
+    calamares calamares-settings-debian \
+    plymouth plymouth-themes \
+    qt6ct rsync os-prober imagemagick \
     firefox-esr vlc \
     gnome-disk-utility parted gparted \
     htop neofetch
@@ -219,6 +222,47 @@ Categories=System;Settings;Utility;
 StartupNotify=true
 EOF
 done
+
+# Install Calamares installer configuration
+echo "Installing Calamares configuration..."
+mkdir -p /etc/calamares/modules
+mkdir -p /etc/calamares/branding/bright-os
+if [ -d "${PROJECT_ROOT}/installer/calamares" ]; then
+    cp -f "${PROJECT_ROOT}/installer/calamares/settings.conf" /etc/calamares/settings.conf 2>/dev/null || true
+    cp -f "${PROJECT_ROOT}/installer/calamares/modules/"*.conf /etc/calamares/modules/ 2>/dev/null || true
+    cp -f "${PROJECT_ROOT}/installer/calamares/modules/postcfg.sh" /usr/share/bright-os/installer/postcfg.sh 2>/dev/null || true
+    chmod +x /usr/share/bright-os/installer/postcfg.sh 2>/dev/null || true
+    cp -rf "${PROJECT_ROOT}/installer/calamares/branding/bright-os/"* /etc/calamares/branding/bright-os/ 2>/dev/null || true
+fi
+
+# Install Plymouth theme
+echo "Installing Plymouth boot splash..."
+mkdir -p /usr/share/plymouth/themes/bright-os
+if [ -d "${PROJECT_ROOT}/branding/plymouth" ]; then
+    cp -f "${PROJECT_ROOT}/branding/plymouth/"* /usr/share/plymouth/themes/bright-os/
+    if command -v plymouth-set-default-theme &>/dev/null; then
+        update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth \
+            /usr/share/plymouth/themes/bright-os/bright-os.plymouth 100 2>/dev/null || true
+        update-alternatives --set default.plymouth /usr/share/plymouth/themes/bright-os/bright-os.plymouth 2>/dev/null || true
+    fi
+fi
+
+# Install Qt themes
+echo "Installing Qt themes..."
+mkdir -p /usr/share/bright-os/themes/dark
+mkdir -p /usr/share/bright-os/themes/light
+cp -f "${PROJECT_ROOT}/desktop/themes/dark/"* /usr/share/bright-os/themes/dark/ 2>/dev/null || true
+if [ -f "${PROJECT_ROOT}/desktop/themes/light/qt6ct.conf" ]; then
+    cp -f "${PROJECT_ROOT}/desktop/themes/light/"* /usr/share/bright-os/themes/light/ 2>/dev/null || true
+fi
+
+# Install GRUB theme
+echo "Installing GRUB theme..."
+mkdir -p /boot/grub/themes/bright-os
+cp -f "${PROJECT_ROOT}/branding/grub/"* /boot/grub/themes/bright-os/ 2>/dev/null || true
+
+# Update initramfs to include Plymouth
+update-initramfs -u 2>/dev/null || true
 
 echo ""
 echo "============================================"
