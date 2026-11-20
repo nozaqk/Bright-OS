@@ -1,0 +1,582 @@
+# =============================================================================
+# Bright OS ISO Build Workflow
+# =============================================================================
+# Builds all three Bright OS editions (Home, Developer, Lite) on Debian Trixie.
+#
+# Triggers:
+#   - Push of version tag v*  (e.g. v0.1.0-alpha) -> builds all editions + creates Release
+#   - workflow_dispatch       -> manual build, uploads artifacts only (no release)
+#
+# Architecture:
+#   - Matrix strategy: 3 parallel jobs (one per edition), each on ubuntu-latest
+#   - Each job runs the build inside a Debian Trixie Docker container for exact
+#     package parity with the target system. ubuntu-latest provides the Docker
+#     daemon, internet access, and GitHub Actions integration; the container
+#     provides a clean Debian Trixie environment with correct bootloader binaries.
+#   - A final "release" job aggregates artifacts and creates a GitHub Release
+#     (only on tag pushes, after ALL editions validate successfully)
+# =============================================================================
+
+name: Build Bright OS ISOs
+
+on:
+  push:
+    tags:
+      - 'v*'          # Version tags like v0.1.0-alpha
+  workflow_dispatch:  # Manual builds from Actions tab
+    inputs:
+      version:
+        description: 'Version string (default: 0.1.0-dev)'
+        required: false
+        default: '0.1.0-dev'
+      edition:
+        description: 'Edition to build (all if not specified)'
+        required: false
+        type: choice
+        options:
+          - all
+          - home
+          - developer
+          - lite
+        default: 'all'
+
+# Default permissions: read-only. Jobs that need more (release) override this.
+permissions:
+  contents: read
+
+# Prevent concurrent release workflows from overwriting each other
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ==========================================================================
+  # Build matrix: one job per edition, runs in parallel
+  # ==========================================================================
+  build-edition:
+    name: Build ${{ matrix.edition }} (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false   # Let all editions run even if one fails
+      matrix:
+        include:
+          - edition: home
+            arch: amd64
+            desc: "Bright OS Home"
+          - edition: developer
+            arch: amd64
+            desc: "Bright OS Developer"
+          - edition: lite
+            arch: amd64
+            desc: "Bright OS Lite"
+    # If manual trigger specified a single edition, skip other jobs
+    if: |
+      github.event_name == 'push' ||
+      github.event.inputs.edition == 'all' ||
+      github.event.inputs.edition == matrix.edition
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.2.2
+        with:
+          fetch-depth: 1
+
+      - name: Free disk space on runner
+        run: |
+          echo "=== Disk space before cleanup ==="
+          df -h /
+          echo ""
+          echo "=== Removing preinstalled software to free disk space ==="
+          sudo apt-get remove -y '^dotnet-.*' '^aspnetcore-.*' '^libmono-.*' 2>/dev/null || true
+          sudo apt-get remove -y '^llvm-.*' '^clang-.*' '^gcc-1[0-3]-.*' 2>/dev/null || true
+          sudo apt-get remove -y '^mysql-.*' '^postgresql-.*' '^mongodb-.*' 2>/dev/null || true
+          sudo apt-get remove -y '^php-.*' '^ruby-.*' 2>/dev/null || true
+          sudo apt-get remove -y '^android-.*' '^google-chrome-.*' '^firefox-.*' 2>/dev/null || true
+          sudo apt-get autoremove -y --purge 2>/dev/null || true
+          sudo apt-get clean
+          # Remove large preinstalled toolchains and cached data
+          sudo rm -rf /usr/local/lib/android 2>/dev/null || true
+          sudo rm -rf /usr/share/dotnet 2>/dev/null || true
+          sudo rm -rf /opt/ghc 2>/dev/null || true
+          sudo rm -rf /opt/hostedtoolcache 2>/dev/null || true
+          sudo rm -rf /usr/local/share/boost 2>/dev/null || true
+          sudo rm -rf /usr/local/lib/node_modules/npm 2>/dev/null || true
+          sudo rm -rf /var/lib/gems 2>/dev/null || true
+          sudo rm -rf /var/cache/apt/archives/*.deb 2>/dev/null || true
+          echo ""
+          echo "=== Disk space after cleanup ==="
+          df -h /
+
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            VERSION="${GITHUB_REF#refs/tags/v}"
+          else
+            VERSION="${{ github.event.inputs.version }}"
+          fi
+          if ! echo "$VERSION" | grep -qE '^[a-zA-Z0-9][a-zA-Z0-9._-]*$'; then
+            echo "Invalid version string: $VERSION"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Building version: $VERSION"
+
+      - name: Pull Debian Trixie container image
+        run: |
+          docker pull debian:trixie
+          echo "Debian Trixie image ready"
+
+      - name: Build ${{ matrix.edition }} ISO inside Debian Trixie
+        id: build
+        env:
+          EDITION: ${{ matrix.edition }}
+          ARCH: ${{ matrix.arch }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          ISO_NAME="bright-os-${VERSION}-${EDITION}-${ARCH}.iso"
+          BUILD_DIR="build/output/${EDITION}"
+
+          echo "============================================================"
+          echo "  Building Bright OS ${VERSION} - ${EDITION} edition"
+          echo "  Architecture: ${ARCH}"
+          echo "  Container:    debian:trixie (privileged for chroot/mount)"
+          echo "  Expected ISO: ${ISO_NAME}"
+          echo "============================================================"
+
+          # Run the entire build inside a Debian Trixie Docker container.
+          # --privileged: required for debootstrap chroot mounts (proc, sys, devpts)
+          # -v $PWD:/workspace: mount the full repository (rw) for build output
+          # -w /workspace: build commands run from repository root
+          # Files created inside the container are owned by root; we fix perms after.
+          docker run --rm \
+            --privileged \
+            -v "$PWD":/workspace \
+            -w /workspace \
+            -e "BRIGHT_EDITION=${EDITION}" \
+            -e "BRIGHT_ARCH=${ARCH}" \
+            -e "BRIGHT_VERSION=${VERSION}" \
+            -e "DEBIAN_FRONTEND=noninteractive" \
+            -e "LC_ALL=C" \
+            -e "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" \
+            debian:trixie \
+            bash -c '
+              set -euo pipefail
+
+              echo "--- [Container] Installing build dependencies ---"
+              # Ensure apt sources include all needed components for Trixie
+              cat > /etc/apt/sources.list << APT_EOF
+              deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware
+              deb http://deb.debian.org/debian trixie-updates main contrib non-free non-free-firmware
+              deb http://security.debian.org/debian-security trixie-security main contrib non-free non-free-firmware
+              APT_EOF
+
+              apt-get update -qq
+
+              # Install all build dependencies in the container.
+              # These match the dependencies documented in docs/BUILDING.md plus
+              # utilities needed for ISO validation and build operations.
+              apt-get install -y --no-install-recommends \
+                eatmydata \
+                live-build \
+                debootstrap \
+                squashfs-tools \
+                xorriso \
+                isolinux \
+                syslinux-common \
+                syslinux-efi \
+                grub-pc-bin \
+                grub-efi-amd64-bin \
+                grub-efi-amd64-signed \
+                shim-signed \
+                mtools \
+                dosfstools \
+                genisoimage \
+                cpio \
+                gzip \
+                xz-utils \
+                bzip2 \
+                coreutils \
+                util-linux \
+                mount \
+                udev \
+                binutils \
+                findutils \
+                sed \
+                gawk \
+                grep \
+                tar \
+                wget \
+                ca-certificates \
+                file \
+                dpkg-dev \
+                sharutils
+
+              echo "--- [Container] Dependency installation complete ---"
+              echo ""
+
+              echo "--- [Container] Checking disk space ---"
+              df -h /workspace
+              echo ""
+
+              echo "--- [Container] Running build: ${BRIGHT_EDITION} ${BRIGHT_VERSION} ---"
+              bash build/scripts/build.sh "${BRIGHT_EDITION}" --version "${BRIGHT_VERSION}"
+              echo "--- [Container] Build script finished ---"
+            '
+
+          echo ""
+          echo "=== Build container exited successfully ==="
+
+          # Make output files readable by the runner user (they are owned by root from Docker)
+          sudo chmod -R a+rX "${BUILD_DIR}"
+
+          echo "Build directory contents:"
+          ls -la "${BUILD_DIR}/"
+
+          if [ ! -f "${BUILD_DIR}/${ISO_NAME}" ]; then
+            echo "ERROR: Expected ISO not found at ${BUILD_DIR}/${ISO_NAME}"
+            exit 1
+          fi
+
+          echo "ISO found: ${BUILD_DIR}/${ISO_NAME}"
+          stat "${BUILD_DIR}/${ISO_NAME}"
+
+      - name: Validate ISO
+        env:
+          EDITION: ${{ matrix.edition }}
+          ARCH: ${{ matrix.arch }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          ISO_NAME="bright-os-${VERSION}-${EDITION}-${ARCH}.iso"
+          ISO_PATH="build/output/${EDITION}/${ISO_NAME}"
+
+          echo "=== Validating ISO: ${ISO_PATH} ==="
+
+          # 1. File existence and size
+          if [ ! -f "${ISO_PATH}" ]; then
+            echo "ERROR: ISO not found at ${ISO_PATH}"
+            exit 1
+          fi
+          if [ ! -s "${ISO_PATH}" ]; then
+            echo "ERROR: ISO file is empty"
+            exit 1
+          fi
+
+          ISO_SIZE=$(stat -c%s "${ISO_PATH}")
+          ISO_SIZE_MB=$((ISO_SIZE / 1024 / 1024))
+          echo "ISO size: ${ISO_SIZE_MB} MB (${ISO_SIZE} bytes)"
+
+          if [ "${ISO_SIZE_MB}" -lt 100 ]; then
+            echo "ERROR: ISO is too small (${ISO_SIZE_MB} MB < 100 MB minimum)"
+            exit 1
+          fi
+
+          # 2. GitHub Release asset size limit is 2 GiB
+          GITHUB_LIMIT_BYTES=2147483648
+          if [ "${ISO_SIZE}" -gt "${GITHUB_LIMIT_BYTES}" ]; then
+            echo "ERROR: ISO size (${ISO_SIZE_MB} MB) exceeds GitHub release asset limit of 2048 MB (2 GiB)"
+            echo ""
+            echo "The ISO must be reduced in size before it can be uploaded to GitHub Releases."
+            echo "Possible size reductions:"
+            echo "  - Set --apt-recommends false in auto/config"
+            echo "  - Exclude large packages (LibreOffice, etc.) from Home edition"
+            echo "  - Use stronger xz compression for squashfs"
+            exit 1
+          fi
+          echo "Size within GitHub limit (2 GiB): OK"
+
+          # 3. Run project validation script inside Debian Trixie container
+          #    (needs isoinfo, file, dd/xxd from Debian package set)
+          echo ""
+          echo "--- Running validate-iso.sh inside Debian Trixie ---"
+          docker run --rm \
+            --privileged \
+            -v "$PWD":/workspace \
+            -w /workspace \
+            debian:trixie \
+            bash -c "
+              set -euo pipefail
+              apt-get update -qq
+              apt-get install -y --no-install-recommends genisoimage xorriso file coreutils sharutils xxd
+              bash build/scripts/validate-iso.sh '${ISO_PATH}'
+            "
+
+          # 4. Verify checksum
+          echo ""
+          echo "--- Verifying SHA256 checksum ---"
+          (cd "$(dirname "${ISO_PATH}")" && sha256sum -c "$(basename "${ISO_PATH}").sha256")
+          echo "Checksum valid."
+
+          # Make log readable too
+          sudo chmod -R a+rX "build/output/${EDITION}/" 2>/dev/null || true
+
+          echo ""
+          echo "============================================================"
+          echo "  VALIDATION PASSED: ${EDITION} edition"
+          echo "  ISO:  ${ISO_PATH}"
+          echo "  Size: ${ISO_SIZE_MB} MB"
+          echo "============================================================"
+
+      - name: Stage artifacts for upload
+        env:
+          EDITION: ${{ matrix.edition }}
+          ARCH: ${{ matrix.arch }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          STAGING="artifact-staging/${EDITION}"
+          mkdir -p "${STAGING}"
+
+          ISO_NAME="bright-os-${VERSION}-${EDITION}-${ARCH}.iso"
+          ISO_PATH="build/output/${EDITION}/${ISO_NAME}"
+          LOG_PATH="build/output/${EDITION}/build.log"
+
+          # Copy ISO and checksum
+          cp "${ISO_PATH}" "${STAGING}/${ISO_NAME}"
+          cp "${ISO_PATH}.sha256" "${STAGING}/${ISO_NAME}.sha256"
+
+          # Copy build log if it exists
+          if [ -f "${LOG_PATH}" ]; then
+            cp "${LOG_PATH}" "${STAGING}/build.log"
+          fi
+
+          # Write edition metadata
+          cat > "${STAGING}/EDITION.txt" << EOF
+          edition=${EDITION}
+          version=${VERSION}
+          arch=${ARCH}
+          iso=${ISO_NAME}
+          size_bytes=$(stat -c%s "${ISO_PATH}")
+          ISO_PATH="build/output/${EDITION}/${ISO_NAME}"
+          size_mb=$(( $(stat -c%s "${ISO_PATH}") / 1024 / 1024 ))
+          sha256=$(cut -d' ' -f1 "${ISO_PATH}.sha256")
+          build_date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          EOF
+
+          echo "Staged artifacts for ${EDITION}:"
+          ls -lh "${STAGING}/"
+
+      - name: Upload artifact (${{ matrix.edition }})
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: bright-os-${{ matrix.edition }}-${{ matrix.arch }}
+          path: artifact-staging/${{ matrix.edition }}/
+          retention-days: 14
+          if-no-files-found: error
+          compression-level: 0   # ISOs are already compressed; skip for speed
+
+      - name: Show build log tail on failure
+        if: failure()
+        env:
+          EDITION: ${{ matrix.edition }}
+        run: |
+          LOG_PATH="build/output/${EDITION}/build.log"
+          if [ -f "${LOG_PATH}" ]; then
+            echo "=== Last 100 lines of build log (${EDITION}) ==="
+            tail -100 "${LOG_PATH}" || true
+          else
+            echo "Build log not found at ${LOG_PATH}"
+            echo "Build output directory contents:"
+            ls -la "build/output/${EDITION}/" || true
+          fi
+
+  # ==========================================================================
+  # Release job: creates GitHub Release after all editions build successfully
+  # Only runs on tag pushes (not manual workflow_dispatch)
+  # ==========================================================================
+  create-release:
+    name: Create GitHub Release
+    needs: build-edition
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # Required to create releases and upload assets
+    steps:
+      - name: Checkout (for accessing any release note templates)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.2.2
+        with:
+          fetch-depth: 1
+
+      - name: Determine version from tag
+        id: version
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          # Pretty version: 0.1.0-alpha -> "0.1.0 Alpha"
+          TITLE_VERSION=$(echo "$VERSION" | sed 's/-alpha/ Alpha/; s/-beta/ Beta/; s/-rc/ Release Candidate/; s/-dev/ Development/')
+          echo "title_version=$TITLE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "Version: $VERSION"
+          echo "Title version: $TITLE_VERSION"
+
+      - name: Download all edition artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.1.9
+        with:
+          path: release-assets/
+          pattern: bright-os-*-amd64
+          merge-multiple: false
+
+      - name: Verify all artifacts and create SHA256SUMS
+        id: assets
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          echo "=== Downloaded artifacts ==="
+          find release-assets/ -type f -ls
+          echo ""
+
+          SHA_FILE="release-assets/SHA256SUMS"
+          > "$SHA_FILE"
+
+          EXPECTED_EDITIONS="home developer lite"
+          MISSING=""
+
+          for edition in $EXPECTED_EDITIONS; do
+            ARTIFACT_DIR="release-assets/bright-os-${edition}-amd64"
+            ISO_NAME="bright-os-${VERSION}-${edition}-amd64.iso"
+            ISO_PATH="${ARTIFACT_DIR}/${ISO_NAME}"
+
+            echo ""
+            echo "--- Checking ${edition} ---"
+
+            if [ ! -d "${ARTIFACT_DIR}" ]; then
+              echo "ERROR: Missing artifact directory: ${ARTIFACT_DIR}"
+              MISSING="${MISSING} ${edition}"
+              continue
+            fi
+
+            if [ ! -f "${ISO_PATH}" ]; then
+              echo "ERROR: Missing ISO: ${ISO_PATH}"
+              ls -la "${ARTIFACT_DIR}/"
+              MISSING="${MISSING} ${edition}"
+              continue
+            fi
+
+            if [ ! -s "${ISO_PATH}" ]; then
+              echo "ERROR: Empty ISO: ${ISO_PATH}"
+              MISSING="${MISSING} ${edition}"
+              continue
+            fi
+
+            # Verify checksum matches
+            if ! (cd "${ARTIFACT_DIR}" && sha256sum -c "${ISO_NAME}.sha256"); then
+              echo "ERROR: Checksum mismatch for ${edition}"
+              exit 1
+            fi
+            echo "Checksum: OK"
+
+            SIZE_MB=$(du -m "${ISO_PATH}" | cut -f1)
+            echo "Size: ${SIZE_MB} MB"
+
+            # Add to consolidated SHA256SUMS with relative path
+            HASH=$(cut -d' ' -f1 "${ARTIFACT_DIR}/${ISO_NAME}.sha256")
+            echo "${HASH}  ${ISO_NAME}" >> "${SHA_FILE}"
+          done
+
+          if [ -n "${MISSING}" ]; then
+            echo ""
+            echo "ERROR: Missing or invalid editions:${MISSING}"
+            exit 1
+          fi
+
+          echo ""
+          echo "=== Consolidated SHA256SUMS ==="
+          cat "${SHA_FILE}"
+
+      - name: Create GitHub Release and upload assets
+        id: release
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          TITLE_VERSION: ${{ steps.version.outputs.title_version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF#refs/tags/}"
+
+          echo "=== Creating release: ${TAG} ==="
+
+          # Generate release notes
+          cat > /tmp/release-notes.md << RELEASE_EOF
+          # Bright OS ${TITLE_VERSION}
+
+          **Debian base:** Debian 13 Trixie
+          **Architecture:** x86_64 / amd64
+          **Build date:** $(date -u +"%Y-%m-%d %H:%M UTC")
+          **Commit:** \`${GITHUB_SHA:0:10}\`
+
+          ## Available Editions
+
+          | Edition | ISO File | Description |
+          |---------|----------|-------------|
+          | 🏠 Home | \`bright-os-${VERSION}-home-amd64.iso\` | Full KDE Plasma desktop for everyday use (web, office, media) |
+          | 💻 Developer | \`bright-os-${VERSION}-developer-amd64.iso\` | KDE Plasma + development tools (VS Code, Git, Docker, Arduino, KiCad, PostgreSQL) |
+          | 🪶 Lite | \`bright-os-${VERSION}-lite-amd64.iso\` | Lightweight LXQt + Openbox desktop for older hardware (2-4 GB RAM) |
+
+          ## Verify Downloads
+
+          After downloading, verify the integrity of your ISO:
+          \`\`\`
+          # Download SHA256SUMS from this release, then:
+          sha256sum -c SHA256SUMS --ignore-missing
+          \`\`\`
+
+          ## Installation
+
+          1. Write the ISO to a USB drive (8 GB+):
+             \`\`\`
+             sudo dd if=bright-os-${VERSION}-home-amd64.iso of=/dev/sdX bs=4M status=progress conv=fsync
+             \`\`\`
+          2. Boot from the USB drive.
+          3. The Calamares installer will launch from the live desktop.
+
+          ## Testing Status
+
+          - ✅ **Structural validation passed:** ISO9660 filesystem, kernel, initrd, squashfs root, BIOS MBR signature, UEFI EFI boot image, GRUB bootloader present
+          - ⚠️ **Boot testing not yet performed:** The ISOs have been built and structurally validated by CI but have NOT been booted in QEMU or on physical hardware yet. This is an automated build — please test in a VM before installing on production hardware.
+          - ⚠️ **Secure Boot:** shim-signed is included but Secure Boot support is untested. If you encounter boot issues, disable Secure Boot.
+          - ⚠️ **LUKS:** Full-disk encryption via Calamares is configured but untested in CI.
+
+          ## Known Issues (Alpha)
+
+          - This is early development software — expect bugs and missing features
+          - Wine/Proton compatibility layer is not yet included (planned for future phases)
+          - No automatic updates configured yet
+          - Some hardware may require additional firmware
+          RELEASE_EOF
+
+          echo "--- Release notes ---"
+          cat /tmp/release-notes.md
+          echo "--- End release notes ---"
+
+          echo ""
+          echo "--- Creating release with gh CLI ---"
+          gh release create "${TAG}" \
+            --title "Bright OS ${TITLE_VERSION}" \
+            --notes-file /tmp/release-notes.md \
+            --target "${GITHUB_SHA}" \
+            release-assets/bright-os-home-amd64/bright-os-${VERSION}-home-amd64.iso \
+            release-assets/bright-os-developer-amd64/bright-os-${VERSION}-developer-amd64.iso \
+            release-assets/bright-os-lite-amd64/bright-os-${VERSION}-lite-amd64.iso \
+            release-assets/SHA256SUMS
+
+          echo "release_url=https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}" >> "$GITHUB_OUTPUT"
+          echo ""
+          echo "✅ Release created successfully!"
+
+      - name: Release published
+        run: |
+          echo ""
+          echo "============================================================"
+          echo "  🎉 RELEASE PUBLISHED"
+          echo ""
+          echo "  URL: ${{ steps.release.outputs.release_url }}"
+          echo ""
+          echo "  Download ISOs from the releases page."
+          echo "============================================================"

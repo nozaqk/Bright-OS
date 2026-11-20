@@ -1,9 +1,16 @@
 # Hardware Testing Guide for Bright OS
 
-> **Status as of Phase 12:** No real ISO has been built or boot-tested yet.
-> All testing checklists below are prepared for when the first ISO is available.
-> Build configuration has been validated (362 automated tests pass) including
-> BIOS+UEFI dual-boot configuration and LUKS full-disk encryption setup.
+> **Status as of Phase 13:** GitHub Actions CI pipeline is configured to build
+> ISOs automatically on version tag pushes. Build configuration has been validated
+> (**423 automated tests pass**) including BIOS+UEFI dual-boot, LUKS full-disk
+> encryption, and the CI/CD pipeline.
+>
+> **To get an ISO:** Push a version tag (see docs/BUILDING.md) or trigger a manual
+> build from the Actions tab. Download ISOs from
+> https://github.com/nozaqk/Bright-OS/releases
+>
+> **No real ISO has been boot-tested yet.** When CI produces the first ISO, follow
+> the checklists below to test in QEMU first, then on real hardware.
 
 ## Pre-Test Checklist
 

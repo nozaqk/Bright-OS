@@ -3,13 +3,37 @@
 **An independent, Linux-based hybrid desktop operating system** for developers, programmers, electronics engineers, and technical professionals — built on Debian Linux with an original desktop environment called Bright Desktop.
 
 > **Status: Alpha 0.1 "Dawn"** — Early development release. The build system is
-> fully configured and validated (**362 automated tests pass**). Package architecture
+> fully configured and validated (**423 automated tests pass**), including
+> automated GitHub Actions CI builds. Package architecture
 > is cleanly separated into Core (169 packages), Desktop-Plasma (37 packages for
 > Home/Developer), and Desktop-Lite (29 packages for Lite).
 > The ISO must be built on a Debian 13 Trixie machine per the instructions below.
 > Boot testing is pending the first ISO build.
 
+## Download
+
+Pre-built ISO images are available from **[GitHub Releases](https://github.com/nozaqk/Bright-OS/releases)**.
+
+| Edition | Description |
+|---------|-------------|
+| 🏠 **Home** | Full KDE Plasma desktop for everyday use |
+| 💻 **Developer** | KDE Plasma + development tools (VS Code, Git, Docker, Arduino, KiCad) |
+| 🪶 **Lite** | Lightweight LXQt desktop for older hardware (2-4 GB RAM) |
+
+After downloading, verify the checksum:
+```bash
+sha256sum -c SHA256SUMS --ignore-missing
+```
+
+> **Note:** Alpha releases have been structurally validated (filesystem, kernel, initrd,
+> squashfs, BIOS/UEFI boot signatures) but are not yet fully boot-tested. Please test in a
+> virtual machine before installing to physical hardware.
+
 ![Bright OS](branding/icons/bright-os-logo.svg)
+
+## Build from Source
+
+You can also build Bright OS yourself on a Debian 13 Trixie machine (see [docs/BUILDING.md](docs/BUILDING.md)):
 
 ## Editions
 
@@ -23,7 +47,7 @@ All editions share the same codebase, system services, and Bright Desktop techno
 
 ## Features (Alpha 0.1)
 
-- ✅ Debian Linux 12 (Bookworm) base
+- ✅ Debian Linux 13 (Trixie) base
 - ✅ Bootable live ISO (UEFI + BIOS/hybrid support via GRUB)
 - ✅ Calamares installer for disk installation (partitioning, users, bootloader)
 - ✅ Wayland graphical desktop using KWin + custom multi-window Bright Shell
