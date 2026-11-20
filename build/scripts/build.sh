@@ -416,67 +416,58 @@ fi
 # BUILD PIPELINE — with reliable exit status capture
 # =========================================================================
 #
-# The critical requirement: capture ./auto/build's actual exit status even
-# when piping through tee and (in normal mode) grep for progress filtering.
+# Method: Run the pipeline, then capture PIPESTATUS[0] IMMEDIATELY into an
+# array BEFORE any other command runs. This gives the exact exit code of
+# ./auto/build regardless of what tee or grep do.
 #
-# We use a temporary status file because PIPESTATUS is unreliable:
-#  - PIPESTATUS is per-subshell; `|| true` overwrites it
-#  - grep returning non-zero (no match) is NOT a build failure
-#  - tee almost always succeeds and shouldn't mask build failure
-#
-# Approach:
-#  1. Write all build output to build.log (always)
-#  2. In verbose mode, also show everything on screen
-#  3. In normal mode, show filtered progress lines
-#  4. ./auto/build's exit code is captured via a status file written
-#     in a subshell, independent of filter pipeline exit codes.
+# Key rules:
+#  - Do NOT use set -o pipefail (grep returning 1 for "no match" must not kill
+#    the pipeline or be treated as a build failure)
+#  - Do NOT use || true after the pipeline (it destroys PIPESTATUS)
+#  - Capture PIPESTATUS into an array as the VERY NEXT command after the pipeline
+#  - grep's exit code (0=match, 1=no match) is ignored — only build exit matters
 # =========================================================================
 
 log_info "Starting ISO build (this will take 30-90 minutes)..."
 BUILD_LOG="build.log"
-STATUS_FILE=".build_status"
-rm -f "$STATUS_FILE"
+rm -f "$BUILD_LOG"
 
-# Use a helper that runs the build, tees output, and writes the real exit code
-# We explicitly DO NOT use `set -o pipefail` during the pipeline so that grep
-# not matching (exit 1) doesn't kill the pipeline early.
+# Disable pipefail and set -e for the pipeline section so we can capture
+# exit codes precisely.
+set +e
+set +o pipefail
 
 if [ "$VERBOSE" = true ]; then
-    # Verbose mode: show everything
-    (
-        ./auto/build 2>&1
-        echo $? > "$STATUS_FILE"
-    ) | tee "$BUILD_LOG"
+    # Verbose mode: show all build output on screen
+    ./auto/build 2>&1 | tee "$BUILD_LOG"
+    _pipestatus=(${PIPESTATUS[@]})
+    BUILD_STATUS=${_pipestatus[0]}
 else
-    # Normal mode: full output to log, filtered progress on screen
-    (
-        ./auto/build 2>&1
-        echo $? > "$STATUS_FILE"
-    ) | tee "$BUILD_LOG" | grep -E --line-buffered \
-        '^P:|^E:|^I:|^W:|^  (I:|W:|E:|P:)|BUILD|SUCCESS|FAIL|mksquashfs|genisoimage|xorriso|=====|^lb |Building|building|^dpkg|^Unpacking|^Setting up|^Created|^Calculating' \
-        || true
+    # Normal mode: full output saved to build.log; key progress lines on screen
+    # grep returns 0 on match, 1 on no match — both are fine; only BUILD_STATUS matters
+    ./auto/build 2>&1 | tee "$BUILD_LOG" | grep -E --line-buffered \
+        '^P:|^E:|^I:|^W:|BUILD SUCCESS|BUILD FAILED|mksquashfs|genisoimage|xorriso|^\[|=====|lb build|Building|building|^Setting up|^Created|^Calculating|^Unpacking|^dpkg'
+    _pipestatus=(${PIPESTATUS[@]})
+    BUILD_STATUS=${_pipestatus[0]}
 fi
 
-# Read the actual build exit status from our status file
-BUILD_STATUS=1
-if [ -f "$STATUS_FILE" ]; then
-    BUILD_STATUS=$(cat "$STATUS_FILE")
-    # Ensure it's a valid integer
-    if ! [[ "$BUILD_STATUS" =~ ^[0-9]+$ ]]; then
-        BUILD_STATUS=1
-    fi
-else
-    log_error "Build status file not found — assuming failure"
+# Restore strict mode immediately after capturing status
+set -e
+set -o pipefail
+
+# Validate BUILD_STATUS is a valid integer
+if ! [[ "$BUILD_STATUS" =~ ^[0-9]+$ ]]; then
+    log_error "Could not determine build exit code (got '${BUILD_STATUS}'); assuming failure"
     BUILD_STATUS=1
 fi
-rm -f "$STATUS_FILE"
 
 if [ "$BUILD_STATUS" -ne 0 ]; then
     log_error "Build failed with exit code ${BUILD_STATUS}!"
     if [ -f "$BUILD_LOG" ]; then
-        log_error "Last 20 lines of build.log:"
-        tail -20 "$BUILD_LOG" >&2 || true
-        log_error "See ${BUILD_DIR}/${BUILD_LOG} for full details."
+        log_error "Last 30 lines of build.log:"
+        tail -30 "$BUILD_LOG" >&2 || true
+        log_error ""
+        log_error "Full log: ${BUILD_DIR}/${BUILD_LOG}"
     fi
     exit "$BUILD_STATUS"
 fi

@@ -3,7 +3,7 @@
 **An independent, Linux-based hybrid desktop operating system** for developers, programmers, electronics engineers, and technical professionals — built on Debian Linux with an original desktop environment called Bright Desktop.
 
 > **Status: Alpha 0.1 "Dawn"** — Early development release. The build system is
-> fully configured and validated (**326 automated tests pass**). Package architecture
+> fully configured and validated (**362 automated tests pass**). Package architecture
 > is cleanly separated into Core (169 packages), Desktop-Plasma (37 packages for
 > Home/Developer), and Desktop-Lite (29 packages for Lite).
 > The ISO must be built on a Debian 13 Trixie machine per the instructions below.

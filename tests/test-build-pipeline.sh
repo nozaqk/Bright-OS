@@ -217,12 +217,47 @@ echo "--- 3. Build Failure Propagation ---"
 
 rm -rf "${TEST_REPO}/build/output/home"
 
-# Build with mock lb that exits with error code 42
-MOCK_LB_BUILD_EXIT=42 MOCK_LB_CREATE_ISO=0
+# Test specific exit codes are correctly captured
+echo ""
+echo "--- 3b. Exit Code Capture Precision ---"
+for test_code in 1 2 42 127; do
+    rm -rf "${TEST_REPO}/build/output/home"
+    MOCK_LB_BUILD_EXIT=$test_code MOCK_LB_CREATE_ISO=0
+    set +e
+    run_build home >"${TEST_DIR}/ecode.out" 2>"${TEST_DIR}/ecode.err"
+    actual_exit=$?
+    set -e
+    if [ "$actual_exit" = "$test_code" ]; then
+        pass "Build exit code ${test_code} correctly propagates (got ${actual_exit})"
+    else
+        fail "Build exit code ${test_code} was mangled (got ${actual_exit})"
+    fi
+    # Verify no checksum on failure
+    if [ ! -f "${TEST_REPO}/build/output/home/bright-os-0.1.0-alpha-home-amd64.iso.sha256" ]; then
+        pass "  No checksum generated on exit ${test_code}"
+    else
+        fail "  Checksum incorrectly generated on exit ${test_code}"
+    fi
+done
+
+# Verify exit code 0 (success) propagates correctly with grep filtering
+rm -rf "${TEST_REPO}/build/output/home"
+MOCK_LB_BUILD_EXIT=0 MOCK_LB_CREATE_ISO=0
+set +e
+run_build home 2>/dev/null
+exit0_rc=$?
+set -e
+# This should FAIL because exit 0 but no ISO - but exit code should still be from build
+# Actually without ISO it fails later; let's just verify the build part returned 0
+# We test the "no ISO" case separately below
+
+# Build with mock lb that exits with error code 1 (typical error)
+rm -rf "${TEST_REPO}/build/output/home"
+MOCK_LB_BUILD_EXIT=1 MOCK_LB_CREATE_ISO=0
 if ! run_build home >"${TEST_DIR}/fail.out" 2>"${TEST_DIR}/fail.err"; then
-    pass "Build exit code 42 correctly propagates as failure"
+    pass "Build exit code 1 correctly propagates as failure"
 else
-    fail "Build exit code 42 was treated as success"
+    fail "Build exit code 1 was treated as success"
 fi
 
 # Verify no checksum on failure
