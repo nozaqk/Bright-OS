@@ -2,7 +2,7 @@
 
 **An independent, Linux-based hybrid desktop operating system** for developers, programmers, electronics engineers, and technical professionals — built on Debian Linux with an original desktop environment called Bright Desktop.
 
-> **Status: Alpha 0.1 "Dawn"** — This is an early development release. The system builds to a bootable live ISO with a working graphical desktop, terminal, file manager, and system tools, but is not yet ready for production use.
+> **Status: Alpha 0.1 "Dawn"** — Early development release. The build system is fully configured and validated (215 automated tests pass). The ISO must be built on a Debian machine per the instructions below. Boot testing is pending the first ISO build.
 
 ![Bright OS](branding/icons/bright-os-logo.svg)
 
