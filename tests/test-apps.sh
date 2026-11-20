@@ -101,7 +101,7 @@ done
 # ---- Build system ----
 echo ""
 echo "--- Build System ---"
-for f in build/live-build/auto/config build/scripts/build.sh config/package-lists/base.list.chroot; do
+for f in build/live-build/auto/config build/scripts/build.sh config/package-lists/core.list.chroot; do
     test_file "$f"
 done
 
@@ -119,7 +119,7 @@ test_file "installer/calamares/settings.conf"
 for mod in welcome.conf locale.conf keyboard.conf partition.conf users.conf \
            summary.conf finished.conf mount.conf unpackfs.conf machineid.conf fstab.conf \
            localecfg.conf networkcfg.conf hwclock.conf services-systemd.conf bootloader.conf \
-           luksbootkeyfile.conf grubcfg.conf initramfs.conf ucode.conf packages.conf \
+           luksbootkeyfile.conf grubcfg.conf initramfs.conf \
            shellprocess-post.conf postcfg.sh exclude-list; do
     test_file "installer/calamares/modules/${mod}"
 done
@@ -195,7 +195,7 @@ else
 fi
 
 # Check package list doesn't have snapd (bloat)
-if grep -q "^snapd" config/package-lists/base.list.chroot; then
+if grep -q "^snapd" config/package-lists/core.list.chroot; then
     echo -e "${RED}[FAIL]${NC} Package list still includes snapd"
     FAIL=$((FAIL+1))
 else

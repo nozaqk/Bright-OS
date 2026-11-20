@@ -8,17 +8,11 @@
 #   ./build.sh [OPTIONS] [EDITION]
 #
 # Editions: home (default), developer, lite
-#
-# Requirements:
-#   - Debian 13 (trixie) amd64 build machine  (Debian 12 bookworm also works)
-#   - live-build package installed
-#   - Root/sudo NOT required for lb config; lb build uses fakeroot where needed
-#     but some live-build versions may require sudo for chroot operations.
-#   - Minimum 20 GB free disk space
-#   - Minimum 4 GB RAM (8 GB recommended)
 # =============================================================================
 
-set -euo pipefail
+# Do NOT use -o pipefail globally; we need careful pipefail control around
+# the build pipeline to reliably capture ./auto/build exit status through tee.
+set -eu
 
 # Determine script location and project root
 # Script is at: <root>/build/scripts/build.sh
@@ -35,25 +29,25 @@ if [ ! -f "${PROJECT_ROOT}/README.md" ] || [ ! -d "${CONFIG_DIR}" ]; then
     echo "  SCRIPT_DIR=${SCRIPT_DIR}"
     echo "  PROJECT_ROOT=${PROJECT_ROOT}"
     echo "  Could not find README.md or config/ at project root."
-    echo "  Make sure you are running this script from the repository,"
-    echo "  or that the script hasn't been moved."
     exit 1
 fi
 
 # Defaults
-EDITION="home"
+EDITION=""
 ARCH="amd64"
 VERSION="0.1.0-alpha"
 SKIP_BUILD=false
 CLEAN_ONLY=false
 VERBOSE=false
 DEBIAN_CODENAME="${BRIGHT_DEBIAN_CODENAME:-trixie}"
+EDITION_SET=false
 
 # Valid values
 VALID_EDITIONS="home developer lite"
-VALID_ARCHS="amd64"   # x86-64 only for Alpha 0.1
+VALID_ARCHS="amd64"
+VALID_CODENAMES="bookworm trixie forky"
 REQUIRED_DISK_GB=20
-REQUIRED_RAM_MB=4096
+VERSION_PATTERN='^[a-zA-Z0-9][a-zA-Z0-9._-]*$'
 
 # Color output
 RED='\033[0;31m'
@@ -65,7 +59,7 @@ NC='\033[0m'
 log_info()  { echo -e "${BLUE}[INFO]${NC} $*"; }
 log_ok()    { echo -e "${GREEN}[OK]${NC} $*"; }
 log_warn()  { echo -e "${YELLOW}[WARN]${NC} $*"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
 
 usage() {
     local ec="${1:-0}"
@@ -80,26 +74,31 @@ Editions:
   lite        Bright OS Lite edition
 
 Options:
-  -h, --help            Show this help
+  -h, --help            Show this help message
   -v, --version VER     Set version string (default: ${VERSION})
-  -a, --arch ARCH       Set architecture (default: ${ARCH}; only amd64 supported in Alpha)
+  -a, --arch ARCH       Set architecture (default: ${ARCH})
   -d, --distro CODENAME Debian codename (default: ${DEBIAN_CODENAME})
-  --clean               Clean build directory only
+  --clean               Clean build directory only (no build deps needed)
   --skip-build          Configure only, do not build
   --verbose             Verbose build output
 EOF
-    exit $ec
+    exit "$ec"
 }
 
 # Parse arguments
 while [[ $# -gt 0 ]]; do
     case "$1" in
         home|developer|lite)
+            if [ "$EDITION_SET" = true ]; then
+                log_error "Duplicate edition: '$1' conflicts with previously set edition '${EDITION}'"
+                exit 1
+            fi
             EDITION="$1"
+            EDITION_SET=true
             shift
             ;;
         -h|--help)
-            usage
+            usage 0
             ;;
         -v|--version)
             if [ $# -lt 2 ]; then
@@ -137,30 +136,49 @@ while [[ $# -gt 0 ]]; do
             VERBOSE=true
             shift
             ;;
-        *)
+        --*)
             log_error "Unknown option: $1"
+            usage 1
+            ;;
+        -*)
+            log_error "Unknown short option: $1"
+            usage 1
+            ;;
+        *)
+            log_error "Unknown argument: $1"
             usage 1
             ;;
     esac
 done
 
-# Validate edition
-if ! echo " ${VALID_EDITIONS} " | grep -q " ${EDITION} "; then
-    log_error "Invalid edition '${EDITION}'. Valid editions: ${VALID_EDITIONS}"
-    exit 1
+# Default edition if none specified
+if [ -z "$EDITION" ]; then
+    EDITION="home"
 fi
+
+# Validate edition
+case " ${VALID_EDITIONS} " in
+    *" ${EDITION} "*) ;;
+    *) log_error "Invalid edition '${EDITION}'. Valid: ${VALID_EDITIONS}"; exit 1 ;;
+esac
 
 # Validate architecture
-if ! echo " ${VALID_ARCHS} " | grep -q " ${ARCH} "; then
-    log_error "Invalid architecture '${ARCH}'. Valid architectures for Alpha 0.1: ${VALID_ARCHS}"
+case " ${VALID_ARCHS} " in
+    *" ${ARCH} "*) ;;
+    *) log_error "Invalid architecture '${ARCH}'. Valid for Alpha 0.1: ${VALID_ARCHS}"; exit 1 ;;
+esac
+
+# Validate codename
+case " ${VALID_CODENAMES} " in
+    *" ${DEBIAN_CODENAME} "*) ;;
+    *) log_error "Invalid Debian codename '${DEBIAN_CODENAME}'. Valid: ${VALID_CODENAMES}"; exit 1 ;;
+esac
+
+# Validate version string (safe for filenames)
+if ! echo "$VERSION" | grep -qE "$VERSION_PATTERN"; then
+    log_error "Invalid version string '${VERSION}'. Use only letters, digits, dots, hyphens, underscores."
     exit 1
 fi
-
-# Validate codename (basic sanity)
-case "${DEBIAN_CODENAME}" in
-    bookworm|trixie|forky) ;;  # Known codenames
-    *) log_warn "Debian codename '${DEBIAN_CODENAME}' is not one of: bookworm, trixie, forky" ;;
-esac
 
 log_info "========================================"
 log_info "  Bright OS Build System"
@@ -171,7 +189,39 @@ log_info "  Distro:     Debian ${DEBIAN_CODENAME}"
 log_info "  Project:    ${PROJECT_ROOT}"
 log_info "========================================"
 
-# --- Check prerequisites ---
+# --- Set up build directory (needed early for clean) ---
+BUILD_DIR="${PROJECT_ROOT}/build/output/${EDITION}"
+
+# Safety: ensure BUILD_DIR is inside PROJECT_ROOT/build/output/
+case "$BUILD_DIR" in
+    "${PROJECT_ROOT}/build/output/"*) ;;  # Safe
+    *)
+        log_error "BUILD_DIR (${BUILD_DIR}) is outside project build output directory."
+        exit 1 ;;
+esac
+
+# Create the build directory
+mkdir -p "$BUILD_DIR"
+
+# --- CLEAN MODE: minimal checks, no dependencies needed ---
+if [ "$CLEAN_ONLY" = true ]; then
+    log_info "Cleaning build directory: ${BUILD_DIR}"
+    cd "$BUILD_DIR"
+    # Only clean known build artifacts, not ISO outputs
+    if command -v lb &>/dev/null; then
+        lb clean --purge 2>/dev/null || true
+    fi
+    # Remove build artifacts (not .iso or .sha256)
+    rm -rf -- config/ local/ .build/ chroot/ binary/ cache/
+    # Clean auto scripts copied from our setup
+    rm -rf -- auto/
+    # Clean build log
+    rm -f -- build.log
+    log_ok "Clean complete (ISO files preserved)"
+    exit 0
+fi
+
+# --- Check build dependencies (only for actual build/configure) ---
 check_dependencies() {
     log_info "Checking build dependencies..."
     local missing=()
@@ -182,20 +232,19 @@ check_dependencies() {
         fi
     done
 
-    # Check for bootloader packages (grub, isolinux, mtools)
-    # These don't have simple command names but their files need to exist
     local boot_missing=()
-    if ! dpkg -l isolinux 2>/dev/null | grep -q '^ii'; then
-        boot_missing+=("isolinux")
-    fi
-    if ! dpkg -l mtools 2>/dev/null | grep -q '^ii'; then
-        boot_missing+=("mtools")
-    fi
-    if ! dpkg -l grub-pc-bin 2>/dev/null | grep -q '^ii'; then
-        boot_missing+=("grub-pc-bin")
-    fi
-    if ! dpkg -l grub-efi-amd64-bin 2>/dev/null | grep -q '^ii'; then
-        boot_missing+=("grub-efi-amd64-bin")
+    for pkg in isolinux mtools dosfstools; do
+        if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"; then
+            boot_missing+=("$pkg")
+        fi
+    done
+    # grub packages differ by arch; for amd64 we need both BIOS and EFI
+    if [ "$ARCH" = "amd64" ]; then
+        for pkg in grub-pc-bin grub-efi-amd64-bin; do
+            if ! dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed"; then
+                boot_missing+=("$pkg")
+            fi
+        done
     fi
 
     if [ ${#missing[@]} -gt 0 ] || [ ${#boot_missing[@]} -gt 0 ]; then
@@ -204,7 +253,8 @@ check_dependencies() {
         log_info ""
         log_info "Install all dependencies with:"
         log_info "  sudo apt-get install -y live-build debootstrap squashfs-tools xorriso \\"
-        log_info "    isolinux syslinux-efi grub-pc-bin grub-efi-amd64-bin mtools dosfstools"
+        log_info "    isolinux syslinux-common mtools dosfstools \\"
+        log_info "    grub-pc-bin grub-efi-amd64-bin"
         exit 1
     fi
     log_ok "All required build tools found"
@@ -212,14 +262,15 @@ check_dependencies() {
 
 check_dependencies
 
-# --- Check required source files exist ---
+# --- Check required source files ---
 check_source_files() {
     log_info "Checking source files..."
     local required_files=(
         "${LIVE_BUILD_DIR}/auto/config"
         "${LIVE_BUILD_DIR}/auto/build"
         "${LIVE_BUILD_DIR}/auto/clean"
-        "${CONFIG_DIR}/package-lists/base.list.chroot"
+        "${CONFIG_DIR}/package-lists/core.list.chroot"
+        "${CONFIG_DIR}/package-lists/desktop.list.chroot"
         "${CONFIG_DIR}/hooks/live/00-bright-os-branding.hook.chroot"
         "${CONFIG_DIR}/hooks/live/10-bright-os-components.hook.chroot"
         "${CONFIG_DIR}/includes.binary/boot/grub/grub.cfg"
@@ -245,7 +296,7 @@ check_source_files() {
 
 check_source_files
 
-# --- Check disk space (use PROJECT_ROOT filesystem) ---
+# --- Check disk space ---
 AVAIL_KB=$(df --output=avail "${PROJECT_ROOT}" | tail -1 | tr -d ' ')
 AVAIL_GB=$((AVAIL_KB / 1024 / 1024))
 if [ "$AVAIL_GB" -lt "$REQUIRED_DISK_GB" ]; then
@@ -254,51 +305,60 @@ if [ "$AVAIL_GB" -lt "$REQUIRED_DISK_GB" ]; then
 fi
 log_ok "Disk space: ${AVAIL_GB} GB available (${REQUIRED_DISK_GB} GB required)"
 
-# --- Set up build directory ---
-BUILD_DIR="${PROJECT_ROOT}/build/output/${EDITION}"
-mkdir -p "$BUILD_DIR"
+# --- Enter build directory ---
 cd "$BUILD_DIR"
-
-# --- Clean if requested ---
-if [ "$CLEAN_ONLY" = true ]; then
-    log_info "Cleaning build directory: ${BUILD_DIR}"
-    if command -v lb &>/dev/null; then
-        lb clean --purge 2>/dev/null || true
-    fi
-    rm -rf config/ local/ .build/ chroot/ binary/
-    # Don't delete .iso or .sha256 files (those are outputs); only clean build artifacts
-    log_ok "Clean complete (ISO files preserved)"
-    exit 0
-fi
 
 # --- Copy live-build auto scripts ---
 log_info "Setting up live-build configuration..."
+rm -rf auto
 mkdir -p auto
-# Use shopt to prevent glob from expanding literally if no files
 shopt -s nullglob
+auto_copied=0
 for f in "${LIVE_BUILD_DIR}/auto/"*; do
     cp "$f" "auto/"
     chmod +x "auto/$(basename "$f")"
+    auto_copied=$((auto_copied+1))
 done
 shopt -u nullglob
 
-# Verify auto scripts were copied
+if [ $auto_copied -eq 0 ]; then
+    log_error "No auto scripts found in ${LIVE_BUILD_DIR}/auto/"
+    exit 1
+fi
 if [ ! -x auto/config ] || [ ! -x auto/build ]; then
-    log_error "Failed to copy auto/config or auto/build from ${LIVE_BUILD_DIR}/auto/"
+    log_error "Failed to copy auto/config or auto/build"
     exit 1
 fi
 
-# --- Copy config tree (package lists, hooks, includes) ---
+# --- Copy config tree ---
 rm -rf config
 cp -r "${CONFIG_DIR}" ./config
 
-# --- Copy edition-specific package lists ---
+# --- Select desktop environment package list ---
+# Home and Developer use full KDE Plasma; Lite uses lightweight LXQt/Openbox
+DESKTOP_PKGS="${CONFIG_DIR}/package-lists/desktop.list.chroot"
+if [ "${EDITION}" = "lite" ]; then
+    DESKTOP_PKGS="${CONFIG_DIR}/package-lists/desktop-lite.list.chroot"
+fi
+if [ ! -f "${DESKTOP_PKGS}" ]; then
+    log_error "Desktop package list not found: ${DESKTOP_PKGS}"
+    exit 1
+fi
+cp "${DESKTOP_PKGS}" "config/package-lists/desktop-packages.list.chroot"
+log_info "Desktop packages: $(basename "${DESKTOP_PKGS}")"
+
+# --- Write edition marker ---
+mkdir -p config/includes.chroot/etc/bright-os
+echo "${EDITION}" > "config/includes.chroot/etc/bright-os/edition"
+
+# --- Copy edition-specific package list ---
 EDITION_PKGS="${EDITIONS_DIR}/${EDITION}/packages.list"
 if [ -f "${EDITION_PKGS}" ]; then
     cp "${EDITION_PKGS}" "config/package-lists/edition-packages.list.chroot"
-    log_info "Edition package list: ${EDITION_PKGS}"
+    log_info "Edition packages: ${EDITION_PKGS}"
 else
-    log_warn "No edition-specific package list found at ${EDITION_PKGS}; using base packages only"
+    log_error "Edition package list missing: ${EDITION_PKGS}"
+    exit 1
 fi
 
 # --- Copy edition-specific hooks if present ---
@@ -307,20 +367,21 @@ if [ -d "${EDITION_HOOKS_DIR}" ]; then
     shopt -s nullglob
     hook_count=0
     for h in "${EDITION_HOOKS_DIR}/"*; do
+        [ -f "$h" ] || continue
         cp "$h" config/hooks/live/
         chmod +x "config/hooks/live/$(basename "$h")"
         hook_count=$((hook_count+1))
     done
     shopt -u nullglob
-    log_info "Copied ${hook_count} edition-specific hook(s)"
+    if [ $hook_count -gt 0 ]; then
+        log_info "Copied ${hook_count} edition-specific hook(s)"
+    fi
 fi
 
-# --- Write edition marker into chroot ---
-echo "${EDITION}" > "config/includes.chroot/etc/bright-os/edition"
-
-# --- Lite edition: mask heavy services ---
+# --- Apply Lite edition specific configuration ---
 if [ "${EDITION}" = "lite" ]; then
     mkdir -p config/includes.chroot/etc/systemd/system
+    # Mask heavy services not needed in Lite
     for svc in bluetooth.service cups.service ModemManager.service; do
         ln -sf /dev/null "config/includes.chroot/etc/systemd/system/${svc}" 2>/dev/null || true
     done
@@ -332,9 +393,6 @@ export BRIGHT_EDITION="$EDITION"
 export BRIGHT_ARCH="$ARCH"
 export BRIGHT_VERSION="$VERSION"
 export BRIGHT_DEBIAN_CODENAME="$DEBIAN_CODENAME"
-
-# Update auto/config to use the selected codename
-# The auto/config reads BRIGHT_DEBIAN_CODENAME; we set it above.
 
 # --- Run auto/config ---
 log_info "Configuring live-build for Debian ${DEBIAN_CODENAME}..."
@@ -354,68 +412,136 @@ if [ "$SKIP_BUILD" = true ]; then
     exit 0
 fi
 
+# =========================================================================
+# BUILD PIPELINE — with reliable exit status capture
+# =========================================================================
+#
+# The critical requirement: capture ./auto/build's actual exit status even
+# when piping through tee and (in normal mode) grep for progress filtering.
+#
+# We use a temporary status file because PIPESTATUS is unreliable:
+#  - PIPESTATUS is per-subshell; `|| true` overwrites it
+#  - grep returning non-zero (no match) is NOT a build failure
+#  - tee almost always succeeds and shouldn't mask build failure
+#
+# Approach:
+#  1. Write all build output to build.log (always)
+#  2. In verbose mode, also show everything on screen
+#  3. In normal mode, show filtered progress lines
+#  4. ./auto/build's exit code is captured via a status file written
+#     in a subshell, independent of filter pipeline exit codes.
+# =========================================================================
 
-# --- Build ---
 log_info "Starting ISO build (this will take 30-90 minutes)..."
 BUILD_LOG="build.log"
+STATUS_FILE=".build_status"
+rm -f "$STATUS_FILE"
 
-# Temporarily disable pipefail so PIPESTATUS works correctly with tee
-set +o pipefail
+# Use a helper that runs the build, tees output, and writes the real exit code
+# We explicitly DO NOT use `set -o pipefail` during the pipeline so that grep
+# not matching (exit 1) doesn't kill the pipeline early.
+
 if [ "$VERBOSE" = true ]; then
-    # Verbose mode: show all build output on screen
-    ./auto/build 2>&1 | tee "${BUILD_LOG}"
-    BUILD_STATUS=${PIPESTATUS[0]}
+    # Verbose mode: show everything
+    (
+        ./auto/build 2>&1
+        echo $? > "$STATUS_FILE"
+    ) | tee "$BUILD_LOG"
 else
-    # Normal mode: full output saved to build.log; key stages shown on screen
-    ./auto/build 2>&1 | tee "${BUILD_LOG}" | grep -E --line-buffered \
-        '^P:|^E:|^I:|^W:|BUILD SUCCESS|BUILD FAILED|mksquashfs|genisoimage|xorriso|^\[|=====' \
+    # Normal mode: full output to log, filtered progress on screen
+    (
+        ./auto/build 2>&1
+        echo $? > "$STATUS_FILE"
+    ) | tee "$BUILD_LOG" | grep -E --line-buffered \
+        '^P:|^E:|^I:|^W:|^  (I:|W:|E:|P:)|BUILD|SUCCESS|FAIL|mksquashfs|genisoimage|xorriso|=====|^lb |Building|building|^dpkg|^Unpacking|^Setting up|^Created|^Calculating' \
         || true
-    BUILD_STATUS=${PIPESTATUS[0]}
 fi
-# Restore strict mode
-set -euo pipefail
 
+# Read the actual build exit status from our status file
+BUILD_STATUS=1
+if [ -f "$STATUS_FILE" ]; then
+    BUILD_STATUS=$(cat "$STATUS_FILE")
+    # Ensure it's a valid integer
+    if ! [[ "$BUILD_STATUS" =~ ^[0-9]+$ ]]; then
+        BUILD_STATUS=1
+    fi
+else
+    log_error "Build status file not found — assuming failure"
+    BUILD_STATUS=1
+fi
+rm -f "$STATUS_FILE"
 
-if [ $BUILD_STATUS -ne 0 ]; then
+if [ "$BUILD_STATUS" -ne 0 ]; then
     log_error "Build failed with exit code ${BUILD_STATUS}!"
-    log_error "Last 20 lines of build.log:"
-    tail -20 "${BUILD_LOG}" >&2 || true
-    log_error "See ${BUILD_DIR}/${BUILD_LOG} for full details."
-    exit $BUILD_STATUS
+    if [ -f "$BUILD_LOG" ]; then
+        log_error "Last 20 lines of build.log:"
+        tail -20 "$BUILD_LOG" >&2 || true
+        log_error "See ${BUILD_DIR}/${BUILD_LOG} for full details."
+    fi
+    exit "$BUILD_STATUS"
 fi
 
-# --- Locate and rename ISO ---
-# Use an array to safely capture glob results
+# --- Locate ISO ---
+# Collect ISO candidates, deduplicating (hybrid.iso also matches *.iso)
 shopt -s nullglob
-ISO_CANDIDATES=(live-image-*.hybrid.iso live-image-*.iso)
+ISO_CANDIDATES=()
+declare -A _seen_isos
+for pattern in live-image-*.hybrid.iso live-image-*.iso; do
+    for f in $pattern; do
+        if [ -z "${_seen_isos[$f]:-}" ]; then
+            ISO_CANDIDATES+=("$f")
+            _seen_isos[$f]=1
+        fi
+    done
+done
+unset _seen_isos
 shopt -u nullglob
 
 ISO_NAME="bright-os-${VERSION}-${EDITION}-${ARCH}.iso"
 ISO_PATH="${BUILD_DIR}/${ISO_NAME}"
 
 if [ ${#ISO_CANDIDATES[@]} -eq 0 ]; then
-    log_error "Build completed but no ISO image was found in ${BUILD_DIR}"
-    log_error "Contents of build directory:"
+    log_error "Build completed with exit 0 but no ISO image found in ${BUILD_DIR}"
+    log_error "This likely means lb build completed but did not produce an ISO."
+    log_error "Build directory contents:"
     ls -la >&2 || true
     exit 1
 fi
 
 if [ ${#ISO_CANDIDATES[@]} -gt 1 ]; then
-    log_warn "Multiple ISO candidates found; using first: ${ISO_CANDIDATES[0]}"
+    log_error "Ambiguous build output: found ${#ISO_CANDIDATES[@]} ISO files:"
+    for c in "${ISO_CANDIDATES[@]}"; do
+        log_error "  - $c"
+    done
+    log_error "Remove old ISOs from the build directory and rebuild."
+    exit 1
 fi
 
 GENERATED_ISO="${ISO_CANDIDATES[0]}"
 
-# Don't overwrite an existing ISO of the same name unless it's our own build
-if [ -f "${ISO_NAME}" ] && [ "${GENERATED_ISO}" != "${ISO_NAME}" ]; then
-    log_error "Output ISO ${ISO_NAME} already exists in build directory."
-    log_error "Remove it manually or use a different version string."
+# Verify the generated ISO is a real file with non-zero size
+if [ ! -s "${GENERATED_ISO}" ]; then
+    log_error "Generated ISO ${GENERATED_ISO} is empty or missing"
+    exit 1
+fi
+
+# Protect against overwriting an existing output ISO
+if [ -e "${ISO_NAME}" ]; then
+    log_error "Output file ${ISO_NAME} already exists."
+    log_error "Remove it manually (e.g. with '${PROJECT_ROOT}/build/scripts/build.sh --clean ${EDITION}')"
+    log_error "or use a different version string with --version."
     exit 1
 fi
 
 mv "${GENERATED_ISO}" "${ISO_NAME}"
 
-# --- Generate checksums (only after successful build and rename) ---
+# --- Verify final ISO before generating checksums ---
+if [ ! -s "${ISO_NAME}" ]; then
+    log_error "ISO rename produced empty file"
+    exit 1
+fi
+
+# --- Generate checksums ONLY after successful build and rename ---
 log_info "Generating SHA256 checksum..."
 sha256sum "${ISO_NAME}" > "${ISO_NAME}.sha256"
 
@@ -433,8 +559,12 @@ log_ok "  SHA256:    ${SHA256}"
 log_ok "  Log:       ${BUILD_DIR}/${BUILD_LOG}"
 log_ok "========================================"
 echo ""
+log_info "To validate the ISO:"
+log_info "  ${PROJECT_ROOT}/build/scripts/validate-iso.sh ${ISO_PATH}"
+echo ""
 log_info "To test in QEMU:"
 log_info "  ${PROJECT_ROOT}/build/scripts/test-in-qemu.sh ${ISO_PATH}"
 echo ""
 log_info "To write to USB:"
 log_info "  sudo dd if=${ISO_PATH} of=/dev/sdX bs=4M status=progress conv=fsync"
+echo ""

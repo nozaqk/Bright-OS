@@ -1,17 +1,28 @@
-# Bright OS Developer Edition - Additional Packages
-# Full development and engineering toolchain
+# =============================================================================
+# Bright OS Developer Edition — Additional packages
+# Target: Software developers, electronics engineers, system administrators
+# Desktop: Full KDE Plasma (inherits Home apps + development toolchain)
+# =============================================================================
 
-# Include all Home edition packages
+# --- Include Home edition applications (duplicates are handled by apt) ---
 firefox-esr
 thunderbird
 vlc
 gimp
 inkscape
-libreoffice-base
+libreoffice-writer
+libreoffice-calc
+libreoffice-impress
 libreoffice-draw
+libreoffice-gtk3
 libreoffice-math
+libreoffice-base
+evince
+eog
+simple-scan
+gnome-calculator
 
-# Development essentials
+# --- Development essentials ---
 build-essential
 gcc
 g++
@@ -26,7 +37,7 @@ automake
 libtool
 pkg-config
 
-# Python
+# --- Python development ---
 python3-dev
 python3-venv
 python3-setuptools
@@ -37,9 +48,9 @@ python3-pandas
 python3-matplotlib
 ipython3
 
-# C/C++ libraries
+# --- C/C++/Qt development libraries ---
 libc6-dev
-libstdc++-12-dev
+libstdc++-dev
 qt6-base-dev
 qt6-base-dev-tools
 qt6-declarative-dev
@@ -48,18 +59,16 @@ qt6-tools-dev-tools
 qt6-5compat-dev
 libqt6svg6-dev
 
-# Java
+# --- Java ---
 default-jdk
 default-jre
 maven
-gradle
 
-# JavaScript/TypeScript/Node.js
+# --- Node.js / JavaScript ---
 nodejs
 npm
-yarnpkg
 
-# Version control
+# --- Version control ---
 git
 git-lfs
 git-gui
@@ -67,52 +76,46 @@ gitk
 subversion
 mercurial
 
-# Container and virtualization
+# --- Container and virtualization ---
 docker.io
-docker-compose
 qemu-system-x86
 qemu-utils
 virt-manager
 libvirt-daemon-system
 libvirt-clients
 bridge-utils
+ssh-import-id
 
-# Editors and IDEs
-code
+# --- Editors ---
 vim
 neovim
-emacs
 gedit
 
-# Electronics engineering
+# --- Electronics engineering ---
 arduino
 esptool
 minicom
 picocom
 putty
-gtkterm
 screen
 tmux
 kicad
 kicad-packages3d
-kicad-libraries
 freecad
 openscad
 
-# Serial/USB debugging
-usbutils
+# --- Serial/USB tools ---
 libusb-1.0-0-dev
-libusb-dev
 gphoto2
 sigrok
 pulseview
 
-# Database
+# --- Database clients ---
 sqlite3
 postgresql-client
 mariadb-client
 
-# Networking tools
+# --- Networking and debugging ---
 wireshark
 nmap
 tcpdump
@@ -124,27 +127,22 @@ dnsutils
 sshfs
 mosh
 
-# Documentation
+# --- Documentation ---
 doxygen
 graphviz
-texlive-latex-base
-texlive-latex-recommended
 pandoc
 
-# Performance and debugging
+# --- Performance and debugging ---
 valgrind
 strace
 ltrace
-perf-tools-unstable
 linux-perf
-htop
 iotop
 sysstat
-dstat
 lsof
 psmisc
 
-# Wine and Proton for development
+# --- Wine for Windows development/testing ---
 wine
 wine64
 winetricks

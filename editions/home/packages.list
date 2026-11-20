@@ -1,31 +1,40 @@
-# Bright OS Home Edition - Additional Packages
-# Standard desktop experience for everyday users
+# =============================================================================
+# Bright OS Home Edition — Additional applications
+# Target: Everyday users, general-purpose desktop
+# Desktop: Full KDE Plasma (selected by build script via desktop.list.chroot)
+# =============================================================================
 
-# Web and communication
+# --- Web and email ---
 firefox-esr
 thunderbird
 
-# Media
+# --- Media ---
 vlc
 audacity
 gimp
 inkscape
 
-# Office
-libreoffice-base
+# --- Office suite ---
+libreoffice-writer
+libreoffice-calc
+libreoffice-impress
 libreoffice-draw
+libreoffice-gtk3
 libreoffice-math
+libreoffice-base
+evince
+eog
 
-# System
+# --- Utilities ---
+simple-scan
+transmission-gtk
+cheese
 gnome-calculator
 gnome-screenshot
 gnome-weather
 gnome-calendar
-simple-scan
-transmission-gtk
-cheese
 
-# Wine for Windows compatibility
+# --- Wine for Windows application compatibility ---
 wine
 wine64
 winetricks
