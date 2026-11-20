@@ -1,48 +1,52 @@
 #!/bin/sh
 # Bright OS live system configuration hook
-# Sets up Bright OS branding and defaults in the live environment
+# Runs at boot time in the live environment (from live-config)
+# Sets up live user, hostname, branding, and defaults
 
 set -e
 
-# Read edition
 EDITION=$(cat /etc/bright-os/edition 2>/dev/null || echo "home")
+
+echo "Bright OS: configuring live environment (edition: ${EDITION})"
 
 # Set hostname
 echo "bright-os" > /etc/hostname
+hostname -F /etc/hostname 2>/dev/null || true
 
-# Set default theme for live user
-if [ -d /etc/skel/.config ]; then
-    mkdir -p /etc/skel/.config
-    
-    # Set Bright Desktop shell as default
-    cat > /etc/skel/.config/bright-desktop.conf <<EOF
-[General]
-Theme=dark
-Wallpaper=/usr/share/bright-os/wallpapers/bright-default-dark.svg
-DockPosition=bottom
-DockIconSize=48
-AnimationsEnabled=true
+# Create the live user if not already created by live-boot
+if ! id user &>/dev/null 2>&1; then
+    useradd -m -s /bin/bash \
+        -G sudo,audio,video,netdev,bluetooth,lp,scanner,dialout,plugdev,kvm,docker,input \
+        user 2>/dev/null || true
+    echo "user:live" | chpasswd 2>/dev/null || true
+fi
 
-[Dock]
-Position=bottom
-IconSize=48
-AutoHide=false
-ShowWindows=true
-ShowLauncher=true
-ShowTrash=true
+# Ensure live user has proper groups (in case user already existed)
+for g in sudo audio video netdev bluetooth lp scanner dialout plugdev kvm docker input; do
+    adduser user "$g" 2>/dev/null || true
+done
 
-[Shell]
-PanelHeight=40
-PanelPosition=top
-ShowClock=true
-ShowTray=true
-ShowBattery=true
-ShowNetwork=true
+# Passwordless sudo for live user
+cat > /etc/sudoers.d/bright-live << 'EOF'
+user ALL=(ALL) NOPASSWD: ALL
 EOF
+chmod 440 /etc/sudoers.d/bright-live
 
-    # SDDM autologin for live session
-    mkdir -p /etc/sddm.conf.d
-    cat > /etc/sddm.conf.d/bright-os-autologin.conf <<EOF
+# Copy skel files to user home if needed
+if [ -d /home/user ]; then
+    chown -R user:user /home/user 2>/dev/null || true
+    # Install desktop shortcut
+    if [ -f /etc/skel/Desktop/install-bright-os.desktop ]; then
+        mkdir -p /home/user/Desktop
+        cp /etc/skel/Desktop/install-bright-os.desktop /home/user/Desktop/
+        chmod +x /home/user/Desktop/install-bright-os.desktop
+        chown user:user /home/user/Desktop/install-bright-os.desktop
+    fi
+fi
+
+# SDDM autologin for live session
+mkdir -p /etc/sddm.conf.d
+cat > /etc/sddm.conf.d/bright-live-autologin.conf << EOF
 [Autologin]
 User=user
 Session=bright.desktop
@@ -50,6 +54,7 @@ Relogin=true
 
 [Theme]
 Current=breeze
+CursorTheme=breeze_cursors
 
 [Wayland]
 EnableHiDPI=true
@@ -57,37 +62,30 @@ EnableHiDPI=true
 [X11]
 EnableHiDPI=true
 EOF
-fi
 
-# Create live user if it doesn't exist
-if ! id user &>/dev/null; then
-    useradd -m -s /bin/bash -G sudo,audio,video,netdev,bluetooth,lp,scanner user
-    echo "user:live" | chpasswd
-    echo "user ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/bright-live
-    chmod 440 /etc/sudoers.d/bright-live
-fi
+# MOTD
+cat > /etc/motd << EOF
 
-# Set up motd
-cat > /etc/motd <<EOF
+Welcome to Bright OS ${EDITION^} Edition (Alpha)
+===============================================
 
-Welcome to Bright OS ${EDITION^} Edition
-==============================
+Default live user: user  /  password: live
 
-Default live user: user / live
-To install, run the Calamares installer from the desktop.
+To install Bright OS to your computer, double-click the
+"Install Bright OS" icon on the desktop.
 
 For documentation: https://github.com/nozaqk/Bright-OS
+To report issues:   https://github.com/nozaqk/Bright-OS/issues
 
 EOF
 
-# Set issue (TTY login screen)
-cat > /etc/issue <<EOF
-Bright OS \l
+cat > /etc/issue << EOF
+Bright OS \\l
 
 EOF
 
-# Create os-release overrides
-cat > /etc/os-release <<EOF
+# os-release
+cat > /etc/os-release << EOF
 PRETTY_NAME="Bright OS ${EDITION^} (Alpha)"
 NAME="Bright OS"
 VERSION_ID="0.1"
@@ -98,31 +96,34 @@ ID_LIKE=debian
 HOME_URL="https://github.com/nozaqk/Bright-OS"
 SUPPORT_URL="https://github.com/nozaqk/Bright-OS/issues"
 BUG_REPORT_URL="https://github.com/nozaqk/Bright-OS/issues"
-PRIVACY_POLICY_URL="https://github.com/nozaqk/Bright-OS"
 BRIGHT_EDITION="${EDITION}"
 BRIGHT_VERSION="0.1.0-alpha"
 DEBIAN_CODENAME=bookworm
 EOF
 
-# Set default shell theme
-mkdir -p /etc/skel/.config/bright-os
-cp /etc/skel/.config/bright-desktop.conf /etc/skel/.config/bright-os/shell.conf 2>/dev/null || true
+# Ensure user config directories exist
+mkdir -p /home/user/.config/bright-os
+mkdir -p /home/user/.config/qt6ct
+chown -R user:user /home/user/.config 2>/dev/null || true
 
-# Enable necessary services
-if command -v systemctl &>/dev/null; then
-    systemctl enable NetworkManager.service 2>/dev/null || true
-    systemctl enable firewalld.service 2>/dev/null || true
-    systemctl enable sddm.service 2>/dev/null || true
-    systemctl enable udisks2.service 2>/dev/null || true
-    systemctl enable upower.service 2>/dev/null || true
-    systemctl enable bluetooth.service 2>/dev/null || true
-    systemctl enable cups.service 2>/dev/null || true
-    systemctl set-default graphical.target 2>/dev/null || true
-fi
+# Default shell config
+cat > /home/user/.config/bright-os/shell.conf << 'EOF'
+# Bright OS Shell Configuration (live)
+theme=dark
+wallpaper=/usr/share/bright-os/wallpapers/bright-default-dark.svg
+panel_height=40
+dock_icon_size=48
+dock_position=bottom
+animations=true
+EOF
+chown user:user /home/user/.config/bright-os/shell.conf
 
-# Configure flatpak repo
+# Configure Flathub (as user, not system, since system one may be done already)
 if command -v flatpak &>/dev/null; then
-    flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
+    flatpak remote-add --if-not-exists --system flathub https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
 fi
 
-echo "Bright OS live configuration complete (edition: ${EDITION})"
+# Make sure we're in graphical target (should already be set)
+systemctl set-default graphical.target 2>/dev/null || true
+
+echo "Bright OS live configuration complete."

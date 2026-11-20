@@ -1,23 +1,22 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import QtQuick.Effects
 import QtQuick.Window
 
 /*
     Bright Desktop Shell - Main QML UI
-    
+
     Architecture:
-    - PanelWindow:  Top panel (always on top, doesn't accept focus)
-    - DockWindow:   Bottom dock (always on top, centered)
-    - Overlays:     Launcher, notification center, power menu (shown on top)
-    - Wallpaper:    Fullscreen behind everything
-    
-    Windows use proper Qt window types that KWin recognizes as
-    panels/docks so application windows tile around them correctly.
+    - WallpaperWindow: Fullscreen background (behind everything)
+    - PanelWindow:     Top panel (always on top, no focus)
+    - DockWindow:      Bottom dock (centered, always on top)
+    - Overlay windows: Launcher, notification center, power menu
+
+    NOTE: Uses plain Rectangle with semi-transparent backgrounds instead of
+    MultiEffect (QtQuick.Effects is Qt 6.5+, Debian Bookworm ships Qt 6.4).
 */
 
-// ---------- Wallpaper (behind everything) ----------
+// ---------- Wallpaper ----------
 Window {
     id: wallpaperWindow
     visible: true
@@ -27,13 +26,11 @@ Window {
     color: "#0a0e1a"
     flags: Qt.FramelessWindowHint | Qt.WindowStaysOnBottomHint | Qt.Tool
     z: 0
-    
+
     property string currentWallpaper: Shell.initialWallpaper
     property string currentTheme: Shell.initialTheme
-    
-    readonly property color panelBg: currentTheme === "dark" ? "#cc0a0e1a" : "#ccf0f4ff"
     readonly property color accentColor: "#3b82f6"
-    
+
     Image {
         id: wp
         anchors.fill: parent
@@ -42,15 +39,8 @@ Window {
         asynchronous: true
         cache: false
     }
-    
-    // Dark overlay for contrast in dark mode
-    Rectangle {
-        anchors.fill: parent
-        color: "#00000000"
-    }
-    
+
     Component.onCompleted: {
-        // Set initial state from Shell
         console.log("Bright Desktop Shell", Shell.version, "- wallpaper layer")
     }
 }
@@ -65,27 +55,33 @@ Window {
     color: "transparent"
     flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool | Qt.WindowDoesNotAcceptFocus
     z: 10
-    
+
     readonly property int panelH: Shell.panelHeight
-    readonly property color panelBg: wallpaperWindow.currentTheme === "dark" ? "#cc0a0e1a" : "#ccf0f4ff"
+    readonly property color panelBg: wallpaperWindow.currentTheme === "dark" ? "#e00a0e1a" : "#e0f0f4ff"
     readonly property color panelFg: wallpaperWindow.currentTheme === "dark" ? "#e2e8f0" : "#1e293b"
     readonly property color textSecondary: wallpaperWindow.currentTheme === "dark" ? "#94a3b8" : "#64748b"
-    readonly property color hoverOverlay: wallpaperWindow.currentTheme === "dark" ? "#ffffff15" : "#00000010"
-    readonly property color cardBorder: wallpaperWindow.currentTheme === "dark" ? "#334155" : "#cbd5e1"
-    
+    readonly property color hoverOverlay: wallpaperWindow.currentTheme === "dark" ? "#ffffff18" : "#00000010"
+    readonly property color borderLine: wallpaperWindow.currentTheme === "dark" ? "#1e293b" : "#cbd5e1"
+
     Rectangle {
         anchors.fill: parent
         color: panelWindow.panelBg
-        layer.enabled: true
-        layer.effect: MultiEffect { blurMax: 32; blur: 0.7 }
+        // Simple 1px bottom border
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.bottom: parent.bottom
+            height: 1
+            color: panelWindow.borderLine
+        }
     }
-    
+
     RowLayout {
         anchors.fill: parent
         anchors.leftMargin: 12
         anchors.rightMargin: 12
         spacing: 6
-        
+
         ToolButton {
             id: launcherBtn
             Layout.preferredWidth: panelWindow.panelH - 4
@@ -99,9 +95,9 @@ Window {
             background: Rectangle { radius: 8; color: launcherBtn.hovered ? panelWindow.hoverOverlay : "transparent" }
             onClicked: { launcherWindow.visible = !launcherWindow.visible; if (launcherWindow.visible) launcherWindow.activate() }
         }
-        
+
         Item { Layout.fillWidth: true }
-        
+
         Column {
             spacing: 0
             Text {
@@ -125,9 +121,9 @@ Window {
                 onClicked: notifWindow.visible = !notifWindow.visible
             }
         }
-        
+
         Item { Layout.fillWidth: true }
-        
+
         Row {
             spacing: 2
             anchors.verticalCenter: parent.verticalCenter
@@ -165,21 +161,22 @@ Window {
     color: "transparent"
     flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool | Qt.WindowDoesNotAcceptFocus
     z: 10
-    
+
     property int dockIconSize: Shell.dockIconSize
-    readonly property color dockBg: wallpaperWindow.currentTheme === "dark" ? "#b30f172a" : "#b3e2e8f0"
+    readonly property color dockBg: wallpaperWindow.currentTheme === "dark" ? "#d00f172a" : "#d0e2e8f0"
     readonly property color panelFg: wallpaperWindow.currentTheme === "dark" ? "#e2e8f0" : "#1e293b"
-    readonly property color hoverOverlay: wallpaperWindow.currentTheme === "dark" ? "#ffffff15" : "#00000010"
+    readonly property color hoverOverlay: wallpaperWindow.currentTheme === "dark" ? "#ffffff18" : "#00000010"
     readonly property color activeIndicator: "#3b82f6"
-    
+    readonly property color dockBorder: wallpaperWindow.currentTheme === "dark" ? "#334155" : "#cbd5e1"
+
     Rectangle {
         anchors.fill: parent
         radius: parent.height / 2
         color: dockWindow.dockBg
-        layer.enabled: true
-        layer.effect: MultiEffect { blurMax: 32; blur: 0.6 }
+        border.color: dockWindow.dockBorder
+        border.width: 1
     }
-    
+
     Row {
         anchors.centerIn: parent
         spacing: 4
@@ -240,31 +237,30 @@ Window {
     color: "#00000000"
     flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
     z: 100
-    
+
     property var dockAppList: JSON.parse(DockApps)
     readonly property color launcherBg: wallpaperWindow.currentTheme === "dark" ? "#e60a0e1a" : "#e6f0f4ff"
     readonly property color cardBg: wallpaperWindow.currentTheme === "dark" ? "#1e293b" : "#ffffff"
     readonly property color cardBorder: wallpaperWindow.currentTheme === "dark" ? "#334155" : "#cbd5e1"
     readonly property color textPrimary: wallpaperWindow.currentTheme === "dark" ? "#f1f5f9" : "#0f172a"
     readonly property color textSecondary: wallpaperWindow.currentTheme === "dark" ? "#94a3b8" : "#64748b"
-    readonly property color hoverOverlay: wallpaperWindow.currentTheme === "dark" ? "#ffffff15" : "#00000010"
+    readonly property color hoverOverlay: wallpaperWindow.currentTheme === "dark" ? "#ffffff18" : "#00000010"
     readonly property color accentColor: "#3b82f6"
     readonly property int cornerRadius: 12
-    
+
     Shortcut { sequence: "Escape"; onActivated: launcherWindow.visible = false }
-    
+
     Rectangle {
         anchors.fill: parent
         color: launcherWindow.launcherBg
     }
-    
     MouseArea { anchors.fill: parent; onClicked: launcherWindow.visible = false }
-    
+
     Column {
         anchors.centerIn: parent
         width: Math.min(parent.width - 100, 720)
         spacing: 24
-        
+
         Rectangle {
             width: parent.width
             height: 56
@@ -279,7 +275,6 @@ Window {
                 Text { text: "\uD83D\uDD0D"; font.pixelSize: 20; anchors.verticalCenter: parent.verticalCenter; color: launcherWindow.textSecondary }
                 TextField {
                     id: searchField
-                    Layout.fillWidth: true
                     anchors.verticalCenter: parent.verticalCenter
                     width: parent.width - 50
                     placeholderText: "Type to search..."
@@ -291,12 +286,11 @@ Window {
                 }
             }
         }
-        
+
         Grid {
             width: parent.width
             columns: 5
             spacing: 16
-            
             Repeater {
                 model: [
                     {"name": "Terminal", "icon": "\uD83D\uDDA5\uFE0F", "cmd": "bright-terminal"},
@@ -353,22 +347,18 @@ Window {
                 }
             }
         }
-        
+
         Row {
             width: parent.width; spacing: 12
             Button {
                 width: (parent.width - 12) / 2; height: 44; flat: true
-                text: "\uD83D\uDC64  User Settings"
-                font.pixelSize: 13
-                contentItem: Text { text: parent.text; anchors.left: parent.left; anchors.leftMargin: 16; anchors.verticalCenter: parent.verticalCenter; color: launcherWindow.textSecondary; font.pixelSize: 13 }
+                contentItem: Text { text: "\uD83D\uDC64  User Settings"; anchors.left: parent.left; anchors.leftMargin: 16; anchors.verticalCenter: parent.verticalCenter; color: launcherWindow.textSecondary; font.pixelSize: 13 }
                 background: Rectangle { radius: 12; color: launcherWindow.cardBg; border.color: launcherWindow.cardBorder; border.width: 1 }
                 onClicked: { Shell.openSettings(); launcherWindow.visible = false }
             }
             Button {
                 width: (parent.width - 12) / 2; height: 44; flat: true
-                text: "\u23FB  Power"
-                font.pixelSize: 13
-                contentItem: Text { text: parent.text; anchors.left: parent.left; anchors.leftMargin: 16; anchors.verticalCenter: parent.verticalCenter; color: "#ef4444"; font.pixelSize: 13 }
+                contentItem: Text { text: "\u23FB  Power"; anchors.left: parent.left; anchors.leftMargin: 16; anchors.verticalCenter: parent.verticalCenter; color: "#ef4444"; font.pixelSize: 13 }
                 background: Rectangle { radius: 12; color: launcherWindow.cardBg; border.color: launcherWindow.cardBorder; border.width: 1 }
                 onClicked: { powerWindow.visible = true; launcherWindow.visible = false }
             }
@@ -381,20 +371,20 @@ Window {
     id: powerWindow
     visible: false
     width: 220
-    height: contentCol.height + 24
     color: "transparent"
     flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool | Qt.WindowDoesNotAcceptFocus
     z: 200
     x: Screen.width - width - 12
     y: panelWindow.height + 8
-    
+    height: contentCol.height + 24
+
     readonly property color cardBg: wallpaperWindow.currentTheme === "dark" ? "#1e293b" : "#ffffff"
     readonly property color cardBorder: wallpaperWindow.currentTheme === "dark" ? "#334155" : "#cbd5e1"
     readonly property color textPrimary: wallpaperWindow.currentTheme === "dark" ? "#f1f5f9" : "#0f172a"
-    readonly property color hoverOverlay: wallpaperWindow.currentTheme === "dark" ? "#ffffff15" : "#00000010"
-    
+    readonly property color hoverOverlay: wallpaperWindow.currentTheme === "dark" ? "#ffffff18" : "#00000010"
+
     Shortcut { sequence: "Escape"; onActivated: powerWindow.visible = false }
-    
+
     Rectangle {
         anchors.fill: parent
         radius: 12
@@ -402,15 +392,14 @@ Window {
         border.color: powerWindow.cardBorder
         border.width: 1
     }
-    
+
     Column {
         id: contentCol
         anchors.fill: parent
         anchors.margins: 12
         spacing: 2
-        
+
         Text { text: "System"; color: "#64748b"; font.pixelSize: 11; font.weight: Font.Bold; leftPadding: 8; bottomPadding: 4 }
-        
         Repeater {
             model: [
                 {label: "Lock Screen", icon: "\uD83D\uDD12", color: "#e2e8f0", action: () => Shell.lockScreen()},
@@ -442,22 +431,22 @@ Window {
     id: notifWindow
     visible: false
     width: 360
-    height: Screen.height - panelWindow.height - dockWindow.height - 32
+    height: Math.min(Screen.height - panelWindow.height - dockWindow.height - 32, 620)
     color: "transparent"
     flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool | Qt.WindowDoesNotAcceptFocus
     z: 150
     x: Screen.width - width - 8
     y: panelWindow.height + 8
-    
+
     readonly property color cardBg: wallpaperWindow.currentTheme === "dark" ? "#1e293b" : "#ffffff"
     readonly property color cardBorder: wallpaperWindow.currentTheme === "dark" ? "#334155" : "#cbd5e1"
     readonly property color textPrimary: wallpaperWindow.currentTheme === "dark" ? "#f1f5f9" : "#0f172a"
     readonly property color textSecondary: wallpaperWindow.currentTheme === "dark" ? "#94a3b8" : "#64748b"
     readonly property color accentColor: "#3b82f6"
-    readonly property color hoverOverlay: wallpaperWindow.currentTheme === "dark" ? "#ffffff15" : "#00000010"
-    
+    readonly property color hoverOverlay: wallpaperWindow.currentTheme === "dark" ? "#ffffff18" : "#00000010"
+
     Shortcut { sequence: "Escape"; onActivated: notifWindow.visible = false }
-    
+
     Rectangle {
         anchors.fill: parent
         radius: 16
@@ -465,22 +454,20 @@ Window {
         border.color: notifWindow.cardBorder
         border.width: 1
     }
-    
+
     ScrollView {
         anchors.fill: parent
         anchors.margins: 16
         clip: true
-        
         Column {
             width: notifWindow.width - 44
             spacing: 12
-            
+
             Text { text: "Notifications"; font.pixelSize: 18; font.weight: Font.Bold; color: notifWindow.textPrimary }
             Text { text: "No new notifications"; color: notifWindow.textSecondary; font.pixelSize: 13; topPadding: 20 }
-            
             Item { height: 12; width: 1 }
             Text { text: "Quick Settings"; font.pixelSize: 18; font.weight: Font.Bold; color: notifWindow.textPrimary; topPadding: 20 }
-            
+
             Grid {
                 width: parent.width; columns: 2; spacing: 8
                 Repeater {
@@ -506,7 +493,7 @@ Window {
                     }
                 }
             }
-            
+
             Column { width: parent.width; spacing: 4
                 Text { text: "Volume"; color: notifWindow.textSecondary; font.pixelSize: 12 }
                 Slider { width: parent.width; from: 0; to: 100; value: 50; onMoved: Shell.setVolume(value) }
@@ -515,11 +502,10 @@ Window {
                 Text { text: "Brightness"; color: notifWindow.textSecondary; font.pixelSize: 12 }
                 Slider { width: parent.width; from: 10; to: 100; value: 75; onMoved: Shell.setBrightness(value) }
             }
-            
+
             Button {
                 width: parent.width; height: 40; flat: true
-                text: "Switch to " + (wallpaperWindow.currentTheme === "dark" ? "Light" : "Dark") + " Theme"
-                contentItem: Text { text: parent.text; anchors.centerIn: parent; color: notifWindow.textPrimary; font.pixelSize: 12 }
+                contentItem: Text { text: "Switch to " + (wallpaperWindow.currentTheme === "dark" ? "Light" : "Dark") + " Theme"; anchors.centerIn: parent; color: notifWindow.textPrimary; font.pixelSize: 12 }
                 background: Rectangle { radius: 10; color: notifWindow.hoverOverlay; border.color: notifWindow.cardBorder; border.width: 1 }
                 onClicked: {
                     var newTheme = wallpaperWindow.currentTheme === "dark" ? "light" : "dark"
@@ -534,7 +520,7 @@ Window {
     }
 }
 
-// ---------- Signal Handlers ----------
+// Signal handlers
 Connections {
     target: Shell
     function onClockUpdated(time, date) {
@@ -548,7 +534,7 @@ Connections {
     }
 }
 
-// Keyboard shortcuts at application level
+// Global keyboard shortcuts
 Shortcut { sequence: "Super+T"; onActivated: Shell.openTerminal() }
 Shortcut { sequence: "Super+E"; onActivated: Shell.openFiles() }
 Shortcut { sequence: "Super+S"; onActivated: Shell.openSettings() }

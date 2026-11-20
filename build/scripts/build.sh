@@ -153,6 +153,18 @@ if [ -d "${EDITION_DIR}/hooks" ]; then
     cp "${EDITION_DIR}/hooks/"* config/hooks/live/
 fi
 
+# Set edition marker in the chroot (overrides default "home")
+echo "${EDITION}" > "config/includes.chroot/etc/bright-os/edition"
+
+# For Lite edition, disable unnecessary services and set lighter defaults
+if [ "${EDITION}" = "lite" ]; then
+    # Mask heavy services for Lite
+    mkdir -p config/includes.chroot/etc/systemd/system
+    for svc in bluetooth.service cups.service snapd.service ModemManager.service; do
+        ln -sf /dev/null "config/includes.chroot/etc/systemd/system/${svc}" 2>/dev/null || true
+    done
+fi
+
 # Export environment for auto/config
 export BRIGHT_EDITION="$EDITION"
 export BRIGHT_ARCH="$ARCH"

@@ -29,7 +29,7 @@ console-setup
 console-setup-linux
 sudo
 policykit-1
-polkitd
+policykit-1-gnome
 pciutils
 usbutils
 kmod
@@ -112,10 +112,13 @@ libqt6quickcontrols2-6
 libqt6dbus6
 libqt6network6
 libqt6svg6
+libqt6waylandclient6
+libqt6waylandcompositor6
 qml6-module-qtquick-shapes
-qml6-module-qtquick-effects
 qml6-module-qtquick-particles
 qml6-module-qtgraphicaleffects
+qml6-module-qt-labs-folderlistmodel
+qml6-module-qt-labs-settings
 
 # System utilities
 htop
@@ -204,10 +207,9 @@ fuse3
 fuseiso
 ntfs-3g
 exfatprogs
-discover
+plasma-discover
 discover-backend-flatpak
 discover-backend-apt
-snapd
 cups
 cups-filters
 printer-driver-all
@@ -243,7 +245,6 @@ imagemagick
 # Additional essentials
 command-not-found
 bash-completion
-plasma-discover
 partitionmanager
 print-manager
 kcalc
