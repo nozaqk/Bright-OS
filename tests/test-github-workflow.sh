@@ -160,6 +160,9 @@ fi
 
 echo ""
 echo "--- Build environment ---"
+# Search both workflow and CI scripts for build environment details
+SEARCH_TARGET="$WF build/scripts/ci/build-in-container.sh build/scripts/ci/validate-in-container.sh"
+
 # Check that build runs on ubuntu-latest
 if grep -q "runs-on: ubuntu-latest" "$WF"; then
     pass "Uses ubuntu-latest runners"
@@ -167,23 +170,23 @@ else
     fail "Should use ubuntu-latest runners"
 fi
 
-# Check Debian Trixie container is used
-if grep -q "debian:trixie" "$WF"; then
+# Check Debian Trixie container is used (in workflow or CI scripts)
+if grep -q "debian:trixie" $SEARCH_TARGET; then
     pass "Builds inside Debian Trixie Docker container"
 else
     fail "Should use Debian Trixie container for build environment"
 fi
 
 # Check container runs with --privileged for chroot operations
-if grep -q "\-\-privileged" "$WF"; then
+if grep -q "\-\-privileged" $SEARCH_TARGET; then
     pass "Docker container runs with --privileged (needed for chroot mounts)"
 else
     fail "Docker container needs --privileged for chroot/mount operations"
 fi
 
-# Check build dependencies are installed
+# Check build dependencies are installed (in CI scripts)
 for dep in live-build debootstrap squashfs-tools xorriso isolinux grub-pc-bin grub-efi-amd64-bin; do
-    if grep -q "$dep" "$WF"; then
+    if grep -q "$dep" build/scripts/ci/build-in-container.sh; then
         pass "Build dependency '${dep}' is installed in container"
     else
         fail "Build dependency '${dep}' not found in container install step"
@@ -208,15 +211,15 @@ fi
 
 echo ""
 echo "--- Build command ---"
-# Check build script is called correctly
-if grep -q "bash build/scripts/build.sh" "$WF"; then
+# Check build script is called correctly (in CI scripts)
+if grep -q "build/scripts/build.sh" build/scripts/ci/build-in-container.sh; then
     pass "Calls build/scripts/build.sh"
 else
     fail "Should call build/scripts/build.sh"
 fi
 
 # Check --version flag is used
-if grep -q "\-\-version" "$WF"; then
+if grep -q "\-\-version" build/scripts/ci/build-in-container.sh; then
     pass "Passes --version flag to build script"
 else
     fail "Should pass --version flag"
@@ -224,53 +227,46 @@ fi
 
 echo ""
 echo "--- ISO validation ---"
-# Check ISO existence check
-if grep -q "ISO not found" "$WF"; then
+# Check ISO existence check (in CI scripts)
+if grep -q "ISO not found\|Expected ISO not found" build/scripts/ci/build-in-container.sh build/scripts/ci/validate-in-container.sh; then
     pass "Checks for ISO existence after build"
 else
     fail "Should check for ISO existence"
 fi
 
 # Check ISO size check
-if grep -q "ISO_SIZE_MB" "$WF" && grep -q "lt 100" "$WF"; then
+if grep -q "ISO_SIZE_MB" build/scripts/ci/validate-in-container.sh && grep -q "lt 100\|< 100" build/scripts/ci/validate-in-container.sh; then
     pass "Rejects ISOs smaller than 100 MB"
 else
     fail "Should reject suspiciously small ISOs"
 fi
 
 # Check GitHub 2 GiB size limit
-if grep -q "2147483648\|2048" "$WF"; then
+if grep -q "2147483648\|2048" build/scripts/ci/validate-in-container.sh; then
     pass "Checks GitHub 2 GiB asset size limit"
 else
     fail "Should check GitHub's 2 GiB per-file limit"
 fi
 
 # Check validate-iso.sh is run
-if grep -q "validate-iso.sh" "$WF"; then
+if grep -q "validate-iso.sh" build/scripts/ci/validate-in-container.sh; then
     pass "Runs validate-iso.sh for structural validation"
 else
     fail "Should run validate-iso.sh"
 fi
 
 # Check checksum verification
-if grep -q "sha256sum -c" "$WF"; then
+if grep -q "sha256sum -c" build/scripts/ci/validate-in-container.sh; then
     pass "Verifies SHA256 checksum after build"
 else
     fail "Should verify SHA256 checksum"
 fi
 
-# Check validate-iso runs inside Debian container (for correct tools)
-# Look for validate-iso being run inside docker
-VALIDATE_CTX=$(awk '/Validate ISO/,/Upload artifact/' "$WF" 2>/dev/null || true)
-if echo "$VALIDATE_CTX" | grep -q "debian:trixie"; then
+# Check validate-iso runs inside Debian container
+if grep -q "debian:trixie" build/scripts/ci/validate-in-container.sh; then
     pass "Validation runs inside Debian Trixie container (correct tool versions)"
 else
-    # Less strict: just check that genisoimage/xorriso are available
-    if echo "$VALIDATE_CTX" | grep -q "genisoimage\|isoinfo"; then
-        pass "Validation installs isoinfo/genisoimage tools"
-    else
-        fail "Validation should install and use ISO inspection tools"
-    fi
+    fail "Validation should run inside Debian Trixie container"
 fi
 
 echo ""
@@ -386,8 +382,7 @@ fi
 
 # Check all three ISOs are uploaded to release
 for edition in home developer lite; do
-    if grep -q "bright-os-.*-${edition}-amd64\.iso.*\\" "$WF" || \
-       grep -q "bright-os-\${VERSION}-${edition}-amd64\.iso" "$WF"; then
+    if grep -q "bright-os-.*-${edition}-amd64" "$WF"; then
         pass "Release includes ${edition} edition ISO"
     else
         fail "Release should include ${edition} edition ISO"
@@ -444,6 +439,50 @@ else
 fi
 
 # =============================================================================
+
+echo ""
+echo "--- CI helper scripts ---"
+if [ -f "build/scripts/ci/build-in-container.sh" ]; then
+    pass "CI build helper script exists"
+    if bash -n build/scripts/ci/build-in-container.sh 2>/dev/null; then
+        pass "CI build script syntax valid"
+    else
+        fail "CI build script has syntax errors"
+    fi
+else
+    fail "Missing CI build helper script (build/scripts/ci/build-in-container.sh)"
+fi
+
+if [ -f "build/scripts/ci/validate-in-container.sh" ]; then
+    pass "CI validate helper script exists"
+    if bash -n build/scripts/ci/validate-in-container.sh 2>/dev/null; then
+        pass "CI validate script syntax valid"
+    else
+        fail "CI validate script has syntax errors"
+    fi
+else
+    fail "Missing CI validate helper script (build/scripts/ci/validate-in-container.sh)"
+fi
+
+if grep -q "build/scripts/ci/build-in-container.sh" "$WF"; then
+    pass "Workflow uses CI build-in-container.sh helper"
+else
+    fail "Workflow should use build/scripts/ci/build-in-container.sh"
+fi
+
+if grep -q "build/scripts/ci/validate-in-container.sh" "$WF"; then
+    pass "Workflow uses CI validate-in-container.sh helper"
+else
+    fail "Workflow should use build/scripts/ci/validate-in-container.sh"
+fi
+
+# download-artifact v4 does not support merge-multiple
+if ! grep -q "merge-multiple" "$WF"; then
+    pass "No invalid merge-multiple option (removed for download-artifact v4)"
+else
+    fail "merge-multiple is not a valid option for download-artifact v4"
+fi
+
 echo ""
 echo "============================================"
 echo "  Results: $PASS passed, $FAIL failed"
