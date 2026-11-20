@@ -1,13 +1,19 @@
 #!/bin/bash
-# Bright OS live-build binary hook: Verify and report EFI boot status
+# Bright OS live-build binary hook: Verify and report BIOS/UEFI boot status
 #
 # This hook runs during the binary stage, after live-build has set up
 # bootloader files but before the ISO image is created. It verifies
-# that both BIOS and UEFI boot structures are present.
+# that BIOS and UEFI boot structures are present and reports status.
 #
-# On modern live-build (Debian Trixie+), these are created automatically
-# when --bootloaders includes grub-efi. On older live-build (Ubuntu 24.04),
-# EFI setup may be incomplete; this hook reports the situation clearly.
+# On modern live-build (Debian Trixie+), boot structures are created
+# automatically when --bootloaders includes grub-efi. On older live-build
+# (Ubuntu 24.04), EFI setup may be incomplete; this hook attempts to
+# create the EFI boot image if host tools are available, and fails clearly
+# if UEFI boot cannot be guaranteed.
+#
+# Environment variables:
+#   BRIGHT_REQUIRE_UEFI=1  (default) fail if UEFI boot unavailable
+#   BRIGHT_REQUIRE_UEFI=0  allow BIOS-only builds with clear warning
 
 set -e
 
@@ -15,25 +21,34 @@ echo "Bright OS: Verifying BIOS/UEFI boot structures..."
 
 BIOS_OK=false
 UEFI_OK=false
+UEFI_CREATED=false
 
 # --- Check BIOS boot ---
-# Check for isolinux (legacy BIOS via ISOLINUX)
-if [ -f isolinux/isolinux.bin ] || [ -f binary/isolinux/isolinux.bin ]; then
-    BIOS_OK=true
-    echo "  BIOS boot: ISOLINUX found"
-fi
-# Check for GRUB BIOS boot image
-if [ -f boot/grub/bios.img ] || [ -f binary/boot/grub/bios.img ] || \
-   [ -f boot/grub/i386-pc/eltorito.img ] || [ -f binary/boot/grub/i386-pc/eltorito.img ]; then
-    BIOS_OK=true
-    echo "  BIOS boot: GRUB BIOS image found"
+for path in isolinux/isolinux.bin binary/isolinux/isolinux.bin \
+            boot/grub/bios.img binary/boot/grub/bios.img \
+            boot/grub/i386-pc/eltorito.img binary/boot/grub/i386-pc/eltorito.img \
+            boot/grub/i386-pc/cdboot.img binary/boot/grub/i386-pc/cdboot.img; do
+    if [ -f "$path" ]; then
+        BIOS_OK=true
+        break
+    fi
+done
+if [ "$BIOS_OK" = true ]; then
+    echo "  BIOS boot: structures found (isolinux/GRUB BIOS)"
+else
+    echo "  BIOS boot: checking more locations..."
+    # Live-build may place files differently depending on version
+    if [ -f chroot/usr/lib/ISOLINUX/isolinux.bin ] || [ -f /usr/lib/ISOLINUX/isolinux.bin ]; then
+        BIOS_OK=true
+        echo "  BIOS boot: ISOLINUX binary available"
+    fi
 fi
 
 # --- Check UEFI boot ---
-# Check for EFI boot image (standard location for isohybrid EFI)
 for path in boot/grub/efi.img binary/boot/grub/efi.img \
             EFI/boot/efiboot.img binary/EFI/boot/efiboot.img \
-            EFI/efiboot.img binary/EFI/efiboot.img; do
+            EFI/efiboot.img binary/EFI/efiboot.img \
+            boot/grub/efi.img binary/boot/grub/efi.img; do
     if [ -f "$path" ]; then
         UEFI_OK=true
         echo "  UEFI boot: EFI boot image found at $path"
@@ -41,93 +56,120 @@ for path in boot/grub/efi.img binary/boot/grub/efi.img \
     fi
 done
 
-# Check for EFI boot binary (bootx64.efi)
-for path in EFI/boot/bootx64.efi binary/EFI/boot/bootx64.efi \
-            EFI/BOOT/bootx64.efi binary/EFI/BOOT/bootx64.efi; do
+if [ "$UEFI_OK" = false ]; then
+    for path in EFI/boot/bootx64.efi binary/EFI/boot/bootx64.efi \
+                EFI/BOOT/bootx64.efi binary/EFI/BOOT/bootx64.efi; do
+        if [ -f "$path" ]; then
+            UEFI_OK=true
+            echo "  UEFI boot: bootx64.efi found at $path"
+            break
+        fi
+    done
+fi
+
+# Check if chroot has grub-efi modules (needed for EFI boot)
+HAS_GRUB_EFI_MODULES=false
+for path in chroot/usr/lib/grub/x86_64-efi/modinfo.sh \
+            binary/usr/lib/grub/x86_64-efi/modinfo.sh \
+            /usr/lib/grub/x86_64-efi/modinfo.sh; do
     if [ -f "$path" ]; then
-        UEFI_OK=true
-        echo "  UEFI boot: bootx64.efi found at $path"
+        HAS_GRUB_EFI_MODULES=true
         break
     fi
 done
+if [ "$HAS_GRUB_EFI_MODULES" = true ]; then
+    echo "  UEFI boot: GRUB EFI modules present"
+fi
 
-# Check if chroot has grub-efi (needed for EFI boot setup)
-if [ -f chroot/usr/lib/grub/x86_64-efi/modinfo.sh ] || \
-   [ -f binary/usr/lib/grub/x86_64-efi/modinfo.sh ]; then
-    echo "  UEFI boot: GRUB EFI modules present in chroot/binary"
+# --- Attempt to create EFI image if missing and tools exist ---
+if [ "$BIOS_OK" = true ] && [ "$UEFI_OK" = false ] && [ "$HAS_GRUB_EFI_MODULES" = true ]; then
+    echo ""
+    echo "  UEFI boot image not created by live-build; checking host tools..."
+    
+    if command -v grub-mkstandalone >/dev/null 2>&1 && \
+       command -v mformat >/dev/null 2>&1 && \
+       command -v mcopy >/dev/null 2>&1; then
+        echo "  Attempting to create EFI boot image using host tools..."
+        
+        mkdir -p EFI/boot binary/EFI/boot boot/grub binary/boot/grub
+        EFI_IMG=boot/grub/efi.img
+        
+        # Locate grub.cfg
+        GRUB_CFG=""
+        for c in config/includes.binary/boot/grub/grub.cfg \
+                 boot/grub/grub.cfg binary/boot/grub/grub.cfg; do
+            [ -f "$c" ] && GRUB_CFG="$c" && break
+        done
+        
+        if [ -n "$GRUB_CFG" ]; then
+            # Create 10MB FAT EFI system partition image
+            if dd if=/dev/zero of="$EFI_IMG" bs=1M count=10 2>/dev/null; then
+                # Format as FAT
+                if mkfs.vfat "$EFI_IMG" >/dev/null 2>&1 || mformat -i "$EFI_IMG" -f 1440 :: 2>/dev/null; then
+                    mmd -i "$EFI_IMG" ::/efi ::/efi/boot 2>/dev/null || true
+                    
+                    BOOTX64=$(mktemp)
+                    if grub-mkstandalone --format=x86_64-efi --output="$BOOTX64" \
+                       --locales="" --fonts="" \
+                       "boot/grub/grub.cfg=$GRUB_CFG" 2>/dev/null; then
+                        mcopy -i "$EFI_IMG" "$BOOTX64" ::/efi/boot/bootx64.efi 2>/dev/null
+                        cp "$BOOTX64" EFI/boot/bootx64.efi 2>/dev/null || true
+                        cp "$BOOTX64" binary/EFI/boot/bootx64.efi 2>/dev/null || true
+                        echo "  [OK] Created EFI boot image via grub-mkstandalone"
+                        UEFI_OK=true
+                        UEFI_CREATED=true
+                    else
+                        echo "  [WARNING] grub-mkstandalone failed (GRUB EFI modules may not match)"
+                        rm -f "$EFI_IMG"
+                    fi
+                    rm -f "$BOOTX64"
+                else
+                    echo "  [WARNING] Could not format EFI image as FAT"
+                    rm -f "$EFI_IMG"
+                fi
+            fi
+        else
+            echo "  Cannot create EFI image: grub.cfg not found"
+        fi
+    else
+        echo "  Host tools for EFI image creation not available."
+        echo "  Required: grub-mkstandalone (grub-efi-amd64-bin), mformat, mcopy (mtools)"
+    fi
 fi
 
 # --- Report results ---
 echo ""
 if [ "$BIOS_OK" = true ] && [ "$UEFI_OK" = true ]; then
-    echo "  [OK] Both BIOS and UEFI boot structures present"
+    if [ "$UEFI_CREATED" = true ]; then
+        echo "  [OK] BIOS boot: present"
+        echo "  [OK] UEFI boot: present (created via hook — verify with QEMU before release)"
+    else
+        echo "  [OK] Both BIOS and UEFI boot structures present"
+    fi
 elif [ "$BIOS_OK" = true ] && [ "$UEFI_OK" = false ]; then
-    echo "  [WARNING] BIOS boot present but UEFI boot structure NOT found"
-    echo "  The ISO may boot on BIOS systems but may fail on UEFI systems."
+    echo "  [WARNING] BIOS boot: present"
+    echo "  [WARNING] UEFI boot: NOT configured"
     echo ""
-    echo "  This typically means the host's live-build version does not"
-    echo "  automatically configure UEFI boot for iso-hybrid images."
+    echo "  The ISO will boot on BIOS/CSM systems but likely NOT on pure UEFI systems."
     echo ""
-    echo "  Recommended actions:"
-    echo "    1. Build on Debian Trixie (full --bootloaders support)"
-    echo "    2. Install grub-efi-amd64-bin and mtools on the host"
-    echo "    3. Set BRIGHT_REQUIRE_UEFI=0 to skip this check (BIOS-only build)"
+    echo "  To fix:"
+    echo "    1. Build on Debian Trixie (full --bootloaders grub-pc,grub-efi support)"
+    echo "    2. Install grub-efi-amd64-bin and mtools on the build host"
     echo ""
     
-    # Check if we should fail hard
     if [ "${BRIGHT_REQUIRE_UEFI:-1}" = "1" ]; then
-        # Check if host tools exist to create EFI image
-        if command -v grub-mkstandalone &>/dev/null && \
-           command -v mformat &>/dev/null && \
-           command -v mcopy &>/dev/null; then
-            echo "  Attempting to create EFI boot image using host tools..."
-            # Try to create minimal EFI boot image
-            mkdir -p EFI/boot binary/EFI/boot
-            EFI_IMG=boot/grub/efi.img
-            mkdir -p boot/grub binary/boot/grub
-            
-            GRUB_CFG=""
-            for c in config/includes.binary/boot/grub/grub.cfg \
-                     boot/grub/grub.cfg binary/boot/grub/grub.cfg; do
-                [ -f "$c" ] && GRUB_CFG="$c" && break
-            done
-            
-            if [ -n "$GRUB_CFG" ] && [ -f chroot/boot/vmlinuz ] 2>/dev/null; then
-                dd if=/dev/zero of="$EFI_IMG" bs=1M count=10 2>/dev/null
-                mkfs.vfat "$EFI_IMG" >/dev/null 2>&1 || mformat -i "$EFI_IMG" -f 1440 :: 2>/dev/null
-                mmd -i "$EFI_IMG" ::/efi ::/efi/boot 2>/dev/null || true
-                
-                BOOTX64=$(mktemp)
-                if grub-mkstandalone --format=x86_64-efi --output="$BOOTX64" \
-                   --locales="" --fonts="" \
-                   "boot/grub/grub.cfg=$GRUB_CFG" 2>/dev/null; then
-                    mcopy -i "$EFI_IMG" "$BOOTX64" ::/efi/boot/bootx64.efi 2>/dev/null
-                    cp "$BOOTX64" EFI/boot/bootx64.efi
-                    cp "$BOOTX64" binary/EFI/boot/bootx64.efi
-                    echo "  [OK] Created EFI boot image"
-                    UEFI_OK=true
-                else
-                    echo "  [WARNING] grub-mkstandalone failed"
-                    rm -f "$EFI_IMG"
-                fi
-                rm -f "$BOOTX64"
-            else
-                echo "  Cannot create EFI image: missing chroot kernel or grub.cfg"
-            fi
-        fi
-        
-        if [ "$UEFI_OK" = false ]; then
-            echo "  [ERROR] UEFI boot cannot be configured on this host."
-            echo "  Build aborted because BRIGHT_REQUIRE_UEFI=1 (default)."
-            echo "  Set BRIGHT_REQUIRE_UEFI=0 to build BIOS-only, or build on Debian Trixie."
-            exit 1
-        fi
+        echo "  [ERROR] UEFI boot cannot be confirmed."
+        echo "  Build aborted because BRIGHT_REQUIRE_UEFI=1 (default)."
+        echo "  Set BRIGHT_REQUIRE_UEFI=0 to build BIOS-only (NOT RECOMMENDED)."
+        exit 1
     else
-        echo "  Continuing (BRIGHT_REQUIRE_UEFI=0); ISO may be BIOS-only"
+        echo "  Continuing with BRIGHT_REQUIRE_UEFI=0 — ISO is BIOS-only."
+        echo "  This is NOT recommended for release builds."
     fi
 elif [ "$BIOS_OK" = false ] && [ "$UEFI_OK" = true ]; then
-    echo "  [WARNING] UEFI boot present but BIOS boot NOT found"
-    echo "  This is unusual; the ISO may not boot on legacy BIOS systems."
+    echo "  [WARNING] UEFI boot: present"
+    echo "  [WARNING] BIOS boot: NOT found (unusual)"
+    echo "  The ISO may not boot on legacy BIOS systems."
 else
     echo "  [ERROR] Neither BIOS nor UEFI boot structures found!"
     echo "  Cannot produce a bootable ISO."

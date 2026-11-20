@@ -344,26 +344,39 @@ done
 echo ""
 info "live-build capability detection:"
 if command -v lb >/dev/null 2>&1; then
+    # Capture both stdout and stderr
     LB_HELP=$(lb config --help 2>&1 || true)
+    # Extract all --long-option tokens for exact matching (avoids singular/plural
+    # false matches and handles all help formats robustly)
+    LB_OPTIONS=$(echo "$LB_HELP" | grep -oE '\-\-[a-z][a-z0-9\-]+' | sort -u)
     LB_HAS_MODERN_BOOTLOADERS=false
     LB_HAS_SECURE_BOOT=false
     
-    if echo "$LB_HELP" | grep -qE "(^|[[:space:]])--bootloaders([[:space:]]|$|\|)"; then
+    lb_has_opt() {
+        echo "$LB_OPTIONS" | grep -qFxe "$1"
+    }
+    
+    if lb_has_opt "--bootloaders"; then
         pass "live-build supports --bootloaders (modern: BIOS+UEFI explicit)"
         LB_HAS_MODERN_BOOTLOADERS=true
-    elif echo "$LB_HELP" | grep -qE "(^|[[:space:]])--bootloader([[:space:]]|$|\|)"; then
-        warn "live-build has only --bootloader (legacy: UEFI may need manual setup)"
-        warn "  For best results build on Debian Trixie with modern live-build"
+    elif lb_has_opt "--bootloader"; then
+        warn "live-build has only --bootloader (legacy Ubuntu/Debian fork)"
+        warn "  BIOS boot: auto-configured via isolinux; UEFI via grub-efi packages"
+        warn "  For best results (Secure Boot, native UEFI), build on Debian Trixie"
+        LB_HAS_MODERN_BOOTLOADERS=false
     else
         fail "live-build: cannot determine bootloader option support"
+        info "  Neither --bootloaders nor --bootloader found in 'lb config --help'."
+        info "  This may be an unsupported or broken live-build installation."
     fi
     
-    if echo "$LB_HELP" | grep -qE "(^|[[:space:]])--uefi-secure-boot([[:space:]]|$|\|)"; then
+    if lb_has_opt "--uefi-secure-boot"; then
         pass "live-build supports --uefi-secure-boot (Secure Boot configuration)"
         LB_HAS_SECURE_BOOT=true
     else
         warn "live-build does not support --uefi-secure-boot"
         warn "  Secure Boot will rely on shim-signed package only; no signed EFI integration"
+        LB_HAS_SECURE_BOOT=false
     fi
     
     if [ "$LB_HAS_MODERN_BOOTLOADERS" = false ]; then
