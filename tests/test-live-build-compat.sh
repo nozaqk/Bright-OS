@@ -66,15 +66,17 @@ create_mock_lb() {
             secureboot_help="--uefi-secure-boot auto|enable|disable"
             ;;
         legacy)
-            # Ubuntu 24.04 live-build 3.0~a57-1ubuntuXX (confirmed real help format)
+            # Ubuntu 24.04 live-build 3.0~a57-1ubuntuXX (confirmed real help format).
+            # Verified in Codespace: this version DOES support --hdd-label (and
+            # correctly generates LB_HDD_LABEL="BRIGHT_OS" when passed).
             bootloader_help="--bootloader grub|syslinux|yaboot"
             arch_opt="--architectures"
             binary_opt="--binary-images"
             mode_opt="--mode debian|emdebian|ubuntu|kubuntu"
             # Ubuntu legacy DOES support --parent-archive-areas (confirmed from manpage)
             has_parent_areas="yes"
-            # Ubuntu legacy 3.0~a57 may not support --hdd-label (has --hdd-size instead)
-            has_hdd_label="no"
+            # Ubuntu legacy DOES support --hdd-label (verified: 3.0~a57-1)
+            has_hdd_label="yes"
             ;;
         partial-bootloaders)
             # Has modern bootloaders but no secure boot
@@ -95,7 +97,13 @@ create_mock_lb() {
             has_mode="no"
             ;;
         no-hdd-label)
-            # Has mode/bootloaders but no --hdd-label option (older version)
+            # Simulates an older live-build version that supports --mode and
+            # --bootloaders but predates the --hdd-label option (e.g. a pre-Trixie
+            # snapshot or a trimmed-down fork). In this case, auto/config must
+            # warn about the missing --hdd-label and continue with the live-build
+            # default rather than failing. This scenario does NOT correspond to
+            # Ubuntu 24.04 live-build 3.0~a57-1, which is verified to support
+            # --hdd-label (see the "legacy" case above).
             bootloader_help="--bootloaders grub-legacy|grub-pc|syslinux|grub-efi"
             secureboot_help="--uefi-secure-boot auto|enable|disable"
             has_hdd_label="no"
@@ -367,16 +375,16 @@ if echo "$OUTPUT" | grep -qi "secure boot"; then
 else
     fail "Legacy: does not warn about Secure Boot limitation"
 fi
-# Legacy (Ubuntu 24.04) does NOT support --hdd-label; should warn and omit
-if echo "$ARGS" | grep -q -- "--hdd-label"; then
-    fail "Legacy: should NOT pass --hdd-label (not supported in this version)"
+# Legacy (Ubuntu 24.04 live-build 3.0~a57-1) DOES support --hdd-label (verified)
+if echo "$ARGS" | grep -q -- "--hdd-label BRIGHT_OS"; then
+    pass "Legacy: passes --hdd-label BRIGHT_OS (verified supported on 3.0~a57-1)"
 else
-    pass "Legacy: correctly omits --hdd-label (not supported)"
+    fail "Legacy: --hdd-label BRIGHT_OS missing (should be supported on this version)"
 fi
-if echo "$OUTPUT" | grep -qi "hdd-label.*not support\|hdd-label.*unsupported\|default HDD label"; then
-    pass "Legacy: warns about --hdd-label not supported"
+if echo "$OUTPUT" | grep -qi "HDD label.*BRIGHT_OS"; then
+    pass "Legacy: reports BRIGHT_OS HDD label status"
 else
-    fail "Legacy: does not warn about missing --hdd-label support"
+    fail "Legacy: does not report BRIGHT_OS HDD label"
 fi
 
 echo ""
@@ -670,6 +678,7 @@ Usage: lb config [options]
   --apt-recommends true|false
   --apt-options OPTIONS
   --syslinux-theme THEME_SUFFIX
+  --hdd-label LABEL
 HELP
     exit 0
 fi
@@ -681,6 +690,7 @@ if [ "$1" = "config" ]; then
     KEYRING="ubuntu-keyring"  # DEFAULT on Ubuntu
     ARCH=""
     BOOTLOADER=""
+    HDD_LABEL=""        # If --hdd-label passed, use that; otherwise default per mode
     while [ $# -gt 0 ]; do
         case "$1" in
             noauto) ;;
@@ -689,9 +699,14 @@ if [ "$1" = "config" ]; then
             --keyring-packages) shift; KEYRING="$1" ;;
             --architectures) shift; ARCH="$1" ;;
             --bootloader) shift; BOOTLOADER="$1" ;;
+            --hdd-label) shift; HDD_LABEL="$1" ;;
         esac
         shift
     done
+    # Default HDD label depends on mode unless explicitly overridden by --hdd-label
+    if [ -z "$HDD_LABEL" ]; then
+        HDD_LABEL="$( [ "$MODE" = "ubuntu" ] && echo "UBUNTU" || echo "DEBIAN_LIVE" )"
+    fi
     mkdir -p config
     cat > config/bootstrap << EOBT
 LB_MODE="${MODE}"
@@ -699,10 +714,10 @@ LB_DISTRIBUTION="${DIST}"
 LB_KEYRING_PACKAGES="${KEYRING}"
 LB_ARCHITECTURES="${ARCH}"
 LB_BOOTLOADER="${BOOTLOADER}"
-LB_HDD_LABEL="$( [ "$MODE" = "ubuntu" ] && echo "UBUNTU" || echo "DEBIAN_LIVE" )"
+LB_HDD_LABEL="${HDD_LABEL}"
 LB_SYSLINUX_THEME="$( [ "$MODE" = "ubuntu" ] && echo "ubuntu-oneiric" || echo "live-build" )"
 EOBT
-    echo "LB_ARGS written to config/bootstrap (MODE=$MODE, KEYRING=$KEYRING)"
+    echo "LB_ARGS written to config/bootstrap (MODE=$MODE, KEYRING=$KEYRING, HDD_LABEL=$HDD_LABEL)"
     exit 0
 fi
 exit 1
@@ -758,11 +773,19 @@ else
     pass "Integration (Ubuntu host): no ubuntu-keyring in generated config"
 fi
 
-# Check HDD label not UBUNTU
-if grep -q 'UBUNTU' config/bootstrap; then
-    fail "Integration (Ubuntu host): UBUNTU HDD label present (branding leak)"
+# Check HDD label is BRIGHT_OS (--hdd-label supported on this version)
+if grep -q 'LB_HDD_LABEL="BRIGHT_OS"' config/bootstrap; then
+    pass "Integration (Ubuntu host): LB_HDD_LABEL=BRIGHT_OS (custom label applied)"
 else
-    pass "Integration (Ubuntu host): HDD label is not UBUNTU"
+    HDD_VAL=$(grep LB_HDD_LABEL config/bootstrap || echo "not found")
+    fail "Integration (Ubuntu host): LB_HDD_LABEL not BRIGHT_OS — got: $HDD_VAL"
+fi
+
+# Check no UBUNTU anywhere in config
+if grep -q 'UBUNTU' config/bootstrap; then
+    fail "Integration (Ubuntu host): UBUNTU string present (branding leak)"
+else
+    pass "Integration (Ubuntu host): no UBUNTU string in generated config"
 fi
 
 # Check syslinux theme not ubuntu-oneiric
