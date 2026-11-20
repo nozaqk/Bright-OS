@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Bright OS
+Description=Bright OS boot splash theme
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/bright-os
+ScriptFile=/usr/share/plymouth/themes/bright-os/bright-os.script

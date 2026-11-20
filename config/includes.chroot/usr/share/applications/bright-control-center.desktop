@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Bright Control Center
+Comment=Bright Control Center for Bright OS
+Exec=bright-control-center
+Icon=preferences-desktop
+Terminal=false
+Type=Application
+Categories=System;Settings;Utility;
+StartupNotify=true

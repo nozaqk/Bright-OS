@@ -1,0 +1,13 @@
+#!/bin/sh
+# Bright OS live-build auto/build
+# Custom build wrapper with edition support
+
+set -e
+
+echo "=== Building Bright OS ==="
+
+# Run the standard build
+lb build noauto "${@}"
+
+echo "=== Build complete ==="
+echo "ISO should be in the current directory."

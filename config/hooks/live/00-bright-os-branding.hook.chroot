@@ -1,0 +1,43 @@
+#!/bin/sh
+# Bright OS branding hook - runs inside the chroot during build
+set -e
+
+echo "Applying Bright OS branding..."
+
+# Install our custom desktop entry for SDDM
+cat > /usr/share/wayland-sessions/bright.desktop <<EOF
+[Desktop Entry]
+Name=Bright Desktop
+Comment=Bright OS Desktop Environment
+Exec=/usr/bin/bright-desktop-shell
+TryExec=/usr/bin/bright-desktop-shell
+Type=Application
+DesktopNames=Bright
+EOF
+
+# Also create X11 session entry as fallback
+cat > /usr/share/xsessions/bright.desktop <<EOF
+[Desktop Entry]
+Name=Bright Desktop (X11)
+Comment=Bright OS Desktop Environment (X11 fallback)
+Exec=/usr/bin/bright-desktop-shell
+TryExec=/usr/bin/bright-desktop-shell
+Type=Application
+DesktopNames=Bright
+EOF
+
+# Set default Plymouth theme if available
+if command -v plymouth-set-default-theme &>/dev/null; then
+    # Will be replaced by our theme when packaged
+    plymouth-set-default-theme -R bright-os 2>/dev/null || true
+fi
+
+# Install Bright OS wallpaper links
+mkdir -p /usr/share/backgrounds/bright-os
+if [ -d /usr/share/bright-os/wallpapers ]; then
+    for wp in /usr/share/bright-os/wallpapers/*; do
+        ln -sf "$wp" /usr/share/backgrounds/bright-os/ 2>/dev/null || true
+    done
+fi
+
+echo "Bright OS branding applied."

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Bright Desktop (X11)
+Comment=Bright OS Desktop Environment (X11 fallback)
+Exec=/usr/bin/bright-desktop-shell
+TryExec=/usr/bin/bright-desktop-shell
+Type=Application
+DesktopNames=Bright

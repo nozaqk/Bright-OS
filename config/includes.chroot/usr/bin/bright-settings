@@ -1,0 +1,375 @@
+#!/usr/bin/env python3
+"""
+Bright Settings - System settings panel for Bright OS
+"""
+import sys
+import os
+import subprocess
+from pathlib import Path
+from datetime import datetime
+
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QListWidget, QListWidgetItem, QStackedWidget, QLabel, QPushButton,
+    QSlider, QComboBox, QCheckBox, QSpinBox, QGroupBox, QFormLayout,
+    QLineEdit, QScrollArea, QFrame, QGridLayout, QMessageBox, QTabWidget,
+    QSizePolicy, QFileDialog, QProgressBar, QColorDialog
+)
+from PyQt6.QtCore import Qt, QSize, pyqtSignal
+from PyQt6.QtGui import QIcon, QFont, QColor
+
+APP_NAME = "Bright Settings"
+APP_VERSION = "0.1.0-alpha"
+
+DARK = """
+QMainWindow, QWidget { background: #0f172a; color: #e2e8f0; font-size: 13px; }
+QListWidget { background: #1e293b; border: none; border-radius: 0; padding: 8px; outline: none; }
+QListWidget::item { padding: 10px 12px; border-radius: 8px; margin-bottom: 2px; color: #cbd5e1; }
+QListWidget::item:selected { background: #3b82f6; color: white; }
+QListWidget::item:hover { background: #334155; }
+QGroupBox { border: 1px solid #334155; border-radius: 10px; margin-top: 16px; padding: 16px; font-weight: bold; font-size: 14px; }
+QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 8px; color: #94a3b8; }
+QPushButton { background: #3b82f6; color: white; border: none; border-radius: 8px; padding: 8px 16px; font-weight: medium; }
+QPushButton:hover { background: #2563eb; }
+QPushButton:flat { background: transparent; color: #94a3b8; }
+QPushButton:flat:hover { background: #334155; color: #e2e8f0; }
+QSlider::groove:horizontal { height: 6px; background: #334155; border-radius: 3px; }
+QSlider::handle:horizontal { background: #3b82f6; width: 18px; height: 18px; margin: -6px 0; border-radius: 9px; }
+QSlider::sub-page:horizontal { background: #3b82f6; border-radius: 3px; }
+QComboBox { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 8px; padding: 6px 12px; }
+QComboBox QAbstractItemView { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; selection-background-color: #3b82f6; }
+QLineEdit { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 8px; padding: 6px 12px; }
+QCheckBox { spacing: 8px; }
+QCheckBox::indicator { width: 18px; height: 18px; border-radius: 4px; border: 2px solid #475569; background: #1e293b; }
+QCheckBox::indicator:checked { background: #3b82f6; border-color: #3b82f6; }
+QSpinBox { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 8px; padding: 4px 8px; }
+QTabWidget::pane { border: 1px solid #334155; border-radius: 8px; top: -1px; }
+QTabBar::tab { background: transparent; color: #94a3b8; padding: 8px 16px; border-bottom: 2px solid transparent; }
+QTabBar::tab:selected { color: #e2e8f0; border-bottom-color: #3b82f6; }
+QScrollArea { border: none; }
+QScrollBar:vertical { background: #0f172a; width: 8px; }
+QScrollBar::handle:vertical { background: #334155; border-radius: 4px; }
+QFrame#separator { background: #334155; max-height: 1px; }
+QLabel#sectionTitle { font-size: 22px; font-weight: bold; color: #f1f5f9; }
+QLabel#sectionDesc { color: #64748b; font-size: 13px; margin-bottom: 16px; }
+"""
+
+
+class SettingsPage(QWidget):
+    """Base class for settings pages"""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(32, 24, 32, 24)
+        self.layout.setSpacing(16)
+
+
+class AppearancePage(SettingsPage):
+    def __init__(self):
+        super().__init__()
+        
+        title = QLabel("Appearance")
+        title.setObjectName("sectionTitle")
+        self.layout.addWidget(title)
+        
+        desc = QLabel("Customize the look and feel of Bright Desktop")
+        desc.setObjectName("sectionDesc")
+        self.layout.addWidget(desc)
+        
+        # Theme
+        theme_group = QGroupBox("Theme")
+        form = QFormLayout(theme_group)
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(["Dark", "Light"])
+        self.theme_combo.currentTextChanged.connect(self.change_theme)
+        form.addRow("Color Theme:", self.theme_combo)
+        
+        self.accent_btn = QPushButton("Accent Color: Blue")
+        self.accent_btn.clicked.connect(self.pick_accent)
+        form.addRow("Accent Color:", self.accent_btn)
+        self.layout.addWidget(theme_group)
+        
+        # Wallpaper
+        wp_group = QGroupBox("Wallpaper")
+        wp_layout = QVBoxLayout(wp_group)
+        self.wp_label = QLabel("Current: bright-default-dark.svg")
+        wp_layout.addWidget(self.wp_label)
+        browse = QPushButton("Browse Wallpapers...")
+        browse.clicked.connect(self.browse_wallpaper)
+        wp_layout.addWidget(browse)
+        self.layout.addWidget(wp_group)
+        
+        # Fonts
+        font_group = QGroupBox("Fonts")
+        font_form = QFormLayout(font_group)
+        self.font_size = QSpinBox()
+        self.font_size.setRange(8, 24)
+        self.font_size.setValue(10)
+        font_form.addRow("Interface Font Size:", self.font_size)
+        self.layout.addWidget(font_group)
+        
+        self.layout.addStretch()
+    
+    def change_theme(self, theme):
+        subprocess.run(["bright-desktop-shell", "--set-theme", theme.lower()], 
+                      capture_output=True)
+    
+    def pick_accent(self):
+        color = QColorDialog.getColor(QColor("#3b82f6"), self, "Choose Accent Color")
+        if color.isValid():
+            self.accent_btn.setText(f"Accent Color: {color.name()}")
+    
+    def browse_wallpaper(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Wallpaper", str(Path.home() / "Pictures"),
+            "Images (*.png *.jpg *.jpeg *.svg *.bmp)"
+        )
+        if path:
+            self.wp_label.setText(f"Current: {Path(path).name}")
+
+
+class DisplayPage(SettingsPage):
+    def __init__(self):
+        super().__init__()
+        
+        title = QLabel("Display")
+        title.setObjectName("sectionTitle")
+        self.layout.addWidget(title)
+        
+        desc = QLabel("Configure display resolution, scaling, and brightness")
+        desc.setObjectName("sectionDesc")
+        self.layout.addWidget(desc)
+        
+        # Brightness
+        bright_group = QGroupBox("Brightness")
+        bl = QVBoxLayout(bright_group)
+        self.bright_slider = QSlider(Qt.Orientation.Horizontal)
+        self.bright_slider.setRange(10, 100)
+        self.bright_slider.setValue(75)
+        bl.addWidget(QLabel("Screen Brightness"))
+        bl.addWidget(self.bright_slider)
+        self.layout.addWidget(bright_group)
+        
+        # Scaling
+        scale_group = QGroupBox("Scale")
+        sl = QFormLayout(scale_group)
+        self.scale_combo = QComboBox()
+        self.scale_combo.addItems(["100%", "125%", "150%", "175%", "200%"])
+        sl.addRow("Display Scale:", self.scale_combo)
+        self.layout.addWidget(scale_group)
+        
+        # Night light
+        nl_group = QGroupBox("Night Light")
+        nl_layout = QVBoxLayout(nl_group)
+        self.nl_toggle = QCheckBox("Enable Night Light")
+        nl_layout.addWidget(self.nl_toggle)
+        self.nl_temp = QSlider(Qt.Orientation.Horizontal)
+        self.nl_temp.setRange(2000, 6500)
+        self.nl_temp.setValue(4000)
+        nl_layout.addWidget(QLabel("Color Temperature"))
+        nl_layout.addWidget(self.nl_temp)
+        self.layout.addWidget(nl_group)
+        
+        self.layout.addStretch()
+
+
+class NetworkPage(SettingsPage):
+    def __init__(self):
+        super().__init__()
+        title = QLabel("Network")
+        title.setObjectName("sectionTitle")
+        self.layout.addWidget(title)
+        desc = QLabel("Manage Wi-Fi, Ethernet, VPN, and network settings")
+        desc.setObjectName("sectionDesc")
+        self.layout.addWidget(desc)
+        
+        info_group = QGroupBox("Connection Status")
+        il = QVBoxLayout(info_group)
+        try:
+            result = subprocess.run(["nmcli", "general", "status"], capture_output=True, text=True)
+            status = result.stdout if result.returncode == 0 else "Network Manager not running"
+        except Exception:
+            status = "Cannot determine network status"
+        label = QLabel(status.replace("\n", "<br>"))
+        label.setTextFormat(Qt.TextFormat.RichText)
+        label.setWordWrap(True)
+        label.setStyleSheet("font-family: 'Hack', monospace; font-size: 12px; color: #94a3b8;")
+        il.addWidget(label)
+        
+        btn = QPushButton("Open Network Manager")
+        btn.clicked.connect(lambda: subprocess.Popen(["nm-connection-editor"]))
+        il.addWidget(btn)
+        self.layout.addWidget(info_group)
+        self.layout.addStretch()
+
+
+class SoundPage(SettingsPage):
+    def __init__(self):
+        super().__init__()
+        title = QLabel("Sound")
+        title.setObjectName("sectionTitle")
+        self.layout.addWidget(title)
+        
+        out_group = QGroupBox("Output")
+        ol = QVBoxLayout(out_group)
+        self.vol_slider = QSlider(Qt.Orientation.Horizontal)
+        self.vol_slider.setRange(0, 100)
+        self.vol_slider.setValue(50)
+        ol.addWidget(QLabel("Master Volume"))
+        ol.addWidget(self.vol_slider)
+        self.mute_check = QCheckBox("Mute")
+        ol.addWidget(self.mute_check)
+        self.layout.addWidget(out_group)
+        
+        self.layout.addStretch()
+
+
+class PowerPage(SettingsPage):
+    def __init__(self):
+        super().__init__()
+        title = QLabel("Power")
+        title.setObjectName("sectionTitle")
+        self.layout.addWidget(title)
+        
+        power_group = QGroupBox("Power Saving")
+        pl = QFormLayout(power_group)
+        self.screen_off = QComboBox()
+        self.screen_off.addItems(["1 minute", "5 minutes", "10 minutes", "Never"])
+        self.screen_off.setCurrentIndex(1)
+        pl.addRow("Turn screen off after:", self.screen_off)
+        
+        self.suspend_combo = QComboBox()
+        self.suspend_combo.addItems(["10 minutes", "20 minutes", "30 minutes", "1 hour", "Never"])
+        pl.addRow("Suspend after:", self.suspend_combo)
+        
+        self.battery_percent = QLabel("Checking...")
+        pl.addRow("Battery:", self.battery_percent)
+        self.layout.addWidget(power_group)
+        self.layout.addStretch()
+        
+        self.check_battery()
+    
+    def check_battery(self):
+        bat = Path("/sys/class/power_supply/BAT0")
+        if bat.exists():
+            try:
+                cap = (bat / "capacity").read_text().strip()
+                status = (bat / "status").read_text().strip()
+                self.battery_percent.setText(f"{cap}% ({status})")
+            except Exception:
+                self.battery_percent.setText("Unknown")
+        else:
+            self.battery_percent.setText("No battery detected (desktop)")
+
+
+class AboutPage(SettingsPage):
+    def __init__(self):
+        super().__init__()
+        title = QLabel("About Bright OS")
+        title.setObjectName("sectionTitle")
+        self.layout.addWidget(title)
+        
+        info_group = QGroupBox("System Information")
+        il = QFormLayout(info_group)
+        
+        try:
+            with open("/etc/os-release") as f:
+                osrel = {}
+                for line in f:
+                    if "=" in line:
+                        k, v = line.strip().split("=", 1)
+                        osrel[k] = v.strip('"')
+        except Exception:
+            osrel = {}
+        
+        try:
+            kernel = subprocess.run(["uname", "-r"], capture_output=True, text=True).stdout.strip()
+        except Exception:
+            kernel = "unknown"
+        
+        try:
+            mem = subprocess.run(["free", "-h"], capture_output=True, text=True).stdout.split("\n")[1].split()[1]
+        except Exception:
+            mem = "unknown"
+        
+        il.addRow("OS:", QLabel(f"Bright OS {osrel.get('VERSION', '0.1 Alpha')}"))
+        il.addRow("Edition:", QLabel(osrel.get("BRIGHT_EDITION", "home").title()))
+        il.addRow("Version:", QLabel(osrel.get("VERSION_ID", "0.1.0-alpha")))
+        il.addRow("Kernel:", QLabel(kernel))
+        il.addRow("Memory:", QLabel(mem))
+        il.addRow("Desktop:", QLabel("Bright Desktop"))
+        il.addRow("Qt:", QLabel("6"))
+        
+        self.layout.addWidget(info_group)
+        
+        # Support links
+        support_group = QGroupBox("Support")
+        sl = QVBoxLayout(support_group)
+        github_btn = QPushButton("GitHub: nozaqk/Bright-OS")
+        github_btn.clicked.connect(lambda: subprocess.Popen(["xdg-open", "https://github.com/nozaqk/Bright-OS"]))
+        sl.addWidget(github_btn)
+        self.layout.addWidget(support_group)
+        self.layout.addStretch()
+
+
+class BrightSettings(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle(APP_NAME)
+        self.setMinimumSize(900, 650)
+        self.resize(1000, 700)
+        self.setStyleSheet(DARK)
+        
+        central = QWidget()
+        self.setCentralWidget(central)
+        layout = QHBoxLayout(central)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        
+        # Sidebar
+        self.sidebar = QListWidget()
+        self.sidebar.setFixedWidth(220)
+        self.sidebar.setIconSize(QSize(20, 20))
+        
+        categories = [
+            ("\u2699\uFE0F  Appearance", AppearancePage),
+            ("\uD83D\uDDA5\uFE0F  Display", DisplayPage),
+            ("\uD83D\uDCF6  Network", NetworkPage),
+            ("\uD83D\uDD0A  Sound", SoundPage),
+            ("\uD83D\uDD0B  Power", PowerPage),
+            ("\u2139\uFE0F  About", AboutPage),
+        ]
+        
+        self.stack = QStackedWidget()
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        
+        for name, page_class in categories:
+            item = QListWidgetItem(name)
+            self.sidebar.addItem(item)
+            page = page_class()
+            scroll_wrap = QScrollArea()
+            scroll_wrap.setWidgetResizable(True)
+            scroll_wrap.setFrameShape(QFrame.Shape.NoFrame)
+            scroll_wrap.setWidget(page)
+            self.stack.addWidget(scroll_wrap)
+        
+        self.sidebar.currentRowChanged.connect(self.stack.setCurrentIndex)
+        self.sidebar.setCurrentRow(0)
+        
+        layout.addWidget(self.sidebar)
+        layout.addWidget(self.stack, 1)
+
+
+def main():
+    QApplication.setApplicationName("bright-settings")
+    QApplication.setApplicationDisplayName(APP_NAME)
+    app = QApplication(sys.argv)
+    w = BrightSettings()
+    w.show()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

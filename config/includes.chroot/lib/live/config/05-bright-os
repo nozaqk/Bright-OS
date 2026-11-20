@@ -1,0 +1,128 @@
+#!/bin/sh
+# Bright OS live system configuration hook
+# Sets up Bright OS branding and defaults in the live environment
+
+set -e
+
+# Read edition
+EDITION=$(cat /etc/bright-os/edition 2>/dev/null || echo "home")
+
+# Set hostname
+echo "bright-os" > /etc/hostname
+
+# Set default theme for live user
+if [ -d /etc/skel/.config ]; then
+    mkdir -p /etc/skel/.config
+    
+    # Set Bright Desktop shell as default
+    cat > /etc/skel/.config/bright-desktop.conf <<EOF
+[General]
+Theme=dark
+Wallpaper=/usr/share/bright-os/wallpapers/bright-default-dark.svg
+DockPosition=bottom
+DockIconSize=48
+AnimationsEnabled=true
+
+[Dock]
+Position=bottom
+IconSize=48
+AutoHide=false
+ShowWindows=true
+ShowLauncher=true
+ShowTrash=true
+
+[Shell]
+PanelHeight=40
+PanelPosition=top
+ShowClock=true
+ShowTray=true
+ShowBattery=true
+ShowNetwork=true
+EOF
+
+    # SDDM autologin for live session
+    mkdir -p /etc/sddm.conf.d
+    cat > /etc/sddm.conf.d/bright-os-autologin.conf <<EOF
+[Autologin]
+User=user
+Session=bright.desktop
+Relogin=true
+
+[Theme]
+Current=breeze
+
+[Wayland]
+EnableHiDPI=true
+
+[X11]
+EnableHiDPI=true
+EOF
+fi
+
+# Create live user if it doesn't exist
+if ! id user &>/dev/null; then
+    useradd -m -s /bin/bash -G sudo,audio,video,netdev,bluetooth,lp,scanner user
+    echo "user:live" | chpasswd
+    echo "user ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/bright-live
+    chmod 440 /etc/sudoers.d/bright-live
+fi
+
+# Set up motd
+cat > /etc/motd <<EOF
+
+Welcome to Bright OS ${EDITION^} Edition
+==============================
+
+Default live user: user / live
+To install, run the Calamares installer from the desktop.
+
+For documentation: https://github.com/nozaqk/Bright-OS
+
+EOF
+
+# Set issue (TTY login screen)
+cat > /etc/issue <<EOF
+Bright OS \l
+
+EOF
+
+# Create os-release overrides
+cat > /etc/os-release <<EOF
+PRETTY_NAME="Bright OS ${EDITION^} (Alpha)"
+NAME="Bright OS"
+VERSION_ID="0.1"
+VERSION="0.1.0-alpha (${EDITION})"
+VERSION_CODENAME=dawn
+ID=bright
+ID_LIKE=debian
+HOME_URL="https://github.com/nozaqk/Bright-OS"
+SUPPORT_URL="https://github.com/nozaqk/Bright-OS/issues"
+BUG_REPORT_URL="https://github.com/nozaqk/Bright-OS/issues"
+PRIVACY_POLICY_URL="https://github.com/nozaqk/Bright-OS"
+BRIGHT_EDITION="${EDITION}"
+BRIGHT_VERSION="0.1.0-alpha"
+DEBIAN_CODENAME=bookworm
+EOF
+
+# Set default shell theme
+mkdir -p /etc/skel/.config/bright-os
+cp /etc/skel/.config/bright-desktop.conf /etc/skel/.config/bright-os/shell.conf 2>/dev/null || true
+
+# Enable necessary services
+if command -v systemctl &>/dev/null; then
+    systemctl enable NetworkManager.service 2>/dev/null || true
+    systemctl enable firewalld.service 2>/dev/null || true
+    systemctl enable sddm.service 2>/dev/null || true
+    systemctl enable udisks2.service 2>/dev/null || true
+    systemctl enable upower.service 2>/dev/null || true
+    systemctl enable bluetooth.service 2>/dev/null || true
+    systemctl enable cups.service 2>/dev/null || true
+    systemctl set-default graphical.target 2>/dev/null || true
+fi
+
+# Configure flatpak repo
+if command -v flatpak &>/dev/null; then
+    flatpak remote-add --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo 2>/dev/null || true
+fi
+
+echo "Bright OS live configuration complete (edition: ${EDITION})"

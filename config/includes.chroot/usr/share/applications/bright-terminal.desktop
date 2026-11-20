@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Bright Terminal
+Comment=Bright Terminal for Bright OS
+Exec=bright-terminal
+Icon=utilities-terminal
+Terminal=false
+Type=Application
+Categories=System;Settings;Utility;
+StartupNotify=true

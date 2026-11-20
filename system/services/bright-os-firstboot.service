@@ -1,0 +1,12 @@
+[Unit]
+Description=Bright OS First Boot Setup
+Before=display-manager.service
+ConditionPathExists=!/etc/bright-os/firstboot-done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/bright-os/firstboot-setup
+RemainAfterExit=yes
+
+[Install]
+WantedBy=graphical.target

@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""
+Bright Update Manager - System updates for Bright OS
+"""
+import sys
+import subprocess
+from PyQt6.QtWidgets import *
+from PyQt6.QtCore import Qt, QThread, pyqtSignal
+
+APP_NAME = "Bright Update Manager"
+STYLE = """
+QMainWindow, QWidget { background: #0f172a; color: #e2e8f0; font-size: 13px; }
+QPushButton { background: #3b82f6; color: white; border: none; border-radius: 8px; padding: 10px 20px; font-weight: bold; font-size: 14px; }
+QPushButton:hover { background: #2563eb; }
+QPushButton:disabled { background: #334155; color: #64748b; }
+QProgressBar { background: #1e293b; border: none; border-radius: 8px; height: 24px; text-align: center; font-weight: bold; }
+QProgressBar::chunk { background: #3b82f6; border-radius: 8px; }
+QTextEdit { background: #0a0e1a; color: #94a3b8; border: 1px solid #334155; border-radius: 8px; font-family: monospace; padding: 8px; }
+QLabel#big { font-size: 24px; font-weight: bold; color: #f1f5f9; }
+"""
+
+
+class UpdateWorker(QThread):
+    output = pyqtSignal(str)
+    finished_ok = pyqtSignal(bool)
+    
+    def run(self):
+        try:
+            self.output.emit("Refreshing package lists...")
+            p = subprocess.run(["pkexec", "apt-get", "update"], capture_output=True, text=True)
+            self.output.emit(p.stdout + p.stderr)
+            self.output.emit("\nChecking for updates...")
+            p2 = subprocess.run(["apt-get", "-s", "upgrade"], capture_output=True, text=True)
+            self.output.emit(p2.stdout)
+            self.finished_ok.emit(True)
+        except Exception as e:
+            self.output.emit(f"Error: {e}")
+            self.finished_ok.emit(False)
+
+
+class InstallWorker(QThread):
+    output = pyqtSignal(str)
+    finished_ok = pyqtSignal(bool)
+    
+    def run(self):
+        try:
+            p = subprocess.Popen(["pkexec", "apt-get", "dist-upgrade", "-y"],
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            for line in p.stdout:
+                self.output.emit(line.strip())
+            p.wait()
+            self.finished_ok.emit(p.returncode == 0)
+        except Exception as e:
+            self.output.emit(f"Error: {e}")
+            self.finished_ok.emit(False)
+
+
+class BrightUpdate(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle(APP_NAME)
+        self.setMinimumSize(700, 500)
+        self.setStyleSheet(STYLE)
+        
+        central = QWidget()
+        self.setCentralWidget(central)
+        lay = QVBoxLayout(central)
+        lay.setContentsMargins(32, 32, 32, 32)
+        
+        self.title = QLabel("System Updates")
+        self.title.setObjectName("big")
+        lay.addWidget(self.title)
+        
+        self.status = QLabel("Click 'Check for Updates' to begin")
+        self.status.setStyleSheet("color: #94a3b8;")
+        lay.addWidget(self.status)
+        
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)
+        self.progress.setVisible(False)
+        lay.addWidget(self.progress)
+        
+        self.log = QTextEdit(); self.log.setReadOnly(True); self.log.setMinimumHeight(200)
+        lay.addWidget(self.log)
+        
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        self.check_btn = QPushButton("Check for Updates")
+        self.check_btn.clicked.connect(self.check_updates)
+        btn_row.addWidget(self.check_btn)
+        self.install_btn = QPushButton("Install Updates")
+        self.install_btn.setEnabled(False)
+        self.install_btn.clicked.connect(self.install_updates)
+        btn_row.addWidget(self.install_btn)
+        lay.addLayout(btn_row)
+    
+    def check_updates(self):
+        self.check_btn.setEnabled(False)
+        self.progress.setVisible(True)
+        self.log.clear()
+        self.worker = UpdateWorker()
+        self.worker.output.connect(lambda t: self.log.append(t))
+        self.worker.finished_ok.connect(self._check_done)
+        self.worker.start()
+    
+    def _check_done(self, ok):
+        self.progress.setVisible(False)
+        self.check_btn.setEnabled(True)
+        if ok:
+            self.status.setText("Update check complete")
+            self.install_btn.setEnabled(True)
+    
+    def install_updates(self):
+        self.install_btn.setEnabled(False)
+        self.check_btn.setEnabled(False)
+        self.progress.setVisible(True)
+        self.status.setText("Installing updates...")
+        self.iworker = InstallWorker()
+        self.iworker.output.connect(lambda t: self.log.append(t))
+        self.iworker.finished_ok.connect(self._install_done)
+        self.iworker.start()
+    
+    def _install_done(self, ok):
+        self.progress.setVisible(False)
+        self.check_btn.setEnabled(True)
+        self.status.setText("Updates installed successfully!" if ok else "Update failed")
+
+
+def main():
+    QApplication.setApplicationName("bright-update")
+    QApplication.setApplicationDisplayName(APP_NAME)
+    app = QApplication(sys.argv)
+    w = BrightUpdate(); w.show()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

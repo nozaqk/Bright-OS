@@ -1,0 +1,346 @@
+#!/usr/bin/env python3
+"""
+Bright Files - File manager for Bright OS
+A clean, modern file manager with sidebar navigation and grid/list views.
+"""
+import sys
+import os
+import shutil
+import subprocess
+from pathlib import Path
+from datetime import datetime
+
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QTreeView, QListView, QSplitter, QLineEdit, QToolBar, QPushButton,
+    QStatusBar, QFileSystemModel, QMenu, QMessageBox, QFileDialog,
+    QInputDialog, QAbstractItemView, QStyledItemDelegate, QStyle,
+    QToolButton, QLabel, QFrame, QGridLayout, QScrollArea
+)
+from PyQt6.QtCore import Qt, QDir, QSize, QModelIndex, QUrl, pyqtSignal, QFileInfo
+from PyQt6.QtGui import QIcon, QAction, QKeySequence, QFont, QColor, QDesktopServices, QPixmap
+
+APP_NAME = "Bright Files"
+APP_VERSION = "0.1.0-alpha"
+
+# File type icons (emoji-based for universal compatibility)
+FOLDER_ICON = "\U0001F4C1"
+FILE_ICONS = {
+    ".txt": "\U0001F4C4", ".md": "\U0001F4DD", ".pdf": "\U0001F4D5",
+    ".doc": "\U0001F4D8", ".docx": "\U0001F4D8", ".xls": "\U0001F4D7",
+    ".xlsx": "\U0001F4D7", ".ppt": "\U0001F4D9", ".pptx": "\U0001F4D9",
+    ".py": "\U0001F40D", ".js": "\U0001F4DC", ".html": "\U0001F310",
+    ".css": "\U0001F3A8", ".json": "\U0001F4CB", ".xml": "\U0001F4CB",
+    ".png": "\U0001F5BC", ".jpg": "\U0001F5BC", ".jpeg": "\U0001F5BC",
+    ".gif": "\U0001F5BC", ".svg": "\U0001F5BC", ".mp4": "\U0001F3AC",
+    ".mp3": "\U0001F3B5", ".wav": "\U0001F3B5", ".flac": "\U0001F3B5",
+    ".zip": "\U0001F4E6", ".tar": "\U0001F4E6", ".gz": "\U0001F4E6",
+    ".deb": "\U0001F4E6", ".exe": "\u2699\uFE0F", ".sh": "\u25B6\uFE0F",
+}
+
+
+class FileIconDelegate(QStyledItemDelegate):
+    """Custom delegate that shows emoji icons for files/folders"""
+    def paint(self, painter, option, index):
+        if option.state & QStyle.StateFlag.State_Selected:
+            painter.fillRect(option.rect, QColor("#3b82f6"))
+        file_info = QFileInfo(index.model().filePath(index))
+        name = file_info.fileName()
+        icon = FOLDER_ICON if file_info.isDir() else FILE_ICONS.get(
+            Path(name).suffix.lower(), "\U0001F4C4"
+        )
+        painter.save()
+        icon_size = 32
+        text_rect = option.rect.adjusted(icon_size + 12, 0, 0, 0)
+        # Draw icon
+        painter.setFont(QFont(option.font.family(), icon_size // 2))
+        painter.drawText(
+            option.rect.adjusted(4, 4, 0, 0),
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+            icon
+        )
+        # Draw name
+        color = QColor("#f1f5f9") if option.state & QStyle.StateFlag.State_Selected else QColor("#e2e8f0")
+        if not (option.state & QStyle.StateFlag.State_Selected) and option.state & QStyle.StateFlag.State_MouseOver:
+            painter.fillRect(option.rect, QColor("#ffffff10"))
+        painter.setPen(color)
+        painter.setFont(option.font)
+        painter.drawText(text_rect, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, name)
+        painter.restore()
+    
+    def sizeHint(self, option, index):
+        return QSize(option.rect.width(), 32)
+
+
+class BrightFiles(QMainWindow):
+    def __init__(self, initial_path=None):
+        super().__init__()
+        self.setWindowTitle(APP_NAME)
+        self.setMinimumSize(900, 600)
+        self.resize(1100, 700)
+        self.setStyleSheet("""
+            QMainWindow { background: #0f172a; }
+            QToolBar { background: #1e293b; border: none; spacing: 6px; padding: 6px; }
+            QToolButton { background: transparent; color: #94a3b8; border: none; padding: 6px 12px; border-radius: 6px; font-size: 14px; }
+            QToolButton:hover { background: #334155; color: #e2e8f0; }
+            QLineEdit { background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 8px; padding: 6px 12px; font-size: 13px; }
+            QTreeView, QListView { background: #0f172a; color: #e2e8f0; border: none; outline: none; font-size: 13px; }
+            QTreeView::item:selected, QListView::item:selected { background: #3b82f6; color: white; }
+            QTreeView::item:hover, QListView::item:hover { background: #ffffff10; }
+            QTreeView::branch { background: #0f172a; }
+            QStatusBar { background: #1e293b; color: #94a3b8; font-size: 12px; border-top: 1px solid #334155; }
+            QSplitter::handle { background: #334155; width: 1px; }
+            QScrollBar:vertical { background: #0f172a; width: 10px; margin: 0; }
+            QScrollBar::handle:vertical { background: #334155; border-radius: 5px; min-height: 20px; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+        """)
+        
+        # Toolbar
+        toolbar = QToolBar()
+        toolbar.setMovable(False)
+        toolbar.setIconSize(QSize(20, 20))
+        self.addToolBar(toolbar)
+        
+        back_btn = QToolButton()
+        back_btn.setText("\u2B05")
+        back_btn.clicked.connect(self.go_back)
+        toolbar.addWidget(back_btn)
+        
+        fwd_btn = QToolButton()
+        fwd_btn.setText("\u27A1")
+        toolbar.addWidget(fwd_btn)
+        
+        up_btn = QToolButton()
+        up_btn.setText("\u2B06")
+        up_btn.clicked.connect(self.go_up)
+        toolbar.addWidget(up_btn)
+        
+        toolbar.addSeparator()
+        
+        self.path_edit = QLineEdit()
+        self.path_edit.returnPressed.connect(self.navigate_to_path)
+        toolbar.addWidget(self.path_edit)
+        
+        toolbar.addSeparator()
+        
+        new_folder_btn = QToolButton()
+        new_folder_btn.setText("\U0001F4C1+")
+        new_folder_btn.setToolTip("New Folder")
+        new_folder_btn.clicked.connect(self.new_folder)
+        toolbar.addWidget(new_folder_btn)
+        
+        # Sidebar + main view
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        
+        # Sidebar
+        sidebar = QWidget()
+        sidebar.setFixedWidth(200)
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(8, 8, 4, 8)
+        sidebar_layout.setSpacing(2)
+        
+        sidebar_label = QLabel("PLACES")
+        sidebar_label.setStyleSheet("color: #64748b; font-size: 11px; font-weight: bold; padding: 4px 8px;")
+        sidebar_layout.addWidget(sidebar_label)
+        
+        self.places = [
+            ("\U0001F3E0  Home", str(Path.home())),
+            ("\U0001F4C1  Documents", str(Path.home() / "Documents")),
+            ("\U0001F5BC  Pictures", str(Path.home() / "Pictures")),
+            ("\u2B07\uFE0F  Downloads", str(Path.home() / "Downloads")),
+            ("\U0001F3B5  Music", str(Path.home() / "Music")),
+            ("\U0001F3AC  Videos", str(Path.home() / "Videos")),
+            ("\U0001F5D1\uFE0F  Trash", "trash:///"),
+            ("\U0001F4BE  Computer", "/"),
+        ]
+        
+        for label, path in self.places:
+            btn = QPushButton(label)
+            btn.setFlat(True)
+            btn.setStyleSheet("""
+                QPushButton { text-align: left; color: #cbd5e1; padding: 8px 12px; border-radius: 6px; font-size: 13px; }
+                QPushButton:hover { background: #1e293b; }
+            """)
+            btn.clicked.connect(lambda checked, p=path: self.navigate(p))
+            sidebar_layout.addWidget(btn)
+        
+        sidebar_layout.addStretch()
+        splitter.addWidget(sidebar)
+        
+        # Main file view
+        self.model = QFileSystemModel()
+        self.model.setRootPath(QDir.rootPath())
+        self.model.setFilter(QDir.Filter.AllEntries | QDir.Filter.NoDotAndDotDot | QDir.Filter.Hidden)
+        
+        self.tree_view = QTreeView()
+        self.tree_view.setModel(self.model)
+        self.tree_view.setRootIndex(self.model.index(str(Path.home())))
+        self.tree_view.setHeaderHidden(True)
+        self.tree_view.setColumnHidden(1, True)
+        self.tree_view.setColumnHidden(2, True)
+        self.tree_view.setColumnHidden(3, True)
+        self.tree_view.setItemDelegate(FileIconDelegate())
+        self.tree_view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree_view.customContextMenuRequested.connect(self.show_context_menu)
+        self.tree_view.doubleClicked.connect(self.on_double_click)
+        self.tree_view.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        
+        splitter.addWidget(self.tree_view)
+        splitter.setStretchFactor(1, 1)
+        
+        self.setCentralWidget(splitter)
+        
+        # Status bar
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
+        
+        # History
+        self.history = []
+        self.history_index = -1
+        
+        # Initial path
+        start_path = initial_path or str(Path.home())
+        self.navigate(start_path)
+        
+        # Keyboard shortcuts
+        delete_action = QAction("Delete", self)
+        delete_action.setShortcut(QKeySequence.Delete)
+        delete_action.triggered.connect(self.delete_selected)
+        self.addAction(delete_action)
+    
+    def navigate(self, path):
+        if path.startswith("trash"):
+            QMessageBox.information(self, "Trash", "Trash management coming in future version.")
+            return
+        idx = self.model.index(path)
+        if idx.isValid():
+            self.tree_view.setRootIndex(idx)
+            self.path_edit.setText(path)
+            self.history = self.history[:self.history_index + 1]
+            self.history.append(path)
+            self.history_index = len(self.history) - 1
+            self.update_status()
+    
+    def navigate_to_path(self):
+        path = self.path_edit.text()
+        if os.path.isdir(path):
+            self.navigate(path)
+    
+    def go_back(self):
+        if self.history_index > 0:
+            self.history_index -= 1
+            path = self.history[self.history_index]
+            idx = self.model.index(path)
+            self.tree_view.setRootIndex(idx)
+            self.path_edit.setText(path)
+    
+    def go_up(self):
+        current = self.path_edit.text()
+        parent = str(Path(current).parent)
+        if parent != current:
+            self.navigate(parent)
+    
+    def on_double_click(self, index):
+        path = self.model.filePath(index)
+        if os.path.isdir(path):
+            self.navigate(path)
+        else:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+    
+    def show_context_menu(self, pos):
+        index = self.tree_view.indexAt(pos)
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu { background: #1e293b; color: #e2e8f0; border: 1px solid #334155; border-radius: 8px; padding: 4px; }
+            QMenu::item { padding: 6px 24px; border-radius: 4px; }
+            QMenu::item:selected { background: #3b82f6; }
+            QMenu::separator { height: 1px; background: #334155; margin: 4px 8px; }
+        """)
+        
+        if index.isValid():
+            path = self.model.filePath(index)
+            open_action = menu.addAction("\U0001F4C2 Open")
+            menu.addSeparator()
+            rename_action = menu.addAction("\u270F\uFE0F Rename")
+            copy_action = menu.addAction("\U0001F4CB Copy")
+            delete_action = menu.addAction("\U0001F5D1\uFE0F Delete")
+            menu.addSeparator()
+            props_action = menu.addAction("\u2139\uFE0F Properties")
+            
+            action = menu.exec(self.tree_view.viewport().mapToGlobal(pos))
+            if action == open_action:
+                self.on_double_click(index)
+            elif action == delete_action:
+                self.delete_path(path)
+            elif action == rename_action:
+                self.rename_path(path)
+        else:
+            new_folder = menu.addAction("\U0001F4C1 New Folder")
+            action = menu.exec(self.tree_view.viewport().mapToGlobal(pos))
+            if action == new_folder:
+                self.new_folder()
+    
+    def new_folder(self):
+        name, ok = QInputDialog.getText(self, "New Folder", "Folder name:")
+        if ok and name:
+            try:
+                os.makedirs(Path(self.path_edit.text()) / name, exist_ok=True)
+            except Exception as e:
+                QMessageBox.warning(self, "Error", str(e))
+    
+    def delete_selected(self):
+        indexes = self.tree_view.selectedIndexes()
+        if indexes:
+            path = self.model.filePath(indexes[0])
+            self.delete_path(path)
+    
+    def delete_path(self, path):
+        reply = QMessageBox.question(
+            self, "Delete", f"Move '{Path(path).name}' to trash?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                trash_dir = Path.home() / ".local" / "share" / "Trash" / "files"
+                trash_dir.mkdir(parents=True, exist_ok=True)
+                shutil.move(path, trash_dir / Path(path).name)
+            except Exception as e:
+                try:
+                    if os.path.isdir(path):
+                        shutil.rmtree(path)
+                    else:
+                        os.remove(path)
+                except Exception as e2:
+                    QMessageBox.warning(self, "Error", str(e2))
+    
+    def rename_path(self, path):
+        old_name = Path(path).name
+        new_name, ok = QInputDialog.getText(self, "Rename", "New name:", text=old_name)
+        if ok and new_name and new_name != old_name:
+            try:
+                os.rename(path, Path(path).parent / new_name)
+            except Exception as e:
+                QMessageBox.warning(self, "Error", str(e))
+    
+    def update_status(self):
+        current_path = self.path_edit.text()
+        try:
+            items = os.listdir(current_path)
+            self.status_bar.showMessage(f"{len(items)} items  |  {current_path}")
+        except Exception:
+            self.status_bar.showMessage(current_path)
+
+
+def main():
+    QApplication.setApplicationName("bright-files")
+    QApplication.setApplicationDisplayName(APP_NAME)
+    app = QApplication(sys.argv)
+    
+    initial = sys.argv[1] if len(sys.argv) > 1 else None
+    fm = BrightFiles(initial)
+    fm.show()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

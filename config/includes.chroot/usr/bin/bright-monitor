@@ -1,0 +1,279 @@
+#!/usr/bin/env python3
+"""
+Bright Monitor - Task manager and system monitor for Bright OS
+"""
+import sys
+import os
+import subprocess
+from pathlib import Path
+from datetime import datetime
+
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+    QTabWidget, QTableWidget, QTableWidgetItem, QLabel, QPushButton,
+    QProgressBar, QGroupBox, QGridLayout, QHeaderView, QFrame,
+    QMessageBox, QSplitter
+)
+from PyQt6.QtCore import Qt, QTimer, QProcess
+
+APP_NAME = "Bright Monitor"
+APP_VERSION = "0.1.0-alpha"
+
+STYLE = """
+QMainWindow, QWidget { background: #0f172a; color: #e2e8f0; font-size: 13px; }
+QTabWidget::pane { border: none; }
+QTabBar::tab { background: #1e293b; color: #94a3b8; padding: 10px 20px; border: none; border-top-left-radius: 8px; border-top-right-radius: 8px; margin-right: 2px; }
+QTabBar::tab:selected { background: #0f172a; color: #e2e8f0; }
+QTableWidget { background: #0f172a; alternate-background-color: #1e293b; gridline-color: #334155; border: 1px solid #334155; border-radius: 8px; }
+QTableWidget::item { padding: 4px 8px; }
+QTableWidget::item:selected { background: #3b82f6; }
+QHeaderView::section { background: #1e293b; color: #94a3b8; padding: 8px; border: none; border-bottom: 1px solid #334155; font-weight: bold; }
+QProgressBar { background: #1e293b; border: none; border-radius: 4px; height: 10px; text-align: center; }
+QProgressBar::chunk { background: #3b82f6; border-radius: 4px; }
+QGroupBox { border: 1px solid #334155; border-radius: 10px; margin-top: 16px; padding: 16px; font-weight: bold; }
+QGroupBox::title { left: 12px; padding: 0 8px; color: #94a3b8; }
+QPushButton { background: #ef4444; color: white; border: none; border-radius: 8px; padding: 8px 16px; }
+QPushButton:hover { background: #dc2626; }
+QLabel#metricValue { font-size: 28px; font-weight: bold; color: #f1f5f9; }
+QLabel#metricLabel { color: #64748b; font-size: 12px; }
+"""
+
+
+class ProcessesTab(QWidget):
+    def __init__(self):
+        super().__init__()
+        layout = QVBoxLayout(self)
+        
+        # Toolbar
+        bar = QHBoxLayout()
+        self.search = QLabel("Processes")
+        self.search.setStyleSheet("font-size: 16px; font-weight: bold;")
+        bar.addWidget(self.search)
+        bar.addStretch()
+        self.kill_btn = QPushButton("End Process")
+        self.kill_btn.clicked.connect(self.kill_selected)
+        bar.addWidget(self.kill_btn)
+        layout.addLayout(bar)
+        
+        # Process table
+        self.table = QTableWidget()
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["PID", "Name", "CPU %", "Memory %", "Status"])
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table.setAlternatingRowColors(True)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        layout.addWidget(self.table)
+        
+        self.refresh()
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.refresh)
+        self.timer.start(2000)
+    
+    def refresh(self):
+        try:
+            result = subprocess.run(
+                ["ps", "aux", "--sort=-%cpu"],
+                capture_output=True, text=True, timeout=5
+            )
+            lines = result.stdout.strip().split("\n")[1:]
+            self.table.setRowCount(min(len(lines), 50))
+            for i, line in enumerate(lines[:50]):
+                parts = line.split(None, 10)
+                if len(parts) >= 11:
+                    self.table.setItem(i, 0, QTableWidgetItem(parts[1]))
+                    self.table.setItem(i, 1, QTableWidgetItem(parts[10][:60]))
+                    self.table.setItem(i, 2, QTableWidgetItem(parts[2]))
+                    self.table.setItem(i, 3, QTableWidgetItem(parts[3]))
+                    self.table.setItem(i, 4, QTableWidgetItem(parts[7]))
+        except Exception:
+            pass
+    
+    def kill_selected(self):
+        row = self.table.currentRow()
+        if row >= 0:
+            pid_item = self.table.item(row, 0)
+            name_item = self.table.item(row, 1)
+            if pid_item:
+                pid = pid_item.text()
+                reply = QMessageBox.question(
+                    self, "End Process",
+                    f"Terminate process {name_item.text() if name_item else ''} (PID {pid})?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    subprocess.run(["kill", pid])
+
+
+class ResourcesTab(QWidget):
+    def __init__(self):
+        super().__init__()
+        layout = QVBoxLayout(self)
+        
+        # Summary cards
+        cards = QGridLayout()
+        cards.setSpacing(12)
+        
+        # CPU
+        cpu_box = QGroupBox("CPU")
+        cpu_layout = QVBoxLayout(cpu_box)
+        self.cpu_val = QLabel("--")
+        self.cpu_val.setObjectName("metricValue")
+        self.cpu_bar = QProgressBar()
+        self.cpu_bar.setRange(0, 100)
+        cpu_layout.addWidget(self.cpu_val)
+        cpu_layout.addWidget(self.cpu_bar)
+        self.cpu_detail = QLabel("-- cores")
+        self.cpu_detail.setObjectName("metricLabel")
+        cpu_layout.addWidget(self.cpu_detail)
+        cards.addWidget(cpu_box, 0, 0)
+        
+        # Memory
+        mem_box = QGroupBox("Memory")
+        mem_layout = QVBoxLayout(mem_box)
+        self.mem_val = QLabel("--")
+        self.mem_val.setObjectName("metricValue")
+        self.mem_bar = QProgressBar()
+        self.mem_bar.setRange(0, 100)
+        mem_layout.addWidget(self.mem_val)
+        mem_layout.addWidget(self.mem_bar)
+        self.mem_detail = QLabel("--")
+        self.mem_detail.setObjectName("metricLabel")
+        mem_layout.addWidget(self.mem_detail)
+        cards.addWidget(mem_box, 0, 1)
+        
+        # Disk
+        disk_box = QGroupBox("Disk")
+        disk_layout = QVBoxLayout(disk_box)
+        self.disk_val = QLabel("--")
+        self.disk_val.setObjectName("metricValue")
+        self.disk_bar = QProgressBar()
+        self.disk_bar.setRange(0, 100)
+        disk_layout.addWidget(self.disk_val)
+        disk_layout.addWidget(self.disk_bar)
+        self.disk_detail = QLabel("--")
+        self.disk_detail.setObjectName("metricLabel")
+        disk_layout.addWidget(self.disk_detail)
+        cards.addWidget(disk_box, 0, 2)
+        
+        # Network
+        net_box = QGroupBox("Network")
+        net_layout = QVBoxLayout(net_box)
+        self.net_val = QLabel("--")
+        self.net_val.setObjectName("metricValue")
+        net_layout.addWidget(self.net_val)
+        self.net_detail = QLabel("--")
+        self.net_detail.setObjectName("metricLabel")
+        net_layout.addWidget(self.net_detail)
+        cards.addWidget(net_box, 1, 0)
+        
+        # Uptime
+        up_box = QGroupBox("Uptime")
+        up_layout = QVBoxLayout(up_box)
+        self.up_val = QLabel("--")
+        self.up_val.setObjectName("metricValue")
+        up_layout.addWidget(self.up_val)
+        cards.addWidget(up_box, 1, 1)
+        
+        # Processes
+        proc_box = QGroupBox("Processes")
+        proc_layout = QVBoxLayout(proc_box)
+        self.proc_val = QLabel("--")
+        self.proc_val.setObjectName("metricValue")
+        proc_layout.addWidget(self.proc_val)
+        cards.addWidget(proc_box, 1, 2)
+        
+        layout.addLayout(cards)
+        layout.addStretch()
+        
+        self.refresh()
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.refresh)
+        self.timer.start(2000)
+    
+    def refresh(self):
+        # CPU
+        try:
+            with open("/proc/loadavg") as f:
+                load = f.read().split()[0]
+            cpu_count = os.cpu_count() or 1
+            cpu_pct = min(100, float(load) / cpu_count * 100)
+            self.cpu_val.setText(f"{cpu_pct:.0f}%")
+            self.cpu_bar.setValue(int(cpu_pct))
+            self.cpu_detail.setText(f"{cpu_count} cores | Load: {load}")
+        except Exception:
+            pass
+        
+        # Memory
+        try:
+            with open("/proc/meminfo") as f:
+                mem = {}
+                for line in f:
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        mem[parts[0].rstrip(":")] = int(parts[1])
+            total = mem.get("MemTotal", 0)
+            avail = mem.get("MemAvailable", 0)
+            used = total - avail
+            pct = (used / total * 100) if total else 0
+            self.mem_val.setText(f"{pct:.0f}%")
+            self.mem_bar.setValue(int(pct))
+            self.mem_detail.setText(f"{used//1024} MB / {total//1024} MB")
+        except Exception:
+            pass
+        
+        # Disk
+        try:
+            stat = os.statvfs("/")
+            total_d = stat.f_blocks * stat.f_frsize
+            free_d = stat.f_bfree * stat.f_frsize
+            used_d = total_d - free_d
+            pct_d = (used_d / total_d * 100) if total_d else 0
+            self.disk_val.setText(f"{pct_d:.0f}%")
+            self.disk_bar.setValue(int(pct_d))
+            self.disk_detail.setText(f"/ : {used_d//(1024**3)} GB / {total_d//(1024**3)} GB")
+        except Exception:
+            pass
+        
+        # Uptime
+        try:
+            with open("/proc/uptime") as f:
+                up = float(f.read().split()[0])
+            hours = int(up // 3600)
+            mins = int((up % 3600) // 60)
+            self.up_val.setText(f"{hours}h {mins}m")
+        except Exception:
+            pass
+        
+        # Process count
+        try:
+            procs = len([p for p in os.listdir("/proc") if p.isdigit()])
+            self.proc_val.setText(str(procs))
+        except Exception:
+            pass
+
+
+class BrightMonitor(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle(APP_NAME)
+        self.setMinimumSize(800, 550)
+        self.resize(900, 650)
+        self.setStyleSheet(STYLE)
+        
+        tabs = QTabWidget()
+        tabs.addTab(ProcessesTab(), "\U0001F4CA Processes")
+        tabs.addTab(ResourcesTab(), "\u26A1 Resources")
+        self.setCentralWidget(tabs)
+
+
+def main():
+    QApplication.setApplicationName("bright-monitor")
+    QApplication.setApplicationDisplayName(APP_NAME)
+    app = QApplication(sys.argv)
+    w = BrightMonitor()
+    w.show()
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

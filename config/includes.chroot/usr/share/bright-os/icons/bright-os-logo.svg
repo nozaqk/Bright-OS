@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="mainGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#3b82f6"/>
+      <stop offset="50%" style="stop-color:#6366f1"/>
+      <stop offset="100%" style="stop-color:#8b5cf6"/>
+    </linearGradient>
+    <linearGradient id="innerGlow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#93c5fd"/>
+      <stop offset="100%" style="stop-color:#c4b5fd"/>
+    </linearGradient>
+    <filter id="shadow">
+      <feDropShadow dx="0" dy="4" stdDeviation="8" flood-color="#3b82f6" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+  
+  <!-- Outer circle - the "sun/radiance" -->
+  <circle cx="256" cy="256" r="230" fill="none" stroke="url(#mainGrad)" stroke-width="12" filter="url(#shadow)"/>
+  
+  <!-- Inner accent circle -->
+  <circle cx="256" cy="256" r="160" fill="none" stroke="url(#mainGrad)" stroke-width="6" opacity="0.6"/>
+  
+  <!-- Rays emanating outward -->
+  <g stroke="url(#mainGrad)" stroke-width="8" stroke-linecap="round" opacity="0.8">
+    <line x1="256" y1="10" x2="256" y2="60"/>
+    <line x1="256" y1="452" x2="256" y2="502"/>
+    <line x1="10" y1="256" x2="60" y2="256"/>
+    <line x1="452" y1="256" x2="502" y2="256"/>
+    <line x1="82" y1="82" x2="118" y2="118"/>
+    <line x1="394" y1="394" x2="430" y2="430"/>
+    <line x1="82" y1="430" x2="118" y2="394"/>
+    <line x1="394" y1="118" x2="430" y2="82"/>
+  </g>
+  
+  <!-- Center diamond - the "bright core" -->
+  <polygon points="256,130 382,256 256,382 130,256" fill="url(#mainGrad)"/>
+  <polygon points="256,180 332,256 256,332 180,256" fill="url(#innerGlow)" opacity="0.4"/>
+  
+  <!-- Center bright dot -->
+  <circle cx="256" cy="256" r="30" fill="white" opacity="0.95"/>
+  <circle cx="250" cy="250" r="18" fill="url(#innerGlow)" opacity="0.8"/>
+</svg>
