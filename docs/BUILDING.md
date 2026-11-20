@@ -160,6 +160,8 @@ Validation checks:
 
 Passing validation does **not** guarantee the ISO boots. Always test in QEMU first.
 
+The Calamares installer configuration is validated automatically by `tests/test-installer.sh` (YAML syntax, module ordering, LUKS/GRUB configuration). See [docs/INSTALLER.md](INSTALLER.md) for installation documentation, supported boot modes, and troubleshooting.
+
 ## Step 6: Test in QEMU (Optional but Recommended)
 
 ```bash

@@ -284,6 +284,9 @@ check_source_files() {
         "${CONFIG_DIR}/includes.chroot/usr/share/bright-os/bright-desktop-shell.py"
         "${CONFIG_DIR}/includes.chroot/usr/share/bright-os/design/DesignTokens.js"
         "${CONFIG_DIR}/includes.chroot/usr/share/bright-os/profiles/EditionProfiles.js"
+        "${CONFIG_DIR}/includes.chroot/usr/share/bright-os/installer/settings.conf"
+        "${CONFIG_DIR}/includes.chroot/usr/share/bright-os/installer/modules/bootloader.conf"
+        "${CONFIG_DIR}/includes.chroot/usr/share/bright-os/installer/modules/displaymanager.conf"
         "${EDITIONS_DIR}/${EDITION}/packages.list"
     )
     local missing=0
