@@ -44,16 +44,42 @@ fi
 
 echo ""
 echo "--- Capture lb config arguments ---"
-# Create mock lb that records its arguments
+# Create mock lb that simulates modern Debian Trixie live-build
 mkdir -p "$TMPDIR/mock-bin"
 cat > "$TMPDIR/mock-bin/lb" << 'MOCKEOF'
 #!/bin/bash
-# Record all arguments to a file
-echo "LB_ARGS: $*" >> "$LB_CAPTURE_FILE"
-# Create a minimal config directory so auto/config appears to succeed
-mkdir -p config/bootloaders
-echo "mock lb: created config dir"
-exit 0
+# Mock lb: modern Debian live-build (supports --bootloaders, --uefi-secure-boot)
+if [ "$1" = "config" ] && [ "$2" = "--help" ]; then
+    echo "Usage: lb config [options]"
+    echo "  -a|--architecture ARCHITECTURE"
+    echo "  -b|--binary-image iso|iso-hybrid|netboot|tar|hdd"
+    echo "  --archive-areas AREAS"
+    echo "  --bootloaders grub-legacy|grub-pc|syslinux|grub-efi"
+    echo "  --uefi-secure-boot auto|enable|disable"
+    echo "  --parent-archive-areas AREAS"
+    echo "  --debian-installer cdrom|netinst|netboot|live|none|false"
+    echo "  --checksums md5|sha1|sha256|none"
+    echo "  --iso-application NAME"
+    echo "  --iso-publisher NAME"
+    echo "  --iso-volume NAME"
+    echo "  --iso-preparer NAME"
+    echo "  --memtest memtest86+|memtest86|none"
+    echo "  --firmware-binary true|false"
+    echo "  --firmware-chroot true|false"
+    echo "  --win32-loader true|false"
+    echo "  --zsync true|false"
+    echo "  --initsystem sysvinit|systemd|none"
+    echo "  --apt-recommends true|false"
+    exit 0
+fi
+# Record all arguments to a file (lb config invocation)
+if [ "$1" = "config" ]; then
+    echo "LB_ARGS: $*" >> "$LB_CAPTURE_FILE"
+    mkdir -p config/bootloaders
+    echo "mock lb: created config dir"
+    exit 0
+fi
+exit 1
 MOCKEOF
 chmod +x "$TMPDIR/mock-bin/lb"
 

@@ -341,6 +341,46 @@ for pkg in $RECOMMENDED_PKGS; do
     fi
 done
 
+echo ""
+info "live-build capability detection:"
+if command -v lb >/dev/null 2>&1; then
+    LB_HELP=$(lb config --help 2>&1 || true)
+    LB_HAS_MODERN_BOOTLOADERS=false
+    LB_HAS_SECURE_BOOT=false
+    
+    if echo "$LB_HELP" | grep -qE "(^|[[:space:]])--bootloaders([[:space:]]|$|\|)"; then
+        pass "live-build supports --bootloaders (modern: BIOS+UEFI explicit)"
+        LB_HAS_MODERN_BOOTLOADERS=true
+    elif echo "$LB_HELP" | grep -qE "(^|[[:space:]])--bootloader([[:space:]]|$|\|)"; then
+        warn "live-build has only --bootloader (legacy: UEFI may need manual setup)"
+        warn "  For best results build on Debian Trixie with modern live-build"
+    else
+        fail "live-build: cannot determine bootloader option support"
+    fi
+    
+    if echo "$LB_HELP" | grep -qE "(^|[[:space:]])--uefi-secure-boot([[:space:]]|$|\|)"; then
+        pass "live-build supports --uefi-secure-boot (Secure Boot configuration)"
+        LB_HAS_SECURE_BOOT=true
+    else
+        warn "live-build does not support --uefi-secure-boot"
+        warn "  Secure Boot will rely on shim-signed package only; no signed EFI integration"
+    fi
+    
+    if [ "$LB_HAS_MODERN_BOOTLOADERS" = false ]; then
+        # Check for tools needed to create EFI boot image on legacy live-build
+        if command -v grub-mkstandalone >/dev/null 2>&1 && \
+           command -v mformat >/dev/null 2>&1 && \
+           command -v mcopy >/dev/null 2>&1; then
+            pass "EFI boot creation tools available (grub-mkstandalone, mtools)"
+        else
+            warn "EFI boot creation tools not fully available"
+            warn "  Install: grub-efi-amd64-bin mtools for EFI boot on legacy live-build"
+        fi
+    fi
+else
+    fail "lb not found; cannot check live-build capabilities"
+fi
+
 # ============================================================
 header "8. Project Configuration Files"
 # ============================================================
@@ -355,6 +395,7 @@ REQUIRED_FILES=(
     "config/hooks/live/00-bright-os-branding.hook.chroot"
     "config/hooks/live/10-bright-os-components.hook.chroot"
     "config/hooks/live/20-installer-setup.hook.chroot"
+    "config/hooks/live/30-efi-boot-setup.hook.binary"
     "config/includes.binary/boot/grub/grub.cfg"
     "config/includes.chroot/etc/bright-os/edition"
     "config/includes.chroot/usr/bin/bright-desktop-shell"

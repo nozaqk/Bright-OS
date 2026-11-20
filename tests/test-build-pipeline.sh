@@ -53,14 +53,40 @@ exit 1
 MOCKEOF
 chmod +x "${MOCK_BIN}/dpkg-query"
 
-# Mock lb: controlled by MOCK_LB_BUILD_EXIT and optionally creates ISO
+# Mock lb: simulates modern Debian Trixie live-build; controlled by MOCK_LB_BUILD_EXIT
 cat > "${MOCK_BIN}/lb" << 'MOCKEOF'
 #!/bin/bash
 LOG="${MOCK_LB_LOG:-/tmp/mock-lb.log}"
 echo "[mock-lb $USER] $*" >> "$LOG"
 
+if [ "$1" = "config" ] && [ "$2" = "--help" ]; then
+    # Simulate modern live-build (Debian Trixie) help output
+    echo "Usage: lb config [options]"
+    echo "  -a|--architecture ARCHITECTURE"
+    echo "  -b|--binary-image iso|iso-hybrid|netboot|tar|hdd"
+    echo "  --archive-areas AREAS"
+    echo "  --bootloaders grub-legacy|grub-pc|syslinux|grub-efi"
+    echo "  --uefi-secure-boot auto|enable|disable"
+    echo "  --parent-archive-areas AREAS"
+    echo "  --debian-installer cdrom|netinst|netboot|live|none|false"
+    echo "  --checksums md5|sha1|sha256|none"
+    echo "  --iso-application NAME"
+    echo "  --iso-publisher NAME"
+    echo "  --iso-volume NAME"
+    echo "  --iso-preparer NAME"
+    echo "  --memtest memtest86+|memtest86|none"
+    echo "  --firmware-binary true|false"
+    echo "  --firmware-chroot true|false"
+    echo "  --win32-loader true|false"
+    echo "  --zsync true|false"
+    echo "  --initsystem sysvinit|systemd|none"
+    echo "  --apt-recommends true|false"
+    exit 0
+fi
+
 if [ "$1" = "config" ]; then
     echo "P: Configuring live-build"
+    mkdir -p config/bootloaders
     exit 0
 fi
 if [ "$1" = "clean" ]; then
