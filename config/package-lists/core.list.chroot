@@ -1,0 +1,216 @@
+# =============================================================================
+# Bright OS — Core System Packages
+# These packages are required for ALL editions (Home, Developer, Lite).
+# They form the foundation upon which desktop and edition packages are added.
+# =============================================================================
+
+# --- Kernel and firmware ---
+linux-image-amd64
+linux-headers-amd64
+firmware-linux
+firmware-linux-nonfree
+firmware-misc-nonfree
+firmware-realtek
+firmware-iwlwifi
+firmware-atheros
+firmware-brcm80211
+firmware-intelwimax
+initramfs-tools
+
+# --- Core system ---
+systemd
+systemd-sysv
+dbus
+dbus-x11
+udev
+util-linux
+coreutils
+bash
+bash-completion
+apt
+apt-utils
+apt-transport-https
+dpkg
+debconf
+locales
+tzdata
+keyboard-configuration
+console-setup
+console-setup-linux
+sudo
+policykit-1
+policykit-1-gnome
+pciutils
+usbutils
+kmod
+ca-certificates
+gnupg
+lsb-release
+command-not-found
+man-db
+manpages
+info
+
+# --- Networking ---
+network-manager
+network-manager-openvpn
+wireless-tools
+wpasupplicant
+iwd
+iproute2
+iputils-ping
+net-tools
+dnsmasq-base
+firewalld
+openssh-client
+curl
+wget
+
+# --- Storage and filesystems ---
+parted
+dosfstools
+ntfs-3g
+e2fsprogs
+xfsprogs
+btrfs-progs
+udisks2
+udisks2-lvm2
+lvm2
+cryptsetup
+exfatprogs
+fuse3
+fuseiso
+gvfs
+gvfs-backends
+gvfs-fuse
+
+# --- Display server (needed by all editions; Wayland + X11 fallback) ---
+xwayland
+xserver-xorg-core
+xserver-xorg-input-libinput
+xserver-xorg-video-all
+mesa-utils
+mesa-va-drivers
+mesa-vdpau-drivers
+mesa-vulkan-drivers
+
+# --- Display manager ---
+sddm
+
+# --- Window manager / Wayland compositor ---
+# KWin is required by Bright Desktop shell for Wayland mode.
+# It can run standalone without full Plasma desktop.
+kwin-wayland
+
+# --- Qt 6 runtime (required by Bright Desktop shell) ---
+libqt6core6
+libqt6gui6
+libqt6widgets6
+libqt6qml6
+libqt6quick6
+libqt6quickcontrols2-6
+libqt6dbus6
+libqt6network6
+libqt6svg6
+libqt6waylandclient6
+libqt6waylandcompositor6
+libqt6opengl6
+libqt6printsupport6
+libqt6xml6
+qt6-qpa-plugins
+qt6ct
+
+# --- QML modules (required by Shell.qml) ---
+qml6-module-qtquick
+qml6-module-qtquick-controls
+qml6-module-qtquick-layouts
+qml6-module-qtquick-window
+qml6-module-qtqml-models
+qml6-module-qtquick-dialogs
+qml6-module-qtquick-templates
+qml6-module-qt5compat-graphicaleffects
+qml6-module-qtquick-shapes
+qml6-module-qtquick-particles
+qml6-module-qtgraphicaleffects
+qml6-module-qt-labs-folderlistmodel
+qml6-module-qt-labs-settings
+qml6-module-qtqml-workerscript
+
+# --- Python 3 runtime (required by Bright shell and system apps) ---
+python3
+python3-pip
+python3-pyqt6
+python3-pyqt6.qtsvg
+python3-pyqt6.qtquick
+python3-pyqt6.qtqml
+python3-dbus
+python3-gi
+python3-apt
+python3-pil
+python3-yaml
+
+# --- XDG integration ---
+xdg-user-dirs
+xdg-utils
+xdg-desktop-portal
+xdg-desktop-portal-gtk
+
+# --- Audio (PipeWire for all editions) ---
+pipewire
+pipewire-pulse
+pipewire-alsa
+pipewire-jack
+wireplumber
+pulseaudio-utils
+alsa-utils
+
+# --- Fonts ---
+fonts-dejavu
+fonts-dejavu-core
+fonts-liberation2
+fonts-noto
+fonts-noto-cjk
+fonts-noto-color-emoji
+fonts-hack
+fontconfig
+
+# --- Icon themes (required by Bright shell and apps) ---
+breeze-icon-theme
+adwaita-icon-theme
+
+# --- System utilities ---
+htop
+neofetch
+file-roller
+unzip
+zip
+p7zip-full
+tar
+gzip
+bzip2
+xz-utils
+zstd
+rsync
+gnome-disk-utility
+partitionmanager
+gparted
+upower
+acpid
+
+# --- Flatpak support ---
+flatpak
+
+# --- Installer (Calamares) ---
+calamares
+calamares-settings-debian
+os-prober
+
+# --- Boot splash ---
+plymouth
+plymouth-themes
+
+# --- Bright Desktop will be installed from chroot includes ---
+
+# --- Additional essentials ---
+software-properties-common
+grub-common

@@ -1,38 +1,30 @@
-# Bright OS Lite Edition - Minimal Package Selection
-# Optimized for older/low-specification computers (2-4 GB RAM)
+# =============================================================================
+# Bright OS Lite Edition — Additional packages
+# Target: Older/low-spec hardware (2-4 GB RAM, single-core/dual-core CPUs)
+# Desktop: LXQt + Openbox + Picom (replaces full KDE Plasma desktop stack)
+# Key principle: no Plasma desktop packages, no LibreOffice, no heavy IDEs
+# =============================================================================
 
-# Lighter alternatives to standard desktop
-# Uses LXQt components instead of full KDE/Plasma where possible
-lxqt-core
-lxqt-themes
-lxqt-about
-lxqt-config
-lxqt-panel
-lxqt-policykit
-lxqt-powermanagement
-lxqt-runner
-lxqt-session
-openbox
-pcmanfm-qt
-qterminal
-qps
-screengrab
-cups-bsd
-
-# Lightweight window manager fallback (replaces heavy KWin effects)
-openbox
-obconf
-compton
-
-# Lightweight browsers and apps
+# --- Web browser ---
 firefox-esr
-midori
-featherpad
-abiword
-gnumeric
+
+# --- Media (lightweight) ---
 mpv
 viewnior
 gpicview
-galculator
+
+# --- Office (lightweight alternatives to LibreOffice) ---
+abiword
+gnumeric
+
+# --- System utilities ---
 lximage-qt
+screengrab
+qps
+galculator
 transmission-cli
+mtpaint
+xarchiver
+
+# --- Lightweight terminal is provided by qterminal (in desktop-lite) ---
+# --- File manager provided by pcmanfm-qt (in desktop-lite) ---

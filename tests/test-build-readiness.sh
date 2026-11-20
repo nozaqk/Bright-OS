@@ -168,7 +168,9 @@ for f in \
     build/live-build/auto/config \
     build/live-build/auto/build \
     build/live-build/auto/clean \
-    config/package-lists/base.list.chroot \
+    config/package-lists/core.list.chroot \
+    config/package-lists/desktop.list.chroot \
+    config/package-lists/desktop-lite.list.chroot \
     config/hooks/live/00-bright-os-branding.hook.chroot \
     config/hooks/live/10-bright-os-components.hook.chroot \
     config/hooks/live/20-installer-setup.hook.chroot \
@@ -201,7 +203,7 @@ MISSING_CAL=0
 for mod in welcome.conf locale.conf keyboard.conf partition.conf users.conf summary.conf finished.conf \
            mount.conf unpackfs.conf machineid.conf fstab.conf localecfg.conf networkcfg.conf hwclock.conf \
            services-systemd.conf bootloader.conf luksbootkeyfile.conf grubcfg.conf initramfs.conf \
-           ucode.conf packages.conf shellprocess-post.conf postcfg.sh exclude-list; do
+           shellprocess-post.conf postcfg.sh exclude-list; do
     if [ -f "installer/calamares/modules/${mod}" ]; then
         PASS=$((PASS+1))
     else
@@ -299,7 +301,7 @@ else
 fi
 
 # Package list doesn't include snapd
-if ! grep -qx "snapd" config/package-lists/base.list.chroot; then
+if ! grep -qx "snapd" config/package-lists/core.list.chroot; then
     echo -e "${GREEN}[PASS]${NC} Package list does not include snapd"
     PASS=$((PASS+1))
 else

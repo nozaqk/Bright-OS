@@ -1,0 +1,63 @@
+# =============================================================================
+# Bright OS — Desktop Environment Packages
+# These packages provide the full KDE Plasma desktop experience for
+# Home and Developer editions. Lite edition uses a different, lighter
+# set (see config/package-lists/desktop-lite.list.chroot).
+# =============================================================================
+
+# --- KDE Plasma Desktop ---
+plasma-workspace
+plasma-desktop
+plasma-nm
+plasma-pa
+breeze
+breeze-gtk-theme
+kde-config-gtk-style
+kde-config-gtk-style-preview
+xdg-desktop-portal-kde
+
+# --- KDE Plasma utilities ---
+powerdevil
+bluedevil
+print-manager
+kcalc
+kwrite
+ark
+plasma-discover
+plasma-discover-backend-flatpak
+plasma-discover-backend-apt
+
+# --- Theme engines ---
+qt5-style-kvantum
+qt5-style-kvantum-themes
+gtk2-engines-breeze
+gtk2-engines-murrine
+sassc
+optipng
+
+# --- Breeze theme for SDDM ---
+sddm-theme-debian-breeze
+
+# --- Volume control ---
+pavucontrol-qt
+
+# --- Bluetooth ---
+bluez
+bluetooth
+bluez-obexd
+
+# --- Printing ---
+cups
+cups-filters
+printer-driver-all
+system-config-printer
+system-config-printer-common
+
+# --- Image tools (needed for GRUB theme rendering in hooks) ---
+imagemagick
+
+# --- Web browser (included in all editions, but listed here for Plasma integration) ---
+firefox-esr
+
+# --- Volume icon for system tray ---
+volumeicon-alsa

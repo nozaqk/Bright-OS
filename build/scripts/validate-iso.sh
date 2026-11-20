@@ -1,22 +1,18 @@
 #!/bin/bash
 # =============================================================================
 # Bright OS ISO Validation Script
-# Validates a built ISO for correctness, bootability, and integrity.
+# Validates a built ISO for filesystem integrity, boot structures, and content.
+# Exits 0 if validation passes, 1 if critical checks fail.
+# Warnings do not cause failure.
 # =============================================================================
 
-set -e
+set -u
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m'
-
-ISO_PATH="$1"
-if [ -z "$ISO_PATH" ] || [ ! -f "$ISO_PATH" ]; then
-    echo "Usage: $0 <path-to-bright-os.iso>"
-    echo "Validates a Bright OS ISO image."
-    exit 1
-fi
 
 PASS=0
 FAIL=0
@@ -26,122 +22,240 @@ pass() { echo -e "${GREEN}[PASS]${NC} $*"; PASS=$((PASS+1)); }
 fail() { echo -e "${RED}[FAIL]${NC} $*"; FAIL=$((FAIL+1)); }
 warn() { echo -e "${YELLOW}[WARN]${NC} $*"; WARN=$((WARN+1)); }
 
+usage() {
+    cat <<EOF
+Bright OS ISO Validator
+
+Usage: $0 <path-to.iso>
+
+Validates:
+  - File readability and basic size
+  - ISO 9660 filesystem
+  - Hybrid/USB boot signature
+  - BIOS and UEFI boot structures
+  - Live system files (kernel, initrd, squashfs)
+  - GRUB presence
+  - SHA256 checksum (if .sha256 file exists)
+EOF
+    exit "${1:-0}"
+}
+
+ISO_PATH="${1:-}"
+if [ -z "$ISO_PATH" ]; then
+    echo "ERROR: No ISO path specified."
+    usage 1
+fi
+
+if [ "$ISO_PATH" = "-h" ] || [ "$ISO_PATH" = "--help" ]; then
+    usage 0
+fi
+
+if [ ! -f "$ISO_PATH" ]; then
+    echo "ERROR: File not found: $ISO_PATH"
+    exit 1
+fi
+
+if [ ! -r "$ISO_PATH" ]; then
+    echo "ERROR: File not readable: $ISO_PATH"
+    exit 1
+fi
+
 echo "========================================"
 echo "  Bright OS ISO Validation"
 echo "  File: $ISO_PATH"
 echo "========================================"
 
-# Basic file checks
+# --- Check available tools ---
+HAVE_FILE=false
+HAVE_ISOINFO=false
+HAVE_XXD=false
+HAVE_DD=false
+HAVE_SHA=false
+
+command -v file &>/dev/null && HAVE_FILE=true
+command -v isoinfo &>/dev/null && HAVE_ISOINFO=true
+command -v xxd &>/dev/null && HAVE_XXD=true
+command -v dd &>/dev/null && HAVE_DD=true
+command -v sha256sum &>/dev/null && HAVE_SHA=true
+
 echo ""
 echo "--- File Integrity ---"
+
+# File size
 SIZE=$(stat -c%s "$ISO_PATH" 2>/dev/null || echo 0)
-SIZE_MB=$((SIZE / 1024 / 1024))
-if [ "$SIZE" -gt 100000000 ]; then
-    pass "ISO size: ${SIZE_MB} MB (expected > 100 MB)"
+if [ "$SIZE" -le 0 ]; then
+    fail "ISO file is empty"
 else
-    fail "ISO size too small: ${SIZE_MB} MB"
+    SIZE_MB=$((SIZE / 1024 / 1024))
+    if [ "$SIZE" -gt 100000000 ]; then
+        pass "File size: ${SIZE_MB} MB"
+    else
+        fail "File size too small: ${SIZE_MB} MB (expected > 100 MB for a real ISO)"
+    fi
 fi
 
-# Check for checksum file
+# File is readable
+if [ -r "$ISO_PATH" ]; then
+    pass "File is readable"
+else
+    fail "File is not readable"
+fi
+
+# SHA256 checksum verification
 SHA_FILE="${ISO_PATH}.sha256"
 if [ -f "$SHA_FILE" ]; then
-    if sha256sum -c "$SHA_FILE" 2>/dev/null; then
-        pass "SHA256 checksum verified"
+    if $HAVE_SHA; then
+        if (cd "$(dirname "$ISO_PATH")" && sha256sum -c "$(basename "$SHA_FILE")") 2>/dev/null; then
+            pass "SHA256 checksum verified"
+        else
+            fail "SHA256 checksum mismatch!"
+        fi
     else
-        fail "SHA256 checksum mismatch"
+        warn "sha256sum not available; skipping checksum verification"
     fi
 else
-    warn "No .sha256 checksum file found"
+    warn "No .sha256 checksum file found (${SHA_FILE})"
 fi
 
-# ISO format validation
 echo ""
 echo "--- ISO Format ---"
-if file "$ISO_PATH" | grep -qi "iso 9660\|hybrid"; then
-    pass "Valid ISO 9660 image"
+
+# File type detection
+if $HAVE_FILE; then
+    FTYPE=$(file "$ISO_PATH")
+    if echo "$FTYPE" | grep -qi "iso 9660"; then
+        pass "Valid ISO 9660 filesystem"
+    else
+        fail "Not recognized as ISO 9660 (file says: $(echo "$FTYPE" | head -c 200))"
+    fi
+    if echo "$FTYPE" | grep -qi "hybrid"; then
+        pass "Hybrid ISO (USB-bootable)"
+    else
+        warn "May not be hybrid ISO (USB bootability uncertain)"
+    fi
 else
-    fail "Not a valid ISO 9660 image"
+    warn "'file' command not available; skipping ISO type detection"
 fi
 
-if file "$ISO_PATH" | grep -qi "hybrid"; then
-    pass "Hybrid ISO (USB-bootable)"
-else
-    warn "May not be a hybrid ISO (USB bootability uncertain)"
-fi
-
-# MBR boot code check
-if dd if="$ISO_PATH" bs=1 count=2 skip=510 2>/dev/null | xxd | grep -q "55 aa"; then
-    pass "MBR boot signature present (BIOS bootable)"
-else
-    warn "MBR boot signature not found"
-fi
-
-# ISO structure inspection
 echo ""
-echo "--- ISO Structure ---"
-if command -v isoinfo &>/dev/null; then
-    if isoinfo -d -i "$ISO_PATH" &>/dev/null; then
-        pass "ISO9660 filesystem readable"
-        VOLUME=$(isoinfo -d -i "$ISO_PATH" 2>/dev/null | grep "Volume id:" | cut -d: -f2- | xargs)
-        echo "  Volume: ${VOLUME}"
+echo "--- Boot Structures ---"
+
+# MBR boot signature check (BIOS boot)
+if $HAVE_DD && $HAVE_XXD; then
+    SIG=$(dd if="$ISO_PATH" bs=1 count=2 skip=510 2>/dev/null | xxd -p)
+    if [ "$SIG" = "55aa" ]; then
+        pass "MBR boot signature 0x55AA present (BIOS bootable)"
     else
-        fail "Cannot read ISO9660 filesystem"
+        fail "MBR boot signature not found (got '${SIG}', expected '55aa')"
     fi
-    
-    # Check for live system files
-    if isoinfo -i "$ISO_PATH" -l 2>/dev/null | grep -q "live/vmlinuz"; then
-        pass "Kernel (vmlinuz) found in /live/"
+elif $HAVE_DD; then
+    # xxd not available, try od
+    SIG=$(dd if="$ISO_PATH" bs=1 count=2 skip=510 2>/dev/null | od -An -tx1 | tr -d ' \n')
+    if [ "$SIG" = "55aa" ]; then
+        pass "MBR boot signature 0x55AA present (BIOS bootable)"
     else
-        fail "Kernel not found in /live/"
-    fi
-    
-    if isoinfo -i "$ISO_PATH" -l 2>/dev/null | grep -q "live/initrd"; then
-        pass "Initrd found in /live/"
-    else
-        fail "Initrd not found in /live/"
-    fi
-    
-    if isoinfo -i "$ISO_PATH" -l 2>/dev/null | grep -q "live/filesystem.squashfs"; then
-        pass "Squashfs root filesystem present"
-    else
-        fail "filesystem.squashfs not found"
-    fi
-    
-    # Check for EFI boot
-    if isoinfo -i "$ISO_PATH" -l 2>/dev/null | grep -q "efi.img\|EFI/boot"; then
-        pass "EFI boot support detected"
-    else
-        warn "EFI boot files not detected"
-    fi
-    
-    # Check for GRUB
-    if isoinfo -i "$ISO_PATH" -l 2>/dev/null | grep -q "grub"; then
-        pass "GRUB bootloader present"
-    else
-        warn "GRUB files not found"
+        warn "Cannot reliably verify MBR signature without xxd or od"
     fi
 else
-    warn "isoinfo not available, skipping structure checks"
+    warn "'dd' not available; skipping MBR boot signature check"
 fi
 
-# Report
+# ISO9660 structure inspection
+echo ""
+echo "--- ISO Contents ---"
+if $HAVE_ISOINFO; then
+    if isoinfo -d -i "$ISO_PATH" &>/dev/null; then
+        pass "ISO9660 primary volume descriptor readable"
+        VOLUME=$(isoinfo -d -i "$ISO_PATH" 2>/dev/null | grep "Volume id:" | cut -d: -f2- | xargs || echo "(unknown)")
+        echo "  Volume ID: ${VOLUME}"
+
+        # Get full listing
+        ISO_LISTING=$(mktemp /tmp/bright-iso-list-XXXXXX.txt)
+        if isoinfo -i "$ISO_PATH" -lR 2>/dev/null > "$ISO_LISTING"; then
+            # Check for kernel
+            if grep -qE '/live/vmlinuz($|[^a-zA-Z])' "$ISO_LISTING" || grep -q 'live/vmlinuz$' "$ISO_LISTING"; then
+                pass "Kernel (live/vmlinuz) found"
+            else
+                fail "Kernel (live/vmlinuz) not found in ISO"
+            fi
+
+            # Check for initrd
+            if grep -qE '/live/initrd' "$ISO_LISTING" || grep -q 'live/initrd' "$ISO_LISTING"; then
+                pass "Initrd (live/initrd*) found"
+            else
+                fail "Initrd not found in ISO"
+            fi
+
+            # Check for squashfs
+            if grep -qE '/live/filesystem\.squashfs' "$ISO_LISTING"; then
+                pass "Squashfs root filesystem present (live/filesystem.squashfs)"
+            else
+                fail "filesystem.squashfs not found — ISO has no live system"
+            fi
+
+            # Check for EFI boot
+            if grep -qiE 'efi\.img|EFI/BOOT/BOOTX64|EFI/boot/bootx64' "$ISO_LISTING"; then
+                pass "EFI boot files detected (UEFI boot support)"
+            else
+                fail "EFI boot files not detected — ISO may not boot on UEFI systems"
+            fi
+
+            # Check for GRUB
+            if grep -qi 'boot/grub/' "$ISO_LISTING"; then
+                pass "GRUB bootloader files present"
+            else
+                warn "GRUB files not found"
+            fi
+
+            # Check for isolinux (BIOS boot)
+            if grep -qi 'isolinux/' "$ISO_LISTING"; then
+                pass "ISOLINUX present (BIOS boot via isolinux)"
+            else
+                warn "ISOLINUX not found (BIOS boot may rely solely on GRUB)"
+            fi
+        else
+            fail "Could not list ISO9660 directory contents"
+        fi
+        rm -f "$ISO_LISTING"
+    else
+        fail "Cannot read ISO9660 filesystem with isoinfo"
+    fi
+else
+    warn "'isoinfo' (from genisoimage package) not available; skipping content checks"
+    echo "  Install with: sudo apt-get install -y genisoimage"
+fi
+
+# --- Report ---
 echo ""
 echo "========================================"
 echo "  Validation Results"
-echo "  Passed: $PASS"
+echo "  Passed:   $PASS"
 echo "  Warnings: $WARN"
-echo "  Failed: $FAIL"
+echo "  Failed:   $FAIL"
 echo "========================================"
 
 if [ "$FAIL" -gt 0 ]; then
-    echo -e "${RED}Validation FAILED${NC}"
+    echo ""
+    echo -e "${RED}Validation FAILED: $FAIL critical check(s) failed.${NC}"
+    echo "The ISO is likely not bootable or is corrupt."
     exit 1
 else
-    echo -e "${GREEN}Validation PASSED${NC}"
     echo ""
-    echo "Boot testing recommendations:"
-    echo "  1. Test in QEMU:  qemu-system-x86_64 -cdrom $ISO_PATH -m 4G -enable-kvm"
-    echo "  2. Test on USB:   dd if=$ISO_PATH of=/dev/sdX bs=4M status=progress"
-    echo "  3. Test on real hardware: boot from USB on both UEFI and BIOS systems"
+    echo -e "${GREEN}Validation PASSED.${NC}"
+    echo ""
+    if [ "$WARN" -gt 0 ]; then
+        echo -e "${YELLOW}Note: ${WARN} warning(s) present (see above).${NC}"
+        echo ""
+    fi
+    echo "Next steps:"
+    echo "  1. Test boot in QEMU (does NOT guarantee boot success — visual check required):"
+    echo "     qemu-system-x86_64 -cdrom $ISO_PATH -m 4G -enable-kvm"
+    echo "  2. Test UEFI boot:"
+    echo "     qemu-system-x86_64 -cdrom $ISO_PATH -m 4G -enable-kvm -bios /usr/share/OVMF/OVMF_CODE.fd"
+    echo "  3. Write to USB and test on real hardware:"
+    echo "     sudo dd if=$ISO_PATH of=/dev/sdX bs=4M status=progress conv=fsync"
+    echo ""
+    echo "IMPORTANT: Passing validation does NOT prove the OS boots correctly."
+    echo "Actual boot testing (QEMU or real hardware) is required to confirm bootability."
     exit 0
 fi

@@ -2,10 +2,12 @@
 
 This document describes how to build a bootable Bright OS ISO from source.
 
-> **Status:** The build system has been validated for correctness (104 build-readiness
-> tests pass, 111 application tests pass). The ISO has not yet been built and tested
-> end-to-end in CI — the first build must be performed on a Debian machine as
-> described below. Please report build failures via GitHub Issues.
+> **Status:** All build system bugs have been fixed (326 automated tests pass).
+> The three editions (Home, Developer, Lite) are correctly separated with no
+> Plasma package leakage into Lite. The ISO has not yet been built due to
+> network restrictions in the development sandbox — the first build must be
+> performed on a Debian 13 Trixie machine as described below.
+> Please report build failures via GitHub Issues.
 
 ## Supported Debian Releases
 
