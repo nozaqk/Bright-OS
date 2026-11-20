@@ -16,9 +16,11 @@ when a version tag is built and released. If no release is available yet, build 
 
 | Edition | Description |
 |---------|-------------|
-| 🏠 **Home** | Full KDE Plasma desktop for everyday use |
-| 💻 **Developer** | KDE Plasma + development tools (VS Code, Git, Docker, Arduino, KiCad) |
-| 🪶 **Lite** | Lightweight LXQt desktop for older hardware (2-4 GB RAM) |
+| 🏠 **Home** | Bright Desktop with friendly layout for everyday users (bottom dock, productivity apps) |
+| 💻 **Developer** | Bright Desktop with developer layout (side dock, terminal, dev tools, electronics apps) |
+| 🪶 **Lite** | Bright Desktop with lightweight profile for older hardware (bottom panel, no dock, reduced animations) |
+
+All three editions share the same **Bright Design System** — brand identity, colors, typography, icon style, and window appearance are consistent across editions. Only the layout, default applications, and performance settings differ.
 
 After downloading, verify the checksum:
 ```bash
@@ -69,13 +71,24 @@ For complete instructions, see [docs/BUILDING.md](docs/BUILDING.md).
 
 ## Editions
 
-| Edition | Description | RAM Target |
-|---------|-------------|-----------|
-| **Home** | Complete desktop for everyday use | 8 GB |
-| **Developer** | Full toolchain for software & electronics | 16 GB |
-| **Lite** | Lightweight edition for older hardware | 4 GB (2 GB experimental) |
+All three editions are members of one Bright OS family — they share the same logo, color palette (blue-violet accent on dark/light Slate), typography (DejaVu Sans), icon style (Breeze), window chrome, GRUB/Plymouth branding, settings design, and wallpaper set. Only the panel arrangement, dock layout, default applications, and animation levels differ.
 
-All editions share the same codebase, system services, and Bright Desktop technology.
+| Edition | Layout | Default Apps | RAM Target |
+|---------|--------|-------------|-----------|
+| **Home** | Top panel + bottom-centered dock; full animations | Firefox, Thunderbird, LibreOffice, VLC, Files, Terminal, Settings, Software Center | 4–8 GB |
+| **Developer** | Top panel + left side dock; snappy animations; CPU/Mem metrics in panel | Firefox, Terminal, Code, Git, VMs, Docker, KiCad, Arduino, Wireshark, System Monitor | 8–16 GB |
+| **Lite** | Compact bottom panel + menu launcher (no dock); no animations; smaller icons/cursors | Firefox, Files (pcmanfm-qt), Terminal (qterminal), Text Editor, Calculator, Archiver | 2–4 GB |
+
+### Shared Bright Design System
+
+The Bright Desktop uses a centralized design system (`desktop/shell/design/DesignTokens.js`) defining:
+- **Color tokens** for dark and light themes (Slate-based with blue-violet brand accent `#3b82f6`)
+- **Typography scale** (DejaVu Sans UI / Hack monospace)
+- **Spacing, corner radii, shadows** consistent across all components
+- **Component sizing** for panels, docks, dialogs, and launcher grids
+- **Animation tokens** (disabled entirely for Lite edition)
+
+Edition profiles (`desktop/shell/profiles/EditionProfiles.js`) define per-edition dock apps, launcher categories, panel positions, dock icon sizes, and resource-saving settings — all referencing the shared design tokens.
 
 ## Features (Alpha 0.1)
 
@@ -107,7 +120,14 @@ All editions share the same codebase, system services, and Bright Desktop techno
 - ✅ Clean shutdown/reboot/suspend/logout/lock from power menu
 - ✅ Keyboard shortcuts (Super, Super+T/E/S/L, etc.)
 - ✅ First-boot setup service
-- ✅ Three edition configurations (Home, Developer, Lite)
+- ✅ Three distinct desktop profiles (Home, Developer, Lite) sharing one unified Bright brand identity
+- ✅ Centralized Bright Design System (colors, typography, spacing, radii, animations)
+- ✅ Automatic edition detection at startup from /etc/bright-os/edition
+- ✅ Profile-aware dock, launcher, panel layout, and quick settings
+- ✅ Graceful handling of missing optional applications across editions
+- ✅ Lite edition optimizations: reduced animations, basic Qt render loop, smaller UI, lighter fallback apps
+- ✅ Light and dark themes that respect design tokens consistently
+- ✅ Edition-aware About dialog showing correct edition name and tagline
 
 ## Quick Start: Building the ISO
 

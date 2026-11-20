@@ -282,6 +282,8 @@ check_source_files() {
         "${CONFIG_DIR}/includes.chroot/usr/bin/bright-desktop-shell"
         "${CONFIG_DIR}/includes.chroot/usr/share/bright-os/Shell.qml"
         "${CONFIG_DIR}/includes.chroot/usr/share/bright-os/bright-desktop-shell.py"
+        "${CONFIG_DIR}/includes.chroot/usr/share/bright-os/design/DesignTokens.js"
+        "${CONFIG_DIR}/includes.chroot/usr/share/bright-os/profiles/EditionProfiles.js"
         "${EDITIONS_DIR}/${EDITION}/packages.list"
     )
     local missing=0

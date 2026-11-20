@@ -11,6 +11,8 @@ mkdir -p /usr/share/bright-os/icons
 mkdir -p /usr/share/bright-os/wallpapers
 mkdir -p /usr/share/bright-os/themes/dark
 mkdir -p /usr/share/bright-os/themes/light
+mkdir -p /usr/share/bright-os/design
+mkdir -p /usr/share/bright-os/profiles
 mkdir -p /usr/share/bright-os/installer
 mkdir -p /usr/lib/bright-os
 mkdir -p /etc/bright-os
@@ -41,16 +43,41 @@ chmod 755 /usr/bin/bright-desktop-shell
 # Set edition
 BRIGHT_EDITION=$(cat /etc/bright-os/edition 2>/dev/null || echo "home")
 
+# Edition-specific shell defaults
+case "$BRIGHT_EDITION" in
+    developer)
+        DEFAULT_PANEL_HEIGHT=36
+        DEFAULT_DOCK_ICON_SIZE=40
+        DEFAULT_DOCK_POSITION="left"
+        DEFAULT_ANIMATIONS="true"
+        ;;
+    lite)
+        DEFAULT_PANEL_HEIGHT=28
+        DEFAULT_DOCK_ICON_SIZE=32
+        DEFAULT_DOCK_POSITION="none"
+        DEFAULT_ANIMATIONS="false"
+        ;;
+    home|*)
+        DEFAULT_PANEL_HEIGHT=40
+        DEFAULT_DOCK_ICON_SIZE=48
+        DEFAULT_DOCK_POSITION="bottom"
+        DEFAULT_ANIMATIONS="true"
+        ;;
+esac
+
 # Create skel config
 mkdir -p /etc/skel/.config/bright-os
-cat > /etc/skel/.config/bright-os/shell.conf << 'EOF'
+cat > /etc/skel/.config/bright-os/shell.conf << EOF
 # Bright OS Shell Configuration
+# Edition: ${BRIGHT_EDITION}
 theme=dark
 wallpaper=/usr/share/bright-os/wallpapers/bright-default-dark.svg
-panel_height=40
-dock_icon_size=48
-dock_position=bottom
-animations=true
+panel_position=$([ "$BRIGHT_EDITION" = "lite" ] && echo "bottom" || echo "top")
+panel_height=${DEFAULT_PANEL_HEIGHT}
+dock_position=${DEFAULT_DOCK_POSITION}
+dock_icon_size=${DEFAULT_DOCK_ICON_SIZE}
+dock_auto_hide=false
+animations=${DEFAULT_ANIMATIONS}
 EOF
 
 # Default SDDM config for autologin (live user)

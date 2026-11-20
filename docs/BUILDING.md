@@ -80,9 +80,9 @@ sudo apt-get install -y \
 ### Build a single edition
 
 ```bash
-./build/scripts/build.sh home         # Home edition (full KDE Plasma)
-./build/scripts/build.sh developer    # Developer edition (Plasma + dev tools)
-./build/scripts/build.sh lite         # Lite edition (LXQt, for older hardware)
+./build/scripts/build.sh home         # Home edition (Bright Desktop, everyday layout)
+./build/scripts/build.sh developer    # Developer edition (Bright Desktop, developer layout + dev tools)
+./build/scripts/build.sh lite         # Lite edition (Bright Desktop, lightweight profile + LXQt)
 ```
 
 ### Build all three editions
