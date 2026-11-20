@@ -2,6 +2,7 @@
 # Bright OS — Core System Packages
 # These packages are required for ALL editions (Home, Developer, Lite).
 # They form the foundation upon which desktop and edition packages are added.
+# Target: Debian 13 (Trixie) amd64
 # =============================================================================
 
 # --- Kernel and firmware ---
@@ -16,12 +17,12 @@ firmware-atheros
 firmware-brcm80211
 firmware-intelwimax
 initramfs-tools
+cryptsetup-initramfs
 
 # --- Core system ---
 systemd
 systemd-sysv
 dbus
-dbus-x11
 udev
 util-linux
 coreutils
@@ -74,7 +75,6 @@ e2fsprogs
 xfsprogs
 btrfs-progs
 udisks2
-udisks2-lvm2
 lvm2
 cryptsetup
 exfatprogs
@@ -83,6 +83,7 @@ fuseiso
 gvfs
 gvfs-backends
 gvfs-fuse
+keyutils
 
 # --- Display server (needed by all editions; Wayland + X11 fallback) ---
 xwayland
@@ -99,7 +100,6 @@ sddm
 
 # --- Window manager / Wayland compositor ---
 # KWin is required by Bright Desktop shell for Wayland mode.
-# It can run standalone without full Plasma desktop.
 kwin-wayland
 
 # --- Qt 6 runtime (required by Bright Desktop shell) ---
@@ -120,7 +120,7 @@ libqt6xml6
 qt6-qpa-plugins
 qt6ct
 
-# --- QML modules (required by Shell.qml) ---
+# --- QML modules (required by Shell.qml; Qt 6 versions) ---
 qml6-module-qtquick
 qml6-module-qtquick-controls
 qml6-module-qtquick-layouts
@@ -128,10 +128,9 @@ qml6-module-qtquick-window
 qml6-module-qtqml-models
 qml6-module-qtquick-dialogs
 qml6-module-qtquick-templates
-qml6-module-qt5compat-graphicaleffects
 qml6-module-qtquick-shapes
 qml6-module-qtquick-particles
-qml6-module-qtgraphicaleffects
+qml6-module-qt5compat-graphicaleffects
 qml6-module-qt-labs-folderlistmodel
 qml6-module-qt-labs-settings
 qml6-module-qtqml-workerscript
@@ -205,12 +204,17 @@ calamares
 calamares-settings-debian
 os-prober
 
+# --- GRUB bootloader (needed for Calamares to install to target) ---
+grub-pc-bin
+grub-efi-amd64-bin
+grub-efi-amd64-signed
+shim-signed
+grub-common
+
 # --- Boot splash ---
 plymouth
 plymouth-themes
-
-# --- Bright Desktop will be installed from chroot includes ---
+plymouth-label
 
 # --- Additional essentials ---
 software-properties-common
-grub-common

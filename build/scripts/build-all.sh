@@ -28,7 +28,8 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-EDITIONS="home developer lite"
+# Build order: Lite first (smallest, fastest to catch build errors early), then Home, then Developer
+EDITIONS="lite home developer"
 VERSION="0.1.0-alpha"
 VERBOSE=""
 

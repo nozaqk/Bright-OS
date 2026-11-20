@@ -1,253 +1,304 @@
 # Building Bright OS
 
-Bright OS ISOs are built locally on a Debian Linux machine using Debian Live Build.
+This document describes how to build bootable Bright OS ISO images from source.
+
+## Build Status Summary
+
+| Edition     | Status             | Last Built | ISO Size | SHA256 |
+|-------------|--------------------|------------|----------|--------|
+| Lite        | NOT BUILT          | —          | —        | —      |
+| Home        | NOT BUILT          | —          | —        | —      |
+| Developer   | NOT BUILT          | —          | —        | —      |
+
+**Status definitions:**
+- **NOT BUILT** — ISO has not been built yet in this environment
+- **BUILD FAILED** — Build attempted but failed
+- **BUILT** — ISO produced but not validated
+- **ISO VALIDATED** — ISO passed structural validation (ISO9660, kernel, squashfs, boot structures)
+- **BIOS BOOT TESTED** — ISO boots in QEMU BIOS mode to desktop
+- **UEFI BOOT TESTED** — ISO boots in QEMU UEFI mode to desktop
+- **LIVE DESKTOP TESTED** — Live desktop loads with correct edition
+- **INSTALLATION TESTED** — Installer completes successfully on virtual disk
+- **INSTALLED SYSTEM BOOT TESTED** — Installed system reboots to login and desktop
+- **HARDWARE TESTED** — Booted and used on real hardware
+
+> **Important:** The build configuration has been validated statically (876 automated tests pass),
+> but no ISO has been built in this sandbox environment due to restricted network access
+> (Debian package repositories are not reachable). See [Reproducing the Build](#reproducing-the-build)
+> below for instructions to build on a suitable machine.
 
 ## Requirements
 
-### Hardware
+### System Requirements
 
-| Resource | Minimum | Recommended |
-|----------|---------|-------------|
-| CPU | 2 cores | 4+ cores |
-| RAM | 4 GB | 8 GB+ |
-| Disk space | 20 GB per edition | 30 GB+ for all editions |
-| Internet | Required (for package downloads) | Broadband |
+- **Operating System:** Debian 12 (Bookworm) or Debian 13 (Trixie)
+- **Architecture:** x86_64 / amd64
+- **RAM:** 4 GB minimum, 8 GB recommended (builds may OOM with less than 4 GB)
+- **Disk Space:** 20 GB free minimum, 30+ GB recommended for building all three editions
+- **Network:** Access to Debian package repositories (deb.debian.org, security.debian.org)
+- **Privileges:** Root/sudo access (for installing build dependencies and running debootstrap/live-build)
 
-### Software
+> **Note:** While Bright OS targets Debian 13 Trixie, you can build on a Debian 12 Bookworm
+> system — live-build will bootstrap a Trixie chroot from the network.
 
-- **Operating System:** Debian 12 (Bookworm) or Debian 13 (Trixie). Debian 13 Trixie is recommended for best compatibility.
-- **Architecture:** x86_64 / amd64 (only supported architecture for Alpha 0.1)
-- **Windows:** Not supported directly. Install Debian in a virtual machine (VMware, VirtualBox, Hyper-V) with sufficient disk and RAM allocated to the VM.
-- **macOS:** Not supported directly. Use a Debian Linux virtual machine.
-
-> **Note:** Building inside Docker on non-Debian hosts may work but is untested. A native Debian installation or VM is the most reliable approach.
-
-## Step 1: Clone the Repository
+### Quick Start
 
 ```bash
+# Clone the repository
 git clone https://github.com/nozaqk/Bright-OS.git
 cd Bright-OS
+
+# Install build dependencies
+./build/scripts/setup-build-env.sh
+
+# Build one edition
+./build/scripts/build.sh lite
+
+# Build all three editions (Lite, Home, Developer)
+./build/scripts/build-all.sh
 ```
 
-## Step 2: Set Up Build Environment
+## Step-by-Step Build Instructions
 
-Run the setup script to check your system and install dependencies:
+### Step 1: Install Build Dependencies
+
+Run the setup script to check your system and install missing packages:
 
 ```bash
 ./build/scripts/setup-build-env.sh
 ```
 
-This script:
-- Verifies you are running on a compatible Debian system
-- Checks architecture (must be amd64)
-- Checks available RAM (minimum 4 GB)
-- Checks available disk space (minimum 20 GB)
-- Installs all required build dependencies via apt-get
-- Checks for bootloader packages (GRUB, isolinux, shim)
-- Checks for ISO validation tools
-
-To check without installing packages:
-
-```bash
-./build/scripts/setup-build-env.sh --check
-```
-
-### Manual Dependency Installation
-
-If you prefer to install manually:
+Or install dependencies manually:
 
 ```bash
 sudo apt-get update
 sudo apt-get install -y \
-    live-build \
-    debootstrap \
-    squashfs-tools \
-    xorriso \
-    isolinux \
-    syslinux-common \
-    syslinux-efi \
-    grub-pc-bin \
-    grub-efi-amd64-bin \
-    grub-efi-amd64-signed \
-    shim-signed \
-    mtools \
-    dosfstools \
-    genisoimage
+    live-build debootstrap squashfs-tools xorriso \
+    isolinux syslinux-common syslinux-efi mtools dosfstools genisoimage \
+    grub-pc-bin grub-efi-amd64-bin shim-signed grub-efi-amd64-signed \
+    qemu-system-x86 qemu-utils ovmf \
+    file sha256sum
 ```
 
-## Step 3: Build an Edition
+### Step 2: Run the Automated Tests
 
-### Build a single edition
+Before building, verify configuration correctness:
 
 ```bash
-./build/scripts/build.sh home         # Home edition (Bright Desktop, everyday layout)
-./build/scripts/build.sh developer    # Developer edition (Bright Desktop, developer layout + dev tools)
-./build/scripts/build.sh lite         # Lite edition (Bright Desktop, lightweight profile + LXQt)
+# Run all tests
+for test in tests/test-*.sh; do bash "$test"; done
+
+# Or run specific suites
+bash tests/test-installer.sh     # Calamares installer config
+bash tests/test-live-boot.sh     # Live boot media config
+bash tests/test-calamares.sh     # Calamares consistency
+bash tests/test-packages.sh      # Package list checks
 ```
 
-### Build all three editions
+### Step 3: Build Editions
+
+Build editions in this order (Lite is smallest and catches build errors earliest):
+
+```bash
+# Build Lite first (lightweight LXQt edition, smallest)
+./build/scripts/build.sh lite
+
+# Then Home (full KDE Plasma, everyday desktop)
+./build/scripts/build.sh home
+
+# Then Developer (full Plasma + development tools)
+./build/scripts/build.sh developer
+```
+
+Or build all three with one command:
 
 ```bash
 ./build/scripts/build-all.sh
 ```
 
-### Build options
+Build options:
 
 ```bash
-./build/scripts/build.sh home --version 0.1.0-alpha   # Set version string
-./build/scripts/build.sh home --verbose               # Verbose output
-./build/scripts/build.sh home --distro bookworm       # Build on Debian Bookworm
-./build/scripts/build.sh home --clean                 # Clean build artifacts
+./build/scripts/build.sh --help
+# -v, --version VER    Set version string (default: 0.1.0-alpha)
+# -d, --distro CODENAME  Debian codename (default: trixie)
+# --clean              Clean build directory
+# --skip-build         Configure only, do not build
+# --verbose            Verbose build output
 ```
 
-### Build time
+A typical build takes 30–90 minutes per edition depending on network speed and hardware.
 
-Expect 30-90 minutes per edition depending on your internet speed and CPU. Building all three editions takes 1.5-4 hours sequentially.
+Validation runs automatically after each build. The build script runs ISO structural
+validation (ISO9660 filesystem, kernel, initrd, squashfs, BIOS/UEFI boot structures,
+SHA256 checksum) before reporting success. If validation fails, the build is marked failed.
 
-## Step 4: Output Files
+### Step 4: Validate the ISO
 
-ISOs and build logs are saved to:
-
-```
-build/output/
-├── home/
-│   ├── bright-os-0.1.0-alpha-home-amd64.iso
-│   ├── bright-os-0.1.0-alpha-home-amd64.iso.sha256
-│   └── build.log
-├── developer/
-│   ├── bright-os-0.1.0-alpha-developer-amd64.iso
-│   ├── bright-os-0.1.0-alpha-developer-amd64.iso.sha256
-│   └── build.log
-└── lite/
-    ├── bright-os-0.1.0-alpha-lite-amd64.iso
-    ├── bright-os-0.1.0-alpha-lite-amd64.iso.sha256
-    └── build.log
-```
-
-## Step 5: Validate the ISO
-
-Validation runs **automatically** after each edition builds. The build script will:
-- Verify the ISO exists and is not empty
-- Check ISO9660 filesystem structure
-- Verify kernel, initrd, and squashfs are present
-- Check BIOS MBR boot signature and UEFI EFI boot image
-- Verify GRUB and ISOLINUX bootloaders
-- Confirm SHA256 checksum
-
-If validation fails, the build exits with an error and reports the specific issues.
-The ISO and build log are preserved for investigation.
-
-To manually re-validate an ISO:
+After building, validate ISO structure:
 
 ```bash
-./build/scripts/validate-iso.sh build/output/home/bright-os-0.1.0-alpha-home-amd64.iso
+./build/scripts/validate-iso.sh build/output/lite/bright-os-0.1.0-alpha-lite-amd64.iso
 ```
 
-Passing validation means the ISO structure is correct; it does NOT guarantee the OS boots. Always test in QEMU before writing to USB.
-
-Validation checks:
-- File is not empty and is >100 MB
-- Valid ISO 9660 filesystem
-- Hybrid ISO (USB-bootable)
+This checks:
+- ISO 9660 filesystem validity
 - MBR boot signature (BIOS boot)
-- Linux kernel present
-- Initrd present
-- Squashfs root filesystem present
-- EFI boot files (UEFI boot)
-- GRUB bootloader present
-- ISOLINUX present (BIOS boot)
-- SHA256 checksum match (if .sha256 file exists)
+- Kernel and initrd presence
+- SquashFS root filesystem
+- EFI boot files
+- GRUB bootloader
+- SHA256 checksum
 
-Passing validation does **not** guarantee the ISO boots. Always test in QEMU first.
-
-The Calamares installer configuration is validated automatically by `tests/test-installer.sh` (YAML syntax, module ordering, LUKS/GRUB configuration). See [docs/INSTALLER.md](INSTALLER.md) for installation documentation, supported boot modes, and troubleshooting.
-
-## Step 6: Test in QEMU (Optional but Recommended)
+### Step 5: Test in QEMU
 
 ```bash
-./build/scripts/test-in-qemu.sh build/output/home/bright-os-0.1.0-alpha-home-amd64.iso
+# BIOS boot (graphical)
+./build/scripts/test-in-qemu.sh build/output/lite/bright-os-0.1.0-alpha-lite-amd64.iso
+
+# UEFI boot
+./build/scripts/test-in-qemu.sh --uefi build/output/lite/bright-os-0.1.0-alpha-lite-amd64.iso
+
+# Headless serial boot (for servers/CI without display)
+./build/scripts/test-in-qemu.sh --display serial -m 2048 build/output/lite/bright-os-0.1.0-alpha-lite-amd64.iso
+
+# Boot with a virtual disk for installation testing
+./build/scripts/test-in-qemu.sh --disk 20 -m 4096 build/output/lite/bright-os-0.1.0-alpha-lite-amd64.iso
 ```
 
-Or manually:
+QEMU options:
+
+| Option | Description |
+|--------|-------------|
+| `--bios` | BIOS boot mode (default) |
+| `--uefi` | UEFI boot mode (requires ovmf package) |
+| `-m MB` | Memory in MB (default 4096) |
+| `-c N` | Number of CPUs (default 2) |
+| `--display MODE` | gtk (default), sdl, curses, none, serial |
+| `--serial-log FILE` | Log serial console output to file |
+| `--disk SIZE_GB` | Create a temporary virtual disk for installation testing |
+| `--disk-file FILE` | Use an existing disk image |
+| `--dry-run` | Print QEMU command without executing |
+
+### Step 6: Write to USB and Test on Hardware
 
 ```bash
-# BIOS boot
-qemu-system-x86_64 -cdrom build/output/home/bright-os-0.1.0-alpha-home-amd64.iso -m 4G -enable-kvm
-
-# UEFI boot (install ovmf first: sudo apt-get install ovmf)
-qemu-system-x86_64 -cdrom build/output/home/bright-os-0.1.0-alpha-home-amd64.iso -m 4G -enable-kvm -bios /usr/share/OVMF/OVMF_CODE.fd
+sudo dd if=build/output/lite/bright-os-0.1.0-alpha-lite-amd64.iso \
+    of=/dev/sdX bs=4M status=progress conv=fsync
 ```
 
-## Step 7: Publish to GitHub Releases
+Replace `/dev/sdX` with your USB device (e.g., `/dev/sdb`).
 
-After building and validating all three editions, you can publish a release:
+**Always verify the target device first** — writing to the wrong disk will destroy data.
+
+See [HARDWARE-TESTING.md](HARDWARE-TESTING.md) for the hardware testing checklist.
+
+### Step 7: Publish to GitHub Releases
 
 ```bash
 ./build/scripts/publish-release.sh 0.1.0-alpha
 ```
 
-This script:
-1. Verifies GitHub CLI (`gh`) is installed and authenticated
-2. Checks all three ISOs exist and are non-empty
-3. Verifies SHA256 checksums for all three ISOs
-4. Runs ISO validation on all three editions (using validate-iso.sh)
-5. Checks that no ISO exceeds GitHub's 2 GiB file size limit
-6. Refuses to publish if any ISO is missing, invalid, or oversized
-7. Asks for explicit confirmation before publishing
-8. Creates a GitHub Release with the version tag
-9. Uploads the three ISOs and SHA256SUMS file
+This runs ISO validation on all three editions before publishing and creates a GitHub Release with checksums. Publishes only if all ISOs pass validation.
 
-Prerequisites:
-- [GitHub CLI](https://cli.github.com/) installed (`sudo apt-get install gh`)
-- Authenticated (`gh auth login`)
-- Push access to the repository
-- All three editions built successfully
+## Build Output Structure
 
-## Common Issues
+```
+build/output/
+├── lite/
+│   ├── bright-os-0.1.0-alpha-lite-amd64.iso
+│   ├── bright-os-0.1.0-alpha-lite-amd64.iso.sha256
+│   ├── build.log
+│   └── [live-build working directories]
+├── home/
+│   ├── bright-os-0.1.0-alpha-home-amd64.iso
+│   └── ...
+└── developer/
+    ├── bright-os-0.1.0-alpha-developer-amd64.iso
+    └── ...
+```
 
-### "Missing dependencies" error
+## Build Configuration Details
 
-Run the setup script or install dependencies manually as shown in Step 2.
+### live-build Configuration
 
-### "Insufficient disk space" error
+The build uses Debian's `live-build` system with the following configuration (see `build/live-build/auto/config`):
 
-Free up space or build on a partition with 20+ GB free. Each edition needs about 8-15 GB during the build process for package caching and the squashfs image.
+- **Distribution:** Debian 13 Trixie
+- **Architecture:** amd64
+- **Image type:** iso-hybrid (USB + DVD bootable)
+- **Bootloaders:** GRUB for BIOS (grub-pc) and UEFI (grub-efi)
+- **Archive areas:** main, contrib, non-free, non-free-firmware
+- **Apt recommends:** enabled (needed for proper desktop functionality)
+- **Firmware:** included in both chroot and binary images
+- **Secure Boot:** supported via shim-signed
+- **Checksums:** SHA256
+- **Memtest:** disabled
+
+### Three Editions
+
+| Aspect | Home | Developer | Lite |
+|--------|------|-----------|------|
+| Desktop | KDE Plasma | KDE Plasma | LXQt + Openbox |
+| Compositor | KWin | KWin | Picom (X11) / KWin (Wayland) |
+| Browser | Firefox ESR | Firefox ESR | Firefox ESR |
+| Office | LibreOffice | LibreOffice | AbiWord, Gnumeric |
+| Dev tools | — | gcc, clang, cmake, git, docker, qemu, kicad | — |
+| Expected idle RAM | ~800 MB | ~1200 MB | ~500 MB |
+
+### Clean Build
+
+To clean a specific edition's build directory:
+
+```bash
+./build/scripts/build.sh --clean lite
+```
+
+This removes build artifacts but preserves the ISO and checksum.
+
+## Troubleshooting
 
 ### Build fails during package installation
 
-- Check your internet connection
-- Try running with `--verbose` for detailed output
-- Check `build/output/<edition>/build.log` for the full log
-- Debian Trixie is a moving target; package names may change. Check for typos in package lists.
+- Check you have at least 4 GB RAM (8 GB recommended)
+- Check network connectivity to deb.debian.org
+- Check disk space (`df -h`)
+- Review the build log: `build/output/<edition>/build.log`
+- Try cleaning and rebuilding: `./build/scripts/build.sh --clean <edition>`
 
-### ISO is not bootable in QEMU
+### ISO validation fails
 
-- Ensure you built on Debian 13 Trixie with correct bootloader packages
-- Run `validate-iso.sh` — if EFI boot files are missing, ensure `grub-efi-amd64-bin` and `shim-signed` are installed
-- Try both BIOS and UEFI boot modes
+- If SHA256 mismatch: re-download or rebuild
+- If kernel/initrd/squashfs missing: build likely failed partially; clean and rebuild
+- If EFI boot files missing: ensure `grub-efi-amd64-bin` and `shim-signed` are installed
 
-### "Permission denied" errors
+### QEMU boot hangs or is very slow
 
-The build does not need to run as root. However, setup-build-env.sh needs sudo for apt-get. If you see Docker-related permission errors, you are using an unsupported container-based build approach.
+- Without KVM (`/dev/kvm`), QEMU uses TCG software emulation which is 5-20x slower
+- For BIOS boot, add `--bios` explicitly
+- For UEFI, ensure `ovmf` package is installed
+- Try reducing memory to 2048 and CPUs to 2
+- Use `--display serial` to see boot messages without a GUI
 
-### Clean up build artifacts
+### Installer fails during installation
 
-To clean a specific edition's build directory (preserves ISOs):
+- Check Calamares logs in the live environment (dmesg, `/var/log/calamares/`)
+- Ensure the target disk is at least 16 GB
+- For LUKS encryption, ensure cryptsetup-initramfs is installed in the live system
+- See [INSTALLER.md](INSTALLER.md) for detailed troubleshooting
 
-```bash
-./build/scripts/build.sh home --clean
-```
+## Reproducing the Build
 
-To completely remove all build output:
+The sandbox environment used to prepare this release has network restrictions that prevent
+access to Debian package repositories (deb.debian.org). To reproduce a genuine build:
 
-```bash
-rm -rf build/output/
-```
-
-## Writing to USB
-
-```bash
-sudo dd if=build/output/home/bright-os-0.1.0-alpha-home-amd64.iso of=/dev/sdX bs=4M status=progress conv=fsync
-```
-
-Replace `/dev/sdX` with your USB device (e.g., `/dev/sdb`). Use `lsblk` to identify it.
+1. Use a Debian 12 Bookworm or Debian 13 Trixie system (bare metal or VM)
+2. Install dependencies: `sudo apt-get install -y live-build debootstrap squashfs-tools xorriso isolinux syslinux-common mtools dosfstools genisoimage grub-pc-bin grub-efi-amd64-bin shim-signed grub-efi-amd64-signed qemu-system-x86 qemu-utils ovmf`
+3. Clone: `git clone https://github.com/nozaqk/Bright-OS.git && cd Bright-OS`
+4. Check out the release branch: `git checkout arena/phase-16-first-iso-validation`
+5. Run tests: `for t in tests/test-*.sh; do bash "$t"; done` (expect 876 pass, 0 fail)
+6. Build: `./build/scripts/build.sh lite 2>&1 | tee build-lite.log`
+7. Validate: `./build/scripts/validate-iso.sh build/output/lite/bright-os-0.1.0-alpha-lite-amd64.iso`
+8. Boot test: `./build/scripts/test-in-qemu.sh --bios build/output/lite/bright-os-0.1.0-alpha-lite-amd64.iso`
+9. Record the SHA256: `sha256sum build/output/lite/*.iso`
+10. Repeat for home and developer editions

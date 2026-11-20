@@ -80,31 +80,23 @@ dock_auto_hide=false
 animations=${DEFAULT_ANIMATIONS}
 EOF
 
-# Default SDDM config for autologin (live user)
+# Default SDDM config for live session (autologin configured in live boot hook)
 mkdir -p /etc/sddm.conf.d
-cat > /etc/sddm.conf.d/bright-live-autologin.conf << EOF
-[Autologin]
-User=user
-Session=bright.desktop
-Relogin=true
-
+cat > /etc/sddm.conf.d/bright-live.conf << 'EOF'
 [Theme]
 Current=breeze
-EOF
+CursorTheme=breeze_cursors
 
-# Sysctl security hardening
-mkdir -p /etc/sysctl.d
-cat > /etc/sysctl.d/99-bright-os.conf << 'EOF'
-kernel.kptr_restrict = 2
-kernel.dmesg_restrict = 1
-kernel.yama.ptrace_scope = 1
-kernel.sysrq = 0
-net.ipv4.conf.all.rp_filter = 1
-net.ipv4.conf.all.accept_redirects = 0
-net.ipv4.tcp_syncookies = 1
-vm.swappiness = 10
-fs.inotify.max_user_watches = 524288
+[Wayland]
+EnableHiDPI=true
+
+[X11]
+EnableHiDPI=true
 EOF
+# Autologin config is written by live boot hook 05-bright-os at runtime
+# (not at build time, since it needs to exist for the live user)
+
+# Sysctl security hardening is provided by includes.chroot/etc/sysctl.d/99-bright-os-sysctl.conf
 
 # NetworkManager config
 mkdir -p /etc/NetworkManager/conf.d
@@ -146,12 +138,10 @@ if [ -d /usr/share/bright-os/installer ]; then
 fi
 
 # === Install Plymouth theme ===
+# NOTE: Do NOT run update-initramfs here. live-build builds the final initramfs
+# after ALL hooks run. Plymouth default theme is set in hook 20.
 if [ -d /usr/share/bright-os/plymouth ]; then
     cp -rf /usr/share/bright-os/plymouth/* /usr/share/plymouth/themes/bright-os/ 2>/dev/null || true
-    if command -v plymouth-set-default-theme &>/dev/null; then
-        plymouth-set-default-theme bright-os 2>/dev/null || true
-        update-initramfs -u 2>/dev/null || true
-    fi
 fi
 
 # === Install GRUB theme (for installed system) ===

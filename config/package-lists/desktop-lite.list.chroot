@@ -9,6 +9,7 @@
 # - Uses GTK/lighter alternatives for tray applets
 # - LXQt components where lighter than Plasma equivalents
 # - KWin is still installed (from core) for Wayland, but not full Plasma
+# Target: Debian 13 (Trixie) amd64
 # =============================================================================
 
 # --- LXQt core components (lighter panel/settings than Plasma) ---
@@ -53,7 +54,7 @@ xfce4-power-manager
 breeze-cursor-theme
 breeze-icon-theme
 
-# --- Theme support for Qt apps (still needed for Bright Desktop) ---
+# --- Theme support for Qt5 apps (qt6ct is in core for Qt6) ---
 qt5ct
 
 # --- XDG portal for non-Plasma sessions ---

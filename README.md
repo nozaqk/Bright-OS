@@ -2,12 +2,15 @@
 
 **An independent, Linux-based hybrid desktop operating system** for developers, programmers, electronics engineers, and technical professionals — built on Debian Linux with an original desktop environment called Bright Desktop.
 
-> **Status: Alpha 0.1 "Dawn"** — Early development release. The build system is
-> fully configured and validated (**automated tests pass**). Package architecture
-> is cleanly separated into Core (169 packages), Desktop-Plasma (37 packages for
-> Home/Developer), and Desktop-Lite (29 packages for Lite).
-> ISOs are built locally on a Debian Linux machine and published to GitHub Releases.
-> Boot testing is pending the first ISO build.
+> **Status: Alpha 0.1 "Dawn"** — Early development release. The build system and
+> installer are fully configured (**876 automated tests pass, 0 failures across
+> 12 test suites**). Package architecture is cleanly separated into Core, Desktop-Plasma,
+> and Desktop-Lite.
+> 
+> **No genuine ISO has been boot-tested yet** — see [docs/BUILDING.md](docs/BUILDING.md) for
+> exact build and test reproduction steps. ISOs must be built locally on a Debian 12/13
+> machine with network access to Debian package repositories (deb.debian.org).
+> Boot testing in QEMU (BIOS + UEFI) and on real hardware is the next milestone.
 
 ## Download
 
@@ -27,9 +30,9 @@ After downloading, verify the checksum:
 sha256sum -c SHA256SUMS --ignore-missing
 ```
 
-> **Note:** Alpha releases have been structurally validated (filesystem, kernel, initrd,
-> squashfs, BIOS/UEFI boot signatures) but are not yet fully boot-tested. Please test in a
-> virtual machine before installing to physical hardware.
+> **Note:** Alpha releases have static configuration validation but no built ISO has yet
+> been boot-tested. When building from source, always test in QEMU first before installing
+> to physical hardware.
 
 ![Bright OS](branding/icons/bright-os-logo.svg)
 
