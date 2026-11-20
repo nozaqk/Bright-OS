@@ -3,6 +3,7 @@
 # These packages provide the full KDE Plasma desktop experience for
 # Home and Developer editions. Lite edition uses a different, lighter
 # set (see config/package-lists/desktop-lite.list.chroot).
+# Target: Debian 13 (Trixie) amd64
 # =============================================================================
 
 # --- KDE Plasma Desktop ---
@@ -11,7 +12,7 @@ plasma-desktop
 plasma-nm
 plasma-pa
 breeze
-breeze-gtk-theme
+breeze-gtk
 kde-config-gtk-style
 kde-config-gtk-style-preview
 xdg-desktop-portal-kde
@@ -29,8 +30,6 @@ plasma-discover-backend-apt
 
 # --- Theme engines ---
 qt5-style-kvantum
-qt5-style-kvantum-themes
-gtk2-engines-breeze
 gtk2-engines-murrine
 sassc
 optipng
@@ -43,8 +42,7 @@ pavucontrol-qt
 
 # --- Bluetooth ---
 bluez
-bluetooth
-bluez-obexd
+blueman
 
 # --- Printing ---
 cups
@@ -56,7 +54,7 @@ system-config-printer-common
 # --- Image tools (needed for GRUB theme rendering in hooks) ---
 imagemagick
 
-# --- Web browser (included in all editions, but listed here for Plasma integration) ---
+# --- Web browser ---
 firefox-esr
 
 # --- Volume icon for system tray ---

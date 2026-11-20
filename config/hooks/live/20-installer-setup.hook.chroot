@@ -1,6 +1,6 @@
 #!/bin/sh
 # Post-build setup hook for Calamares installer, Plymouth, and theming
-# Runs inside chroot during live-build
+# Runs inside chroot during live-build (after all packages are installed)
 set -e
 
 echo "Setting up Bright OS installer and branding..."
@@ -10,6 +10,8 @@ chmod +x /usr/share/bright-os/installer/postcfg.sh 2>/dev/null || true
 chmod +x /usr/share/bright-os/installer/modules/postcfg.sh 2>/dev/null || true
 
 # Copy Calamares configuration to /etc/calamares
+# NOTE: calamares-settings-debian package installs its own defaults;
+# we overwrite them here with our custom settings AFTER that package is installed.
 mkdir -p /etc/calamares/modules
 mkdir -p /etc/calamares/branding/bright-os
 if [ -f /usr/share/bright-os/installer/settings.conf ]; then
@@ -28,29 +30,27 @@ if [ -d /usr/share/bright-os/plymouth ]; then
     cp -f /usr/share/bright-os/plymouth/* /usr/share/plymouth/themes/bright-os/ 2>/dev/null || true
 fi
 
-# Install Plymouth theme using update-alternatives
+# Install Plymouth theme using update-alternatives (no -R; live-build handles initramfs)
 if [ -f /usr/share/plymouth/themes/bright-os/bright-os.plymouth ]; then
     update-alternatives --install /usr/share/plymouth/themes/default.plymouth default.plymouth \
         /usr/share/plymouth/themes/bright-os/bright-os.plymouth 100 2>/dev/null || true
     update-alternatives --set default.plymouth /usr/share/plymouth/themes/bright-os/bright-os.plymouth 2>/dev/null || true
+    # Do NOT run update-initramfs here; live-build builds the final initramfs after hooks run.
 fi
 
-# Install GRUB theme
-if [ -d /usr/share/bright-os/grub ] && [ -f /usr/share/bright-os/grub/theme.txt ]; then
+# Install GRUB theme to /boot/grub/themes (used by installed system's grub.cfg)
+if [ -d /usr/share/bright-os/grub ]; then
     mkdir -p /boot/grub/themes/bright-os
     cp -f /usr/share/bright-os/grub/* /boot/grub/themes/bright-os/ 2>/dev/null || true
 fi
-
-# Create Calamares launcher on desktop (for live user's desktop)
-# Note: skel file is already placed; live hook 05-bright-os copies it to user's Desktop
 
 # Fix permissions on user binaries
 chmod 755 /usr/bin/bright-* 2>/dev/null || true
 
 # Ensure Calamares has correct permissions for launching via pkexec
-# polkit-kde-agent-1 or policykit-1-gnome handles authentication
+# polkit-kde-agent-1 (Plasma) or policykit-1-gnome (Lite) handles authentication
 
-# Mark as not yet installed (firstboot will run)
+# Mark as not yet installed (firstboot will run on installed system)
 rm -f /etc/bright-os/firstboot-done 2>/dev/null || true
 
 echo "Installer and branding setup complete."

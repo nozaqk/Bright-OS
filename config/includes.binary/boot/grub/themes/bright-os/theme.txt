@@ -1,0 +1,92 @@
+# Bright OS GRUB2 Graphical Theme
+# Consistent with Bright Design System - dark navy with blue accents
+# Image-free theme: uses only colors and fonts (no PNG assets required)
+# This ensures GRUB loads reliably even when theme images are missing.
+
+# Global properties
+title-text: "BRIGHT OS"
+title-color: "#f1f5f9"
+title-font: "DejaVu Sans Bold 24"
+
+message-font: "DejaVu Sans 12"
+message-color: "#94a3b8"
+message-bg-color: "#0a0e1a"
+
+# Solid desktop background color (no image)
+desktop-color: "#0a0e1a"
+
+# Terminal box (where boot messages go after boot selection)
+terminal-border: 0
+terminal-left: 0
+terminal-top: 0
+terminal-width: 100%
+terminal-height: 100%
+
+# Boot menu positioning
++ boot_menu {
+    left = 20%
+    top = 35%
+    width = 60%
+    height = 45%
+    visible = 1
+    menu_font = "DejaVu Sans 14"
+    item_color = "#e2e8f0"
+    item_height = 36
+    item_spacing = 4
+    item_padding = 10
+    selected_item_color = "#ffffff"
+    selected_item_font = "DejaVu Sans Bold 14"
+    icon_width = 0
+    icon_height = 0
+    item_icon_space = 0
+    scrollbar = false
+}
+
+# Progress bar (for boot countdown)
++ progress_bar {
+    id = "__timeout__"
+    left = 35%
+    top = 88%
+    width = 30%
+    height = 3
+    visible = 1
+    show_text = false
+    fg_color = "#3b82f6"
+    bg_color = "#1e293b"
+    border_color = "#334155"
+    text_color = "#94a3b8"
+    font = "DejaVu Sans 11"
+    text = "@TIMEOUT_NOTIFICATION_LONG@"
+}
+
+# Bright OS label at top
++ label {
+    left = 0
+    top = 12%
+    width = 100%
+    align = "center"
+    text = "BRIGHT OS"
+    font = "DejaVu Sans Bold 42"
+    color = "#f1f5f9"
+}
+
++ label {
+    left = 0
+    top = 22%
+    width = 100%
+    align = "center"
+    text = "An independent Linux desktop for developers and makers"
+    font = "DejaVu Sans 14"
+    color = "#60a5fa"
+}
+
+# Version label
++ label {
+    left = 0
+    bottom = 3%
+    width = 100%
+    align = "center"
+    text = "Alpha 0.1  |  Debian Linux base  |  Press E to edit, C for command line"
+    font = "DejaVu Sans 10"
+    color = "#64748b"
+}
