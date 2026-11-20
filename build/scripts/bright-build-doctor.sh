@@ -379,10 +379,11 @@ if command -v lb >/dev/null 2>&1; then
         LB_HAS_SECURE_BOOT=false
     fi
     
-    # Check --mode support: CRITICAL to prevent Ubuntu host auto-detection.
-    # On Ubuntu hosts, live-build defaults to ubuntu mode via /etc/os-release
-    # detection (even with --distribution trixie). Bright OS auto/config forces
-    # --mode debian to ensure the build always targets Debian, not Ubuntu.
+    # Check --mode support: CRITICAL. Bright OS requires --mode to guarantee a
+    # Debian-only build. On Ubuntu hosts, live-build defaults to ubuntu mode via
+    # /etc/os-release detection (even with --distribution trixie). Without
+    # --mode debian, auto/config will abort with a clear error rather than
+    # silently producing an Ubuntu derivative.
     if lb_has_opt "--mode"; then
         pass "live-build supports --mode (debian mode will be forced)"
         if [ -f /etc/os-release ] && grep -qi "ubuntu" /etc/os-release 2>/dev/null; then
@@ -391,17 +392,26 @@ if command -v lb >/dev/null 2>&1; then
             info "  (LB_MODE=ubuntu, ubuntu-keyring, UBUNTU label, ubuntu-oneiric theme)."
         fi
     else
-        warn "live-build does not support --mode (old version)"
-        warn "  If building on Ubuntu, the build may default to Ubuntu mode instead of debian."
-        warn "  Consider upgrading live-build or building on Debian Trixie."
+        fail "live-build does NOT support --mode — cannot safely guarantee a Debian build"
+        info "  Bright OS requires live-build with --mode support to prevent Ubuntu mode"
+        info "  auto-detection. Without it, building on Ubuntu produces an Ubuntu derivative."
+        info ""
+        info "  Install a compatible Debian live-build version:"
+        info "    - Debian 13 Trixie: 'sudo apt install live-build' (1:202xxxx series)"
+        info "    - Ubuntu 24.04: live-build 3.0~a57-1ubuntu49 or later supports --mode"
+        info "    - Use the Docker-based build environment (Debian Trixie base image)"
+        info ""
+        info "  The build will fail at auto/config time until this is resolved."
     fi
     
-    # Check --keyring-packages support: ensures debian-archive-keyring is used
+    # Check --keyring-packages support: ensures debian-archive-keyring is used.
+    # Advisory only — without this option, --mode debian causes modern live-build
+    # to default to debian-archive-keyring anyway.
     if lb_has_opt "--keyring-packages"; then
         pass "live-build supports --keyring-packages (debian-archive-keyring will be used)"
     else
         warn "live-build does not support --keyring-packages"
-        warn "  Keyring will default to host distribution; verify build targets Debian."
+        warn "  Keyring will default based on --mode (debian-archive-keyring with --mode debian)."
     fi
     
     if [ "$LB_HAS_MODERN_BOOTLOADERS" = false ]; then
