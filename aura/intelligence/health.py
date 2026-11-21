@@ -4,30 +4,40 @@ Runs a periodic lightweight health check on each registered provider and
 emits state transitions. Useful for detecting crashed llama.cpp subprocesses
 or a stopped local Ollama service.
 
-Phase 2.2.2 lifecycle hardening
+Phase 2.2.3 lifecycle hardening
 -------------------------------
 The monitor uses an explicit STOPPED/STARTING/RUNNING/STOPPING state machine
-guarded by a Condition variable, with a generation counter that identifies
-each start/stop cycle:
+guarded by a Condition variable, with a per-generation stop Event and an
+explicit stop-owner field.
 
-  * start() blocks until the monitoring loop is RUNNING. It creates a
-    per-generation stop Event so that a new start() cannot accidentally
-    clear or signal the previous generation's cancellation.
-  * stop() uses generation-scoped ownership: only one caller performs the
-    actual join; other concurrent stop() callers wait on the Condition
-    for STOPPED. stop() never transitions to STOPPED while the thread is
-    still alive — STOPPED is set exclusively by the loop body's finally
-    block as the thread exits.
-  * If join() times out (e.g. a provider health_check blocks longer than
-    the join timeout), state remains STOPPING and the thread reference is
-    retained. A subsequent stop() will resume the join; a subsequent
-    start() cannot create a new thread until state is STOPPED. stop()
-    never falsely reports successful shutdown.
-  * A loop's finally block only transitions state to STOPPED if the loop
-    still owns the lifecycle (its generation matches _generation and the
-    current _thread is itself). This prevents a stale finally from
-    clobbering a newer generation.
-  * Callback-triggered stop() from a listener never self-joins.
+Lifecycle transitions:
+  STOPPED -> STARTING -> RUNNING -> STOPPING -> STOPPED
+
+Key guarantees:
+  * start() blocks until the monitor is RUNNING. It creates a fresh stop
+    Event for the new generation so a new start() cannot accidentally
+    clear or signal the previous generation's cancellation. start()
+    refuses to create a new monitor thread while a previous generation's
+    thread is still alive (defensive live-thread check).
+  * stop() uses a _stop_owner field (threading.Thread or None) guarded
+    by _cv. At most one caller owns the join at any time. Waiters
+    encountering STOPPING re-evaluate after every notify_all(): if
+    _stop_owner is None (either because the previous owner finished
+    successfully — state is STOPPED — or because it timed out and
+    released ownership) a new caller can claim ownership and join the
+    existing monitor thread.
+  * When a join times out (stuck health_check), the owner releases
+    _stop_owner (sets it to None), leaves _state=STOPPING with
+    _thread/_stop_event retained, logs a warning, and returns. A
+    subsequent stop() retries the join; stop() never falsely reports
+    STOPPED while the thread is alive.
+  * A loop's finally block transitions state to STOPPED only if it
+    still owns the lifecycle (matching generation AND self._thread
+    identity match). This prevents a stale finally from clobbering a
+    newer generation.
+  * Callback-triggered stop() from the monitor thread signals without
+    self-joining (avoids deadlock); the loop's own finally finishes
+    the transition.
 """
 import enum
 import logging
@@ -57,6 +67,11 @@ _JOIN_POLL_INTERVAL = 1.0
 
 
 class HealthMonitor:
+    # Join timeout/poll defaults. Exposed as class attributes so tests
+    # can override for fast deterministic scenarios without sleeping 30s.
+    JOIN_TOTAL_TIMEOUT: float = 30.0
+    JOIN_POLL_INTERVAL: float = 1.0
+
     def __init__(self, check_interval: float = 30.0):
         self._providers: Dict[str, Provider] = {}
         self._data_lock = threading.Lock()  # protects providers/snapshots/listeners
@@ -71,6 +86,19 @@ class HealthMonitor:
         self._generation = 0
         self._thread: Optional[threading.Thread] = None
         self._stop_event: Optional[threading.Event] = None
+        # Set to the generation id when _loop successfully enters
+        # RUNNING. Used by start() to distinguish "our generation
+        # reached RUNNING and was then stopped" (success) from "our
+        # generation was cancelled before ever reaching RUNNING"
+        # (retry).
+        self._running_generation: int = 0
+
+        # Stop-owner tracking. Only the thread that is currently
+        # performing a join (i.e., owns the STOPPING transition) is
+        # stored here. None means nobody currently owns the stop; in
+        # state STOPPING with _stop_owner=None, a new caller may claim
+        # ownership and retry the join.
+        self._stop_owner: Optional[threading.Thread] = None
 
         self._state_snapshots: Dict[str, ProviderState] = {}
         self._listeners: List[
@@ -103,155 +131,250 @@ class HealthMonitor:
         start() has already brought it to RUNNING). If a stop is in
         progress (STOPPING), waits for the previous thread to actually
         exit (state == STOPPED and no live thread) before creating a new
-        generation. Safe to call concurrently and idempotent.
+        generation. If a racing stop cancels our attempt before the loop
+        reaches RUNNING, we retry automatically so the caller always
+        observes RUNNING on return. Safe to call concurrently and
+        idempotent.
         """
-        t_to_start: Optional[threading.Thread] = None
-        my_stop_event: Optional[threading.Event] = None
-        my_gen = 0
+        # Outer retry loop: if a racing stop beats us to cancelling the
+        # generation we started, loop back and start a fresh one.
+        while True:
+            t_to_start: Optional[threading.Thread] = None
+            my_stop_event: Optional[threading.Event] = None
+            my_gen = 0
 
-        with self._cv:
-            while True:
-                if self._state == _State.RUNNING:
-                    # Already running; nothing to do.
-                    return
-                if self._state in (_State.STARTING, _State.STOPPING):
-                    # Wait for any in-progress transition to quiesce.
+            with self._cv:
+                while True:
+                    if self._state == _State.RUNNING:
+                        return
+                    if self._state in (_State.STARTING, _State.STOPPING):
+                        self._cv.wait()
+                        continue
+                    assert self._state == _State.STOPPED, (
+                        f"unexpected state before start: {self._state}")
+                    # Refuse to start if a monitor thread is still alive.
+                    if self._thread is not None and self._thread.is_alive():
+                        self._cv.wait()
+                        continue
+                    break
+
+                self._state = _State.STARTING
+                self._generation += 1
+                my_gen = self._generation
+                my_stop_event = threading.Event()
+                self._stop_event = my_stop_event
+                t = threading.Thread(
+                    target=self._loop,
+                    args=(my_gen, my_stop_event),
+                    name="aura-provider-health",
+                    daemon=True,
+                )
+                self._thread = t
+                t_to_start = t
+                # Notify waiters that state has changed to STARTING so
+                # they re-evaluate (e.g. other start() callers that
+                # might otherwise miss the transition).
+                self._cv.notify_all()
+
+            assert t_to_start is not None
+            t_to_start.start()
+
+            # Wait until we know the outcome of our start attempt:
+            #  * RUNNING observed (for our gen or newer) → success.
+            #  * STOPPED observed and _running_generation >= my_gen →
+            #    success (our gen or a newer one reached RUNNING before
+            #    being stopped; from the caller's perspective the start
+            #    happened).
+            #  * STOPPED observed and _running_generation < my_gen →
+            #    our gen was cancelled before it ever reached RUNNING
+            #    (racing stop beat us); retry outer loop.
+            with self._cv:
+                while True:
+                    if self._state == _State.RUNNING:
+                        return
+                    if self._state == _State.STOPPED:
+                        if self._running_generation >= my_gen:
+                            return  # ran (us or newer) then stopped
+                        # Our gen was cancelled before RUNNING; retry.
+                        break
                     self._cv.wait()
-                    continue
-                assert self._state == _State.STOPPED, (
-                    f"unexpected state before start: {self._state}")
-                # Defensive: refuse to start if a monitor thread is still
-                # alive (shouldn't happen if state is STOPPED, but guard
-                # against any future bug that leaves a live thread).
-                if self._thread is not None and self._thread.is_alive():
-                    self._cv.wait()
-                    continue
-                break
-
-            # We own the STARTING transition.
-            self._state = _State.STARTING
-            self._generation += 1
-            my_gen = self._generation
-            my_stop_event = threading.Event()
-            self._stop_event = my_stop_event
-            t = threading.Thread(
-                target=self._loop,
-                args=(my_gen, my_stop_event),
-                name="aura-provider-health",
-                daemon=True,
-            )
-            self._thread = t
-            t_to_start = t
-
-        assert t_to_start is not None
-        assert my_stop_event is not None
-        t_to_start.start()
-
-        with self._cv:
-            while self._state == _State.STARTING:
-                self._cv.wait()
 
     def stop(self):
         """Stop the monitor.
 
         Blocks until the monitoring loop has fully exited and the thread
-        has been joined, or until _JOIN_TOTAL_TIMEOUT elapses (in which
-        case state remains STOPPING and the caller may retry).
+        has been joined, or until JOIN_TOTAL_TIMEOUT elapses — in which
+        case state remains STOPPING, stop-ownership is released, and the
+        caller may call stop() again to retry joining.
+
+        STOPPED vs STOPPING:
+          * STOPPED means the monitor thread is dead and the monitor is
+            ready for start().
+          * STOPPING means someone has requested shutdown; the monitor
+            thread may or may not still be alive. If stop() returned due
+            to timeout, the thread is still alive and _stop_owner is
+            None so another stop() can claim ownership and retry.
 
         When called from the monitor thread itself (e.g. from a health-
-        change listener), signals the loop to stop and returns immediately
-        without self-joining; the loop's own finally block will complete
-        the transition to STOPPED.
+        change listener), signals the loop and returns immediately
+        without self-joining; the loop's own finally finishes shutdown.
 
-        Concurrent stop() calls serialize: only one transitions the
-        state to STOPPING; the others wait on the Condition for STOPPED.
-        We deliberately do NOT clear self._thread here; the loop's
-        finally block is the only place that clears it, so the loop can
-        always identify itself as owner when it exits.
+        Concurrent stop() calls: at most one caller performs the join
+        (sets _stop_owner to itself). Other callers wait on the
+        Condition and re-evaluate; they do not mark STOPPED themselves.
         """
-        join_thread: Optional[threading.Thread] = None
+        me = threading.current_thread()
 
-        with self._cv:
-            while True:
+        while True:
+            join_thread: Optional[threading.Thread] = None
+            join_gen: int = -1
+            i_am_owner = False
+
+            with self._cv:
+                # Fast path: already STOPPED.
                 if self._state == _State.STOPPED:
                     return
 
+                # Always signal the current generation's stop event;
+                # harmless to set repeatedly.
                 if self._stop_event is not None:
                     self._stop_event.set()
 
-                me = threading.current_thread()
+                # Self-stop (from listener callback on the monitor thread):
+                # signal but never self-join.
                 if self._thread is not None and self._thread is me:
-                    # Listener-callback stop from the monitor thread.
                     if self._state in (_State.STARTING, _State.RUNNING):
                         self._state = _State.STOPPING
+                        self._stop_owner = None  # nobody is joining
                     self._cv.notify_all()
                     return
 
-                if self._state == _State.STOPPING:
-                    # Another caller owns this stop; wait for STOPPED.
-                    while self._state == _State.STOPPING:
-                        self._cv.wait()
-                    # After waiting: either STOPPED (done), or a newer
-                    # generation started (RUNNING/STARTING) — loop back
-                    # to top.
-                    continue
                 if self._state == _State.STARTING:
-                    # start() has assigned a Thread but the loop hasn't
-                    # entered RUNNING yet. Wait for it to resolve.
+                    # start() is still bringing the thread up; wait.
                     self._cv.wait()
                     continue
-                # state is RUNNING — we own the STOPPING transition.
-                assert self._state == _State.RUNNING, (
-                    f"unexpected state in stop: {self._state}")
-                assert self._thread is not None, "RUNNING without _thread"
+
+                if self._state == _State.STOPPING:
+                    owner_alive = (self._stop_owner is not None
+                                   and self._stop_owner.is_alive()
+                                   and self._stop_owner is not me)
+                    if owner_alive:
+                        # Another live thread is performing the join;
+                        # wait for it to finish (either it succeeds —
+                        # state becomes STOPPED — or it times out and
+                        # releases ownership — _stop_owner becomes None
+                        # and we loop back to claim it).
+                        self._cv.wait()
+                        continue
+                    else:
+                        # Either no owner (previous caller timed out
+                        # and released ownership) or owner is dead
+                        # (shouldn't happen normally, but defensive).
+                        # We can claim ownership and join the existing
+                        # _thread.
+                        pass
+
+                elif self._state == _State.RUNNING:
+                    # We are the first to initiate stop.
+                    pass
+                else:  # pragma: no cover - defensive
+                    self._cv.wait()
+                    continue
+
+                # Claim ownership. Capture the generation we are
+                # stopping so post-join cleanup never clobbers a newer
+                # generation that a concurrent start() may create.
+                assert self._thread is not None, (
+                    f"cannot claim stop with no _thread (state={self._state})")
                 self._state = _State.STOPPING
+                self._stop_owner = me
                 join_thread = self._thread
+                join_gen = self._generation
+                i_am_owner = True
                 self._cv.notify_all()
-                break
 
-        # Join OUTSIDE the lock. Poll repeatedly so a health_check that
-        # completes after the initial wakeup is observed.
-        deadline = time.monotonic() + _JOIN_TOTAL_TIMEOUT
-        timed_out = False
-        if join_thread is not None and join_thread is not threading.current_thread():
-            while True:
-                if not join_thread.is_alive():
-                    break
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    timed_out = True
-                    break
-                try:
-                    join_thread.join(timeout=min(_JOIN_POLL_INTERVAL, remaining))
-                except RuntimeError:
-                    # "cannot join before started" — tight race with
-                    # start() phase 2 calling t.start(); yield.
-                    time.sleep(0.001)
+            # --- Join OUTSIDE the lock ---
+            assert join_thread is not None
+            deadline = time.monotonic() + self.JOIN_TOTAL_TIMEOUT
+            timed_out = False
 
-        with self._cv:
-            if timed_out:
-                # Join timed out — thread is still alive. Leave state
-                # as STOPPING, keep _thread pointing at the live thread,
-                # so subsequent stop/start calls behave correctly.
-                logger.warning(
-                    "HealthMonitor thread did not exit within %.1fs "
-                    "(provider health_check likely stuck); state remains "
-                    "STOPPING. Call stop() again to retry.",
-                    _JOIN_TOTAL_TIMEOUT)
+            # Note: even if we're not the owner (shouldn't happen after
+            # the claim above, but in a pathological re-entry), guard
+            # against self-join.
+            if join_thread is me:
+                # Callback re-entry; shouldn't reach here because we
+                # return early above, but be safe.
+                pass
+            else:
+                while True:
+                    if not join_thread.is_alive():
+                        break
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        timed_out = True
+                        break
+                    try:
+                        join_thread.join(
+                            timeout=min(self.JOIN_POLL_INTERVAL, remaining))
+                    except RuntimeError:
+                        # "cannot join before it is started"
+                        time.sleep(0.001)
+
+            with self._cv:
+                if not i_am_owner:
+                    self._cv.notify_all()
+                    return
+
+                if timed_out:
+                    # Release ownership but DO NOT clear _thread/_state.
+                    # The monitor thread is still alive; its finally
+                    # will run when it eventually exits and will do
+                    # the cleanup (identity check still works because
+                    # we leave _thread pointing at it).
+                    self._stop_owner = None
+                    logger.warning(
+                        "HealthMonitor thread did not exit within %.1fs "
+                        "(provider health_check likely stuck); state "
+                        "remains STOPPING and ownership has been "
+                        "released. Call stop() again to retry.",
+                        self.JOIN_TOTAL_TIMEOUT)
+                    self._cv.notify_all()
+                    return
+
+                # Thread is dead (we observed join() returning). Release
+                # ownership and yield _cv briefly so the loop's finally
+                # can run its cleanup. Crucially, we only wait/cleanup
+                # for the GENERATION we were stopping — if a concurrent
+                # start() already created a newer generation (advanced
+                # self._generation past join_gen), we must not touch
+                # state/_thread because that new gen owns them.
+                self._stop_owner = None
+                self._cv.notify_all()
+                if self._generation == join_gen:
+                    # Give the finally a fair chance to acquire _cv and
+                    # transition this generation to STOPPED.
+                    waited = 0.0
+                    while waited < 0.25 and (self._state != _State.STOPPED
+                                             or self._thread is not None):
+                        self._cv.wait(timeout=0.02)
+                        waited += 0.02
+                    # Defensive: if finally hasn't cleaned up (killed
+                    # thread, unexpected exception), finalize this
+                    # generation ourselves.
+                    if (self._generation == join_gen
+                            and (self._state != _State.STOPPED
+                                 or self._thread is not None)):
+                        self._state = _State.STOPPED
+                        self._thread = None
+                        self._stop_event = None
+                # else: new generation already started; its lifecycle
+                # is no longer ours to touch. The dead thread's finally
+                # will still run but will correctly skip cleanup
+                # because self._generation != generation (its gen) and
+                # self._thread is not current_thread() (it points at
+                # the new gen's Thread).
                 self._cv.notify_all()
                 return
-            # Thread is dead. The loop's finally block SHOULD have
-            # transitioned state to STOPPED and cleared _thread/_stop_event.
-            # If it hasn't yet (still running finally), wait briefly.
-            if self._state != _State.STOPPED:
-                # Fallback: if for any reason the loop's finally hasn't
-                # run (e.g. it was killed before finally executed), do
-                # the cleanup ourselves. This is defensive; in the
-                # normal path the finally runs first.
-                self._state = _State.STOPPED
-                self._thread = None
-                self._stop_event = None
-                self._cv.notify_all()
 
     def _loop(self, generation: int, stop_event: threading.Event):
         """Monitoring loop body.
@@ -270,6 +393,7 @@ class HealthMonitor:
                     and self._state == _State.STARTING
                     and self._thread is threading.current_thread()):
                 self._state = _State.RUNNING
+                self._running_generation = generation
                 entered_running = True
                 self._cv.notify_all()
         try:
@@ -293,6 +417,7 @@ class HealthMonitor:
                     self._state = _State.STOPPED
                     self._thread = None
                     self._stop_event = None
+                    self._stop_owner = None
                     self._cv.notify_all()
 
     def _check_all(self):
