@@ -1,0 +1,75 @@
+#!/bin/bash
+# =============================================================================
+# AURA subsystem installation hook (chroot hook)
+# Runs during live-build chroot phase to install the AURA source tree,
+# create the aura user, enable the systemd service, and set permissions.
+# =============================================================================
+set -e
+
+echo "I: Installing AURA subsystem..." | systemd-cat -t bright-os-aura -p info
+
+AURA_SRC="/usr/lib/aura"
+AURA_USER="aura"
+
+# --- Copy AURA source tree from the build context ---
+# The aura/ directory from the repository is placed at /usr/lib/aura/
+# by live-build includes.chroot mechanism. Ensure directory exists.
+mkdir -p "$AURA_SRC"
+
+# If the source files aren't there yet (depends on config/includes.chroot),
+# the package-lists/aura-core.list will install them via a .deb.
+# For direct chroot installs, we also handle it here.
+if [ -d /build/aura ]; then
+    cp -r /build/aura/* "$AURA_SRC/"
+fi
+
+# --- Ensure the aura user exists ---
+if ! id "$AURA_USER" >/dev/null 2>&1; then
+    echo "I: Creating aura system user..." | systemd-cat -t bright-os-aura -p info
+    useradd --system \
+            --no-create-home \
+            --home-dir /var/lib/aura \
+            --shell /usr/sbin/nologin \
+            --user-group \
+            --comment "Bright OS AURA Assistant" \
+            "$AURA_USER" 2>/dev/null || true
+fi
+
+# --- Create state/log directories with correct ownership ---
+mkdir -p /var/lib/aura/backups
+mkdir -p /var/log/aura
+chown -R "$AURA_USER:$AURA_USER" /var/lib/aura
+chown "$AURA_USER:adm" /var/log/aura
+chmod 0750 /var/lib/aura
+chmod 0750 /var/lib/aura/backups
+chmod 0750 /var/log/aura
+
+# --- Create config directory ---
+mkdir -p /etc/bright-os/aura
+chmod 0755 /etc/bright-os/aura
+# If no config file exists yet, install the default
+if [ ! -f /etc/bright-os/aura/aura.conf ]; then
+    cp /usr/share/aura/aura.conf.default /etc/bright-os/aura/aura.conf 2>/dev/null || true
+fi
+
+# --- Ensure Python module is importable ---
+touch "$AURA_SRC/__init__.py" 2>/dev/null || true
+
+# --- Make executable ---
+chmod +x /usr/bin/aura-core-service 2>/dev/null || true
+
+# --- Enable systemd service ---
+if [ -d /etc/systemd/system ]; then
+    systemctl enable aura-core.service 2>/dev/null || true
+    echo "I: aura-core.service enabled" | systemd-cat -t bright-os-aura -p info
+fi
+
+# --- Apply sysusers.d/tmpfiles.d if not already applied ---
+if command -v systemd-sysusers >/dev/null 2>&1; then
+    systemd-sysusers /etc/aura/sysusers.d/aura.conf 2>/dev/null || true
+fi
+if command -v systemd-tmpfiles >/dev/null 2>&1; then
+    systemd-tmpfiles --create /etc/aura/tmpfiles.d/aura.conf 2>/dev/null || true
+fi
+
+echo "I: AURA subsystem installation complete." | systemd-cat -t bright-os-aura -p info

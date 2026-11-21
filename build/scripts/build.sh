@@ -275,11 +275,14 @@ check_source_files() {
         "${LIVE_BUILD_DIR}/auto/clean"
         "${CONFIG_DIR}/package-lists/core.list.chroot"
         "${CONFIG_DIR}/package-lists/desktop.list.chroot"
+        "${CONFIG_DIR}/package-lists/aura-core.list.chroot"
         "${CONFIG_DIR}/hooks/live/00-bright-os-branding.hook.chroot"
         "${CONFIG_DIR}/hooks/live/10-bright-os-components.hook.chroot"
+        "${CONFIG_DIR}/hooks/live/40-aura-setup.hook.chroot"
         "${CONFIG_DIR}/includes.binary/boot/grub/grub.cfg"
         "${CONFIG_DIR}/includes.chroot/etc/bright-os/edition"
         "${CONFIG_DIR}/includes.chroot/usr/bin/bright-desktop-shell"
+        "${CONFIG_DIR}/includes.chroot/usr/bin/aura-core-service"
         "${CONFIG_DIR}/includes.chroot/usr/share/bright-os/Shell.qml"
         "${CONFIG_DIR}/includes.chroot/usr/share/bright-os/bright-desktop-shell.py"
         "${CONFIG_DIR}/includes.chroot/usr/share/bright-os/design/DesignTokens.js"
@@ -287,6 +290,8 @@ check_source_files() {
         "${CONFIG_DIR}/includes.chroot/usr/share/bright-os/installer/settings.conf"
         "${CONFIG_DIR}/includes.chroot/usr/share/bright-os/installer/modules/bootloader.conf"
         "${CONFIG_DIR}/includes.chroot/usr/share/bright-os/installer/modules/displaymanager.conf"
+        "${CONFIG_DIR}/includes.chroot/etc/systemd/system/aura-core.service"
+        "${CONFIG_DIR}/includes.chroot/etc/dbus-1/system.d/org.bright_os.AURA.conf"
         "${EDITIONS_DIR}/${EDITION}/packages.list"
     )
     local missing=0
@@ -385,6 +390,15 @@ if [ -d "${EDITION_HOOKS_DIR}" ]; then
     if [ $hook_count -gt 0 ]; then
         log_info "Copied ${hook_count} edition-specific hook(s)"
     fi
+fi
+
+# --- Copy AURA source tree to chroot ---
+AURA_SRC_DIR="${PROJECT_ROOT}/aura"
+AURA_DEST_DIR="config/includes.chroot/usr/lib/aura"
+if [ -d "${AURA_SRC_DIR}" ]; then
+    mkdir -p "${AURA_DEST_DIR}"
+    cp -r "${AURA_SRC_DIR}/"* "${AURA_DEST_DIR}/"
+    log_info "Copied AURA source tree to ${AURA_DEST_DIR}"
 fi
 
 # --- Apply Lite edition specific configuration ---
