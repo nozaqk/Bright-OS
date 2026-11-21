@@ -261,8 +261,17 @@ for edition in home developer lite; do
 done
 
 echo ""
+echo "--- Python regression unit tests ---"
+# Run from project root so 'aura' package is importable.
+( cd "$PROJECT_ROOT" && python3 -m unittest discover -s aura/tests -p 'test_*.py' -v ) 2>&1
+if [ $? -eq 0 ]; then
+    pass "Python unit tests (components + shutdown regressions) pass"
+else
+    fail "Python unit tests failed"
+fi
+
 echo "--- Documentation ---"
-for doc in ARCHITECTURE.md SECURITY.md AI-MODES.md COMMAND-EXECUTION.md DEVELOPMENT.md INSTALLATION.md; do
+for doc in ARCHITECTURE.md SECURITY.md AI-MODES.md LOCAL-MODELS.md RESOURCE-MANAGEMENT.md PRIVACY.md COMMAND-EXECUTION.md DEVELOPMENT.md INSTALLATION.md; do
     if [ -f "docs/aura/$doc" ]; then
         pass "docs/aura/$doc exists"
     else

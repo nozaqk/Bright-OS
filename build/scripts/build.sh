@@ -401,7 +401,10 @@ if [ -d "${AURA_SRC_DIR}" ]; then
     log_info "Copied AURA source tree to ${AURA_DEST_DIR}"
 fi
 
-# --- Apply Lite edition specific configuration ---
+# --- Apply edition-specific configuration ---
+mkdir -p config/includes.chroot/etc/bright-os
+echo "${EDITION}" > config/includes.chroot/etc/bright-os/edition
+
 if [ "${EDITION}" = "lite" ]; then
     mkdir -p config/includes.chroot/etc/systemd/system
     # Mask heavy services not needed in Lite

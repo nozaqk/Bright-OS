@@ -15,14 +15,26 @@ AURA (Assistant for Understanding, Response, and Action) is Bright OS's native i
 
 ```
 aura/
-├── core/           # Service manager, config, logging, D-Bus interface
-├── intelligence/   # AI provider abstraction (local/hybrid/offline) [Phase 2]
-├── commands/       # Task planning, permissions, restricted execution  [Phase 3]
-├── security/       # Behavioural monitoring and controlled protection [Phase 4]
-├── memory/         # User-controlled local memory                      [Phase 5]
-├── recovery/       # Backup, integrity checks, safe rollback          [Phase 5]
-├── api/            # Public D-Bus API definitions                      [Phase 1]
-└── tests/          # Automated tests
+├── core/                # Service manager, config, logging, D-Bus interface
+├── intelligence/        # AI engine (Phase 2):
+│   ├── provider.py      #   Abstract provider interface
+│   ├── providers/       #   llama.cpp, Ollama (optional), cloud (HTTPS)
+│   ├── inference.py     #   InferenceEngine (top-level coordinator)
+│   ├── model_manager.py #   Model discovery and user-initiated downloads
+│   ├── model_info.py    #   GGUF validation, memory estimation
+│   ├── resource_manager.py # Adaptive RAM/CPU/battery policy (mandatory)
+│   ├── mode_manager.py  #   local / hybrid / offline mode switching
+│   ├── conversation.py  #   Per-conversation history + context truncation
+│   ├── hardware.py      #   RAM/CPU/GPU/battery/storage detection
+│   ├── health.py        #   Provider health monitor
+│   ├── secure_store.py  #   API-key storage (no plaintext in config)
+│   └── editions.py      #   Home / Developer / Lite edition profiles
+├── commands/            # Task planning, permissions, restricted execution [Phase 3]
+├── security/            # Behavioural monitoring and controlled protection  [Phase 4]
+├── memory/              # User-controlled local memory                       [Phase 5]
+├── recovery/            # Backup, integrity checks, safe rollback           [Phase 5]
+├── api/                 # Public D-Bus API definitions                       [Phase 1]
+└── tests/               # Automated tests
 ```
 
 ## System Integration
@@ -70,6 +82,19 @@ The systemd unit applies the following restrictions to the AURA process:
 | `GetAllComponentStatus()` | → `a{sa{sv}}` | Status of all components |
 | `IsComponentHealthy(s)` | name → `b` | Quick health check |
 | `GetAIMode()` | → `s` | Current AI mode ("local"/"hybrid"/"offline") |
+| `SetAIMode(s)` | mode → `b` | Change AI mode (no reinstall needed) |
+| `ListAIModels()` | → `aa{sv}` | List locally available models and their metadata |
+| `ListAIProviders()` | → `aa{sv}` | List providers and their current state |
+| `GetActiveAIProvider()` | → `s` | Name of currently active provider |
+| `GetLoadedModel()` | → `s` | Model ID currently loaded (or "") |
+| `LoadAIModel(s)` | model_id → `b` | Load a model (subject to resource policy) |
+| `UnloadAIModel()` | → | Unload the currently loaded model |
+| `GetHardwareSuitability(s)` | model_id → `a{sv}` | Check if a model fits on current hardware |
+| `GetResourceUsage()` | → `a{sv}` | Current RAM/CPU/battery snapshot |
+| `GetInferenceStatus()` | → `a{sv}` | Active requests / loaded model |
+| `CancelInference(s)` | request_id → `b` | Cancel a running inference |
+| `CancelAllInference()` | → | Cancel all in-flight requests |
+| `GrantCloudConsent(b)` | granted → `b` | Grant/revoke consent for hybrid cloud calls |
 | `Shutdown()` | → | Request clean shutdown (requires auth) |
 
 ### Signals
@@ -78,6 +103,7 @@ The systemd unit applies the following restrictions to the AURA process:
 |--------|-----------|-------------|
 | `ComponentStateChanged` | `ssa{sv}` | A component changed state |
 | `SecurityAlert` | `sa{sv}` | Security engine detected a threat |
+| `AIEvent` | `sa{sv}` | Intelligence event (model_loaded, model_unloaded, inference_*, mode_changed) |
 
 ## Lifecycle
 
@@ -91,11 +117,11 @@ The systemd unit applies the following restrictions to the AURA process:
 
 ## Current Implementation Status
 
-- **Phase 1 (Core)**: IMPLEMENTED — systemd service, D-Bus API, config, logging, component manager, security hardening
-- **Phase 2 (Intelligence)**: Pending
+- **Phase 1 (Core)**: IMPLEMENTED - systemd service, D-Bus API, config, logging, component manager, security hardening; regression fixes for DISABLED-state race and Shutdown mainloop bug
+- **Phase 2 (Intelligence)**: IMPLEMENTED - provider architecture (llama.cpp/Ollama/cloud), adaptive resource manager, three AI modes (local/hybrid/offline), lazy loading, idle unload, battery-aware policy, hardware suitability checks, model validation, secure key storage, conversation manager, provider health monitoring, D-Bus API extensions, edition profiles, privacy controls
 - **Phase 3 (Commands)**: Pending
 - **Phase 4 (Security)**: Pending
 - **Phase 5 (Memory/Recovery)**: Pending
 - **Phase 6 (Desktop UI)**: Pending
-- **Phase 7 (Editions)**: Pending
-- **Phase 8 (ISO regression)**: Pending
+- **Phase 7 (Editions)**: PARTIAL (edition detection + defaults; full packaging splits pending)
+- **Phase 8 (ISO regression)**: PENDING (requires full live-build environment)
