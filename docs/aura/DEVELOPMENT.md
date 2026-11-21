@@ -82,3 +82,32 @@ from aura.core.aura_core_service import *
 
 - Phase 1 (Core): COMPLETE — service, D-Bus, systemd, config, tests
 - Phase 2-8: PENDING — see ARCHITECTURE.md for details
+
+## Testing the Intelligence Engine
+
+The intelligence engine unit tests run without any model weights and
+without llama.cpp installed, using mocked providers:
+
+```bash
+python3 -m unittest discover -s aura/tests -p 'test_*.py' -v
+```
+
+Key design rules enforced by tests:
+- Models MUST NOT be loaded at boot (even when a default model is set).
+- DISABLED components must stay DISABLED (regression for Phase 1 bug).
+- Shutdown() must quit the active GLib mainloop (regression for Phase 1 bug).
+- Idle models must be unloaded after the configured threshold.
+- Cloud calls must be denied unless the mode is hybrid AND consent is given.
+- API key files must have mode 0600 or be refused.
+- Memory assessment must reject models larger than available RAM.
+- Cancellation must interrupt in-flight requests.
+
+### Adding a new provider
+
+1. Subclass `aura.intelligence.provider.Provider`.
+2. Implement `check_available`, `is_model_compatible`, `load_model`,
+   `unload_model`, `generate`, and `estimated_memory_for`.
+3. Honor `request.cancel` in your generate loop for graceful cancellation.
+4. Never call the network from a provider marked `local = True`.
+5. Never shell out with user-generated input.
+6. Register your provider in `InferenceEngine._register_default_providers`.

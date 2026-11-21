@@ -13,6 +13,14 @@ python3-gi
 python3-yaml
 python3-pip
 python3-setuptools
+python3-psutil
+
+# --- Optional local inference backend ---
+# llama.cpp may or may not be packaged in Debian Trixie at time of build;
+# the AURA intelligence engine gracefully stays UNAVAILABLE when the binary
+# is not installed, and users can install it post-install. Administrators
+# may uncomment or add the actual package name here if their mirror has it.
+# llama.cpp
 
 # --- D-Bus and systemd (required for service activation) ---
 dbus

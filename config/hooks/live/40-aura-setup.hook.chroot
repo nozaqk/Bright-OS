@@ -37,11 +37,15 @@ fi
 
 # --- Create state/log directories with correct ownership ---
 mkdir -p /var/lib/aura/backups
+mkdir -p /var/lib/aura/models
+mkdir -p /var/lib/aura/conversations
 mkdir -p /var/log/aura
 chown -R "$AURA_USER:$AURA_USER" /var/lib/aura
 chown "$AURA_USER:adm" /var/log/aura
 chmod 0750 /var/lib/aura
 chmod 0750 /var/lib/aura/backups
+chmod 0750 /var/lib/aura/models
+chmod 0700 /var/lib/aura/conversations
 chmod 0750 /var/log/aura
 
 # --- Create config directory ---
