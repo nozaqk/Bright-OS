@@ -56,3 +56,25 @@ In hybrid mode, AURA refuses to send requests to:
 - llama.cpp (the preferred local inference backend) runs as a
   subprocess of the aura service, inheriting the same restrictions.
 - No shell is invoked with model-generated input.
+
+## Phase 2.1 Hardening Additions
+
+- All remote endpoints are re-validated at request time against SSRF blocklists
+  (loopback, RFC1918, link-local, CGNAT, ULA, documentation, multicast, and
+  reserved ranges) — not just at configuration time, preventing DNS rebinding.
+- HTTP redirects are validated; redirect depth is capped and redirects to
+  unsafe destinations are refused. HTTP redirects are disabled by default for
+  model downloads.
+- Response sizes are capped (16 MiB cloud, 50 GiB model download) to prevent
+  disk/memory exhaustion from malicious peers.
+- API keys are retrieved via O_NOFOLLOW to avoid symlink races; key files
+  must be regular files with mode 0600 owned by root or the aura user.
+- Credential commands must resolve to non-world/group-writable binaries and
+  are executed without a shell.
+- llama.cpp subprocess stderr is drained to /dev/null to prevent pipe
+  deadlocks; child processes are always terminated+reaped (SIGTERM → SIGKILL
+  escalation), including on exceptions, cancellation, and service shutdown.
+- Only one inference runs per llama.cpp provider at a time (generation lock);
+- Model IDs are sanitized to prevent path traversal; downloads are written
+  to a `.part` temporary file, validated (GGUF magic + optional SHA-256
+  hash) before atomic rename into place. Partials are cleaned up on cancel/error.

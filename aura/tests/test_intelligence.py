@@ -224,6 +224,8 @@ class ResourceManagerTests(unittest.TestCase):
             "battery_low": False,
             "tier": hw.tier,
         }
+        # Point storage checks at a directory that definitely has free space
+        rm.set_model_dir("/tmp")
         return rm
 
     def test_assess_allows_small_model(self):

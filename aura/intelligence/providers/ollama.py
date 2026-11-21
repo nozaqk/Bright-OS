@@ -1,22 +1,25 @@
 """Optional Ollama provider.
 
-Ollama is NOT required. We detect it by looking for the `ollama` CLI and
-attempting to reach its local API. If unavailable, this provider stays in
-UNAVAILABLE and the InferenceEngine falls back to llama.cpp.
+Ollama is NOT required. We only talk to a loopback Ollama instance; the
+host cannot be pointed at arbitrary remote servers via the environment
+variable — any non-loopback host configured at runtime is rejected.
 
-We communicate via the local HTTP API (http://127.0.0.1:11434) which is the
-officially supported interface. No shell commands with user input are run.
+We communicate via the local HTTP API at http://127.0.0.1:11434. No shell
+commands with user input are executed.
 """
 import json
 import logging
 import os
 import shutil
 import socket
+import threading
+import time
 import urllib.error
-import urllib.request
 from typing import Optional
+from urllib.parse import urlparse
 
-from ..model_info import ModelFormat, ModelInfo
+from ..model_info import ModelInfo
+from ..networking import _is_loopback_host, is_loopback_ip, read_limited_response
 from ..provider import (
     InferenceRequest,
     InferenceResult,
@@ -26,25 +29,56 @@ from ..provider import (
 
 logger = logging.getLogger("aura.intelligence.providers.ollama")
 
-OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434")
+# Default local Ollama endpoint. We intentionally do NOT honour arbitrary
+# OLLAMA_HOST values — only loopback is permitted.
+DEFAULT_OLLAMA_HOST = "http://127.0.0.1:11434"
+MAX_RESPONSE_BYTES = 32 * 1024 * 1024  # 32 MiB cap on API responses
 
 
 class OllamaProvider(Provider):
     name = "ollama"
     local = True
     requires_consent = False
-    optional = True  # Never required
+    optional = True
 
-    def __init__(self, host: str = OLLAMA_HOST):
+    def __init__(self, host: str = DEFAULT_OLLAMA_HOST):
         super().__init__()
-        self._host = host.rstrip("/")
+        self._host = self._normalise_loopback(host)
         self._model_tag = ""
-        if self.check_available():
+        if self._host and self.check_available():
             self._set_state(ProviderState.IDLE)
         else:
             self._set_state(ProviderState.UNAVAILABLE, "Ollama not detected")
 
-    def _api(self, path: str, data: Optional[dict] = None, timeout: float = 10.0):
+    @staticmethod
+    def _normalise_loopback(host: str) -> str:
+        """Ensure the Ollama host is a loopback endpoint."""
+        host = (host or "").rstrip("/")
+        if not host:
+            return DEFAULT_OLLAMA_HOST
+        try:
+            p = urlparse(host)
+            if p.scheme != "http":
+                return ""
+            hostname = p.hostname or ""
+            # Accept only explicit loopback IPs or "localhost"
+            if hostname in ("localhost", "127.0.0.1", "::1"):
+                return host
+            try:
+                if is_loopback_ip(hostname) or _is_loopback_host(hostname):
+                    return host
+            except Exception:
+                pass
+        except Exception:
+            pass
+        logger.warning("Refusing non-loopback Ollama host: %s", host)
+        return ""
+
+    def _api(self, path: str, data: Optional[dict] = None,
+             timeout: float = 10.0,
+             cancel_event: Optional[threading.Event] = None) -> Optional[dict]:
+        if not self._host:
+            raise RuntimeError("ollama not configured for loopback access")
         url = f"{self._host}{path}"
         try:
             if data is None:
@@ -53,13 +87,18 @@ class OllamaProvider(Provider):
                 req = urllib.request.Request(
                     url, data=json.dumps(data).encode("utf-8"),
                     headers={"Content-Type": "application/json"}, method="POST")
+            # urllib doesn't make cancel easy, but we use a short per-read
+            # timeout so a cancel check can be added in generate().
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                return json.loads(resp.read().decode("utf-8"))
+                raw = read_limited_response(resp, MAX_RESPONSE_BYTES)
+            return json.loads(raw.decode("utf-8"))
         except (urllib.error.URLError, socket.timeout, ConnectionError,
-                json.JSONDecodeError) as e:
+                json.JSONDecodeError, ValueError, OSError) as e:
             raise RuntimeError(f"ollama API error: {e}") from e
 
     def check_available(self) -> bool:
+        if not self._host:
+            return False
         if not shutil.which("ollama"):
             return False
         try:
@@ -69,25 +108,18 @@ class OllamaProvider(Provider):
             return False
 
     def is_model_compatible(self, model: ModelInfo) -> bool:
-        # Ollama manages its own model store; any GGUF or pulled model works
-        # if it has been `ollama pull`ed. We accept any format since ollama
-        # converts, but mark GGUF/native as preferred.
         return True
 
     def load_model(self, model: ModelInfo, **kwargs) -> bool:
         if not self.check_available():
             self._set_state(ProviderState.UNAVAILABLE, "ollama not reachable")
             return False
-        # We use the model_id as the Ollama tag (e.g. "qwen2.5:3b")
         self._model_tag = model.model_id
         self.current_model = model
-        # Don't actually pull here (pulls can be huge; user initiates download)
         self._set_state(ProviderState.READY)
         return True
 
     def unload_model(self):
-        # Ollama will unload on its own idle timer; we can't force it via API
-        # in older versions, but we drop our reference.
         self.cancel_all()
         self.current_model = None
         self._model_tag = ""
@@ -95,16 +127,20 @@ class OllamaProvider(Provider):
             self._set_state(ProviderState.IDLE)
 
     def generate(self, request: InferenceRequest) -> InferenceResult:
-        import time
         start = time.monotonic()
         if not self._model_tag:
             return InferenceResult(request_id=request.request_id, text="",
                                    error="no model loaded", provider=self.name)
-        cancel = request.cancel
-        self._cancel_events[request.request_id] = cancel or __import__("threading").Event()
+        cancel = request.cancel or threading.Event()
+        self._cancel_events[request.request_id] = cancel
 
         self._set_state(ProviderState.GENERATING)
         try:
+            if cancel.is_set():
+                return InferenceResult(request_id=request.request_id, text="",
+                                       cancelled=True, provider=self.name,
+                                       model=self._model_tag,
+                                       duration_ms=int((time.monotonic() - start) * 1000))
             payload = {
                 "model": self._model_tag,
                 "prompt": request.prompt,
@@ -115,8 +151,11 @@ class OllamaProvider(Provider):
                     "stop": request.stop or [],
                 },
             }
-            data = self._api("/api/generate", data=payload,
-                             timeout=float(request.max_tokens) * 0.5 + 60)
+            timeout = min(300.0, float(request.max_tokens) * 0.5 + 60)
+            data = self._api("/api/generate", data=payload, timeout=timeout,
+                             cancel_event=cancel)
+            if data is None:
+                raise RuntimeError("no response")
             text = data.get("response", "")
             return InferenceResult(
                 request_id=request.request_id, text=text,
@@ -126,12 +165,12 @@ class OllamaProvider(Provider):
                 duration_ms=int((time.monotonic() - start) * 1000),
             )
         except Exception as e:
-            self._set_state(ProviderState.ERROR, str(e))
+            self._set_state(ProviderState.ERROR, str(e)[:500])
             return InferenceResult(request_id=request.request_id, text="",
-                                   error=str(e), provider=self.name,
+                                   error=str(e)[:500], provider=self.name,
                                    model=self._model_tag,
                                    duration_ms=int((time.monotonic() - start) * 1000))
         finally:
             self._cancel_events.pop(request.request_id, None)
-            if self.current_model:
+            if self.current_model and self.check_available():
                 self._set_state(ProviderState.READY)
