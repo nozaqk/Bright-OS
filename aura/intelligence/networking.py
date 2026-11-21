@@ -1,57 +1,74 @@
 """Network safety helpers used by cloud and download paths.
 
-Centralises SSRF protections so both cloud provider calls and model
-downloads enforce the same policy:
-  - HTTPS-only (except explicitly-local Ollama which is constrained to
-    loopback addresses).
-  - DNS-resolved IPs must not be in private/loopback/link-local/reserved
-    ranges (IPv4 and IPv6).
-  - Redirects are validated or disallowed.
+This module is the security boundary between AURA and the internet. It
+enforces, at ACTUAL CONNECTION TIME (not just at URL validation time):
+  - HTTPS-only for remote destinations (Ollama loopback may be http).
+  - DNS resolution: every address a hostname resolves to must pass the
+    policy. If ANY address is in a blocked range, the host is refused.
+  - Connection pinning: we resolve the host, pick a validated IP, and
+    connect the socket directly to that IP. TLS SNI and certificate
+    verification still use the original hostname, so certificate checks
+    remain intact.
+  - Post-connect verification: socket.getpeername() is checked against
+    the allowed set to prevent any race where the socket is connected
+    to a different address.
+  - Redirects are validated the same way, independently.
   - Response size caps prevent disk/memory exhaustion.
+
+urllib's default resolver is NEVER trusted with the security decision;
+we control the resolution and connect ourselves.
 """
+import http.client
 import ipaddress
 import logging
+import os
+import random
 import socket
+import ssl
 import urllib.error
 import urllib.request
-from typing import Iterable, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 logger = logging.getLogger("aura.intelligence.networking")
 
-# Blocked IP networks (RFC 1918, loopback, link-local, CGNAT, benchmarking,
-# documentation prefix, unique local, multicast, unspecified).
+
+# Blocked IP networks (RFC 1918 + loopback + link-local + CGNAT + ...)
 _BLOCKED_NETS: List[ipaddress._BaseNetwork] = []
 for _cidr in [
     "0.0.0.0/8",
     "10.0.0.0/8",
-    "100.64.0.0/10",        # Carrier-grade NAT (RFC 6598)
+    "100.64.0.0/10",
     "127.0.0.0/8",
     "169.254.0.0/16",
     "172.16.0.0/12",
-    "192.0.0.0/24",         # IETF Protocol Assignments
-    "192.0.2.0/24",         # TEST-NET-1 (documentation)
+    "192.0.0.0/24",
+    "192.0.2.0/24",
     "192.168.0.0/16",
-    "198.18.0.0/15",        # Benchmarking
-    "198.51.100.0/24",      # TEST-NET-2
-    "203.0.113.0/24",       # TEST-NET-3
-    "224.0.0.0/4",          # Multicast
-    "240.0.0.0/4",          # Reserved / future
+    "198.18.0.0/15",
+    "198.51.100.0/24",
+    "203.0.113.0/24",
+    "224.0.0.0/4",
+    "240.0.0.0/4",
     "255.255.255.255/32",
     "::1/128",
-    "fc00::/7",             # Unique local
-    "fe80::/10",            # Link-local
-    "ff00::/8",             # Multicast v6
-    "::ffff:0:0/96",        # IPv4-mapped
-    "2001:db8::/32",        # Documentation v6
-    "::/128",               # Unspecified
+    "fc00::/7",
+    "fe80::/10",
+    "ff00::/8",
+    "::ffff:0:0/96",
+    "2001:db8::/32",
+    "::/128",
+    "64:ff9b::/96",   # NAT64 well-known prefix
+    "100.100.100.100/32",  # Various DNS providers' mask targets
 ]:
     _BLOCKED_NETS.append(ipaddress.ip_network(_cidr))
 
+DEFAULT_USER_AGENT = "AURA-Intelligence/1.0"
+DEFAULT_CONNECT_TIMEOUT = 10.0
+
 
 def is_safe_public_ip(ip_str: str) -> bool:
-    """Return True if ip_str is a valid public unicast IP not in any
-    blocked range."""
+    """Return True if ip_str is a public unicast IP not in any blocked range."""
     try:
         ip = ipaddress.ip_address(ip_str)
     except ValueError:
@@ -74,78 +91,231 @@ def is_loopback_ip(ip_str: str) -> bool:
 
 
 def _is_loopback_host(host: str) -> bool:
-    """True if host resolves exclusively to loopback addresses."""
-    try:
-        infos = socket.getaddrinfo(host, None)
-    except socket.gaierror:
-        return False
-    for fam, typ, proto, canon, sockaddr in infos:
-        addr = sockaddr[0]
-        if not is_loopback_ip(addr):
-            return False
-    return bool(infos)
-
-
-def validate_remote_url(url: str, *, https_only: bool = True,
-                        allow_localhost: bool = False) -> bool:
-    """Validate a remote URL for SSRF safety.
-
-    Args:
-      https_only:    require https:// scheme
-      allow_localhost: if True, localhost/127.0.0.1/::1 are permitted
-                       (used for the local Ollama API only).
-    """
-    try:
-        p = urlparse(url)
-    except Exception:
-        return False
-    if https_only and p.scheme != "https":
-        return False
-    if not https_only and p.scheme not in ("http", "https"):
-        return False
-    host = (p.hostname or "").lower()
-    if not host:
-        return False
-    # Hostname must not be raw IP in a blocked range; do DNS resolution and
-    # require ALL resolved addresses to be safe (prevents DNS rebinding where
-    # one answer is public but another is internal).
+    """Return True if host resolves EXCLUSIVELY to loopback addresses
+    (used to validate configured Ollama hosts at startup)."""
     try:
         infos = socket.getaddrinfo(host, None)
     except socket.gaierror:
         return False
     if not infos:
         return False
-    for fam, typ, proto, canon, sockaddr in infos:
+    for fam, _typ, _proto, _canon, sockaddr in infos:
         addr = sockaddr[0]
-        if allow_localhost:
-            if not (is_safe_public_ip(addr) or is_loopback_ip(addr)):
-                return False
-        else:
-            if not is_safe_public_ip(addr):
-                logger.warning("Blocked URL %s: address %s is not a public IP",
-                               url, addr)
-                return False
+        if not is_loopback_ip(addr):
+            return False
     return True
 
 
-class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """A redirect handler that refuses all redirects."""
+def _resolve_valid_addresses(host: str, port: int, *, allow_loopback: bool) -> List[Tuple[int, str]]:
+    """Resolve `host` and return (address_family, ip_str) pairs that pass
+    the policy. Raises ValueError if ANY resolved address is unsafe, or
+    if no addresses resolve.
 
+    Raising on a single bad address is deliberate — it prevents DNS
+    rebinding attacks where a resolver returns one safe public address
+    (that passes validation) but the HTTP client later connects to an
+    unsafe one via round-robin or a racing DNS change.
+    """
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as e:
+        raise ValueError(f"DNS resolution failed for {host}: {e}")
+    if not infos:
+        raise ValueError(f"No addresses for {host}")
+    valid: List[Tuple[int, str]] = []
+    seen: set = set()
+    for fam, _typ, _proto, _canon, sockaddr in infos:
+        addr = sockaddr[0]
+        if (fam, addr) in seen:
+            continue
+        seen.add((fam, addr))
+        if allow_loopback:
+            if not (is_safe_public_ip(addr) or is_loopback_ip(addr)):
+                raise ValueError(
+                    f"host {host} resolves to blocked address {addr}")
+        else:
+            if not is_safe_public_ip(addr):
+                raise ValueError(
+                    f"host {host} resolves to blocked/private address {addr}")
+        valid.append((fam, addr))
+    if not valid:
+        raise ValueError(f"No valid addresses for {host}")
+    return valid
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPSConnection that connects to a pre-validated IP but still
+    performs TLS certificate verification against the original hostname."""
+
+    def __init__(self, host, port, *, pinned_ip, **kwargs):
+        super().__init__(host, port=port, **kwargs)
+        self._pinned_ip = pinned_ip
+
+    def connect(self):
+        # Build socket connected to pinned IP, not self.host
+        sock = socket.create_connection(
+            (self._pinned_ip, self.port),
+            timeout=self.timeout,
+            source_address=self.source_address,
+        )
+        # Post-connect check: verify peer is actually the pinned IP.
+        # This catches NAT/transparent-proxy surprises.
+        try:
+            peer = sock.getpeername()
+            peer_ip = peer[0]
+            if peer_ip != self._pinned_ip:
+                sock.close()
+                raise ssl.SSLError(
+                    f"peer address {peer_ip} does not match pinned {self._pinned_ip}")
+        except (OSError, AttributeError):
+            # getpeername may fail on some platforms; continue but note
+            logger.debug("Could not verify peer address on pin")
+        # Wrap with TLS, passing server_hostname so SNI/cert validation
+        # uses the ORIGINAL hostname, not the IP.
+        if self._tunnel_host:
+            # Tunnel over CONNECT proxy: not supported for AURA cloud
+            sock.close()
+            raise ValueError("proxy CONNECT tunneling not supported")
+        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+        if getattr(self, "_check_hostname", True):
+            try:
+                ssl.match_hostname(self.sock.getpeercert(), self.host)
+            except Exception as e:
+                self.sock.close()
+                raise
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """Plain HTTP connection that connects to a pinned IP; only used for
+    loopback Ollama access (HTTPS is the default for everything else)."""
+
+    def __init__(self, host, port, *, pinned_ip, **kwargs):
+        super().__init__(host, port=port, **kwargs)
+        self._pinned_ip = pinned_ip
+
+    def connect(self):
+        self.sock = socket.create_connection(
+            (self._pinned_ip, self.port),
+            timeout=self.timeout,
+            source_address=self.source_address,
+        )
+        try:
+            peer = self.sock.getpeername()
+            if peer[0] != self._pinned_ip:
+                self.sock.close()
+                raise ConnectionError("peer IP mismatch on plain HTTP")
+        except (OSError, AttributeError):
+            pass
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    """HTTP(S) handler that pins connections to validated addresses."""
+
+    def __init__(self, *, debuglevel=0, context=None, allow_loopback=False):
+        super().__init__(debuglevel=debuglevel, context=context)
+        self._allow_loopback = allow_loopback
+        self._ssl_context = context or ssl.create_default_context()
+
+    def https_open(self, req):
+        return self._open_pinned(req, https=True)
+
+    def http_open(self, req):
+        if not self._allow_loopback:
+            raise urllib.error.URLError("plain HTTP not allowed for remote")
+        return self._open_pinned(req, https=False)
+
+    @staticmethod
+    def _split_host_port(req, https: bool):
+        """urllib sets req.host (no port) and provides req.get_host() which
+        may contain host:port; fall back to urlparse for robustness."""
+        host = req.host
+        port = None
+        try:
+            if hasattr(req, "port") and req.port is not None:
+                port = req.port
+        except Exception:
+            pass
+        if port is None:
+            try:
+                host_header = req.get_header("Host") or ""
+                if host_header and ":" in host_header:
+                    host_part, port_part = host_header.rsplit(":", 1)
+                    port = int(port_part)
+                elif host_header:
+                    host = host_header
+            except Exception:
+                pass
+        if port is None:
+            try:
+                from urllib.parse import urlparse
+                p = urlparse(req.full_url)
+                host = p.hostname or host
+                port = p.port
+            except Exception:
+                pass
+        if port is None:
+            port = 443 if https else 80
+        return host, port
+
+    def _open_pinned(self, req, https: bool):
+        host, port = self._split_host_port(req, https)
+        if not host:
+            raise urllib.error.URLError(f"missing host in {req.full_url}")
+
+        # Resolve + validate. Randomise order to avoid thundering herd but
+        # we only need one successful connection.
+        addrs = _resolve_valid_addresses(
+            host, port, allow_loopback=self._allow_loopback)
+        random.shuffle(addrs)
+
+        last_err: Optional[Exception] = None
+        # We build a dynamic connection class for each pinned IP so that
+        # do_open's `http_class(req.host, req.port, ...=req.timeout)` call
+        # constructs a connection pinned to the chosen IP. We iterate over
+        # validated IPs; if one fails, try the next.
+        req_timeout = getattr(req, "timeout", DEFAULT_CONNECT_TIMEOUT)
+        for fam, ip in addrs:
+            try:
+                if https:
+                    def _make_https(host, port=None, timeout=req_timeout,
+                                    pinned_ip=ip, orig_host=host,
+                                    ssl_context=self._ssl_context):
+                        c = _PinnedHTTPSConnection(
+                            orig_host, port=port or 443,
+                            pinned_ip=pinned_ip, timeout=timeout,
+                            context=ssl_context)
+                        return c
+                    return self.do_open(_make_https, req)
+                else:
+                    def _make_http(host, port=None, timeout=req_timeout,
+                                   pinned_ip=ip, orig_host=host):
+                        return _PinnedHTTPConnection(
+                            orig_host, port=port or 80,
+                            pinned_ip=pinned_ip, timeout=timeout)
+                    return self.do_open(_make_http, req)
+            except Exception as e:
+                last_err = e
+                continue
+        raise urllib.error.URLError(
+            f"could not connect to {host}: {last_err}")
+
+
+class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuses all redirects."""
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         logger.warning("Blocking redirect to %s from %s", newurl, req.full_url)
         raise urllib.error.HTTPError(
-            newurl, code, f"redirects not allowed ({code} -> {newurl})",
-            headers, fp)
+            newurl, code, f"redirects not allowed ({code})", headers, fp)
 
 
 class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
-    """Redirect handler that re-validates the new URL before following.
-    Caps the maximum redirect depth."""
-
+    """Validates redirect destinations with the same pinning rules."""
     max_redirects = 5
 
-    def __init__(self, https_only=True):
+    def __init__(self, https_only=True, allow_loopback=False, ssl_context=None):
         self._https_only = https_only
+        self._allow_loopback = allow_loopback
+        self._ssl_context = ssl_context
         self._count = 0
         super().__init__()
 
@@ -155,46 +325,113 @@ class SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
             raise urllib.error.HTTPError(
                 newurl, code, f"too many redirects ({self._count})",
                 headers, fp)
-        if not validate_remote_url(newurl, https_only=self._https_only):
-            logger.warning("Blocked redirect to unsafe URL: %s", newurl)
+        # Validate the redirect destination: scheme, host, and ALL resolved
+        # addresses.
+        try:
+            p = urlparse(newurl)
+        except Exception:
             raise urllib.error.HTTPError(
-                newurl, code, "redirect to unsafe destination blocked",
+                newurl, code, "redirect has invalid URL", headers, fp)
+        if self._https_only and p.scheme != "https":
+            raise urllib.error.HTTPError(
+                newurl, code, "redirect to non-https blocked", headers, fp)
+        if not p.hostname:
+            raise urllib.error.HTTPError(
+                newurl, code, "redirect missing host", headers, fp)
+        # Re-resolve the new host and reject if any address is bad.
+        rport = p.port or (443 if p.scheme == "https" else 80)
+        try:
+            _resolve_valid_addresses(p.hostname, rport,
+                                     allow_loopback=self._allow_loopback)
+        except ValueError as e:
+            logger.warning("Blocked redirect to unsafe URL %s: %s", newurl, e)
+            raise urllib.error.HTTPError(
+                newurl, code, f"redirect to unsafe destination: {e}",
                 headers, fp)
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def open_safe_url(url: str, *, timeout: float = 30.0, max_bytes: int = 0,
-                  https_only: bool = True, allow_localhost: bool = False,
+def validate_remote_url(url: str, *, https_only: bool = True,
+                        allow_localhost: bool = False) -> bool:
+    """Pre-flight URL validation. Resolves and validates all addresses.
+    NOTE: this is a pre-check only; open_safe_url performs the same check
+    AND pins the actual connection."""
+    try:
+        p = urlparse(url)
+    except Exception:
+        return False
+    if https_only and p.scheme != "https":
+        return False
+    if not https_only:
+        if p.scheme not in ("http", "https"):
+            return False
+        if p.scheme == "http" and not allow_localhost:
+            return False
+    host = (p.hostname or "").lower()
+    if not host:
+        return False
+    port = p.port or (443 if p.scheme == "https" else 80)
+    try:
+        _resolve_valid_addresses(host, port, allow_loopback=allow_localhost)
+    except ValueError as e:
+        logger.warning("URL validation failed for %s: %s", url, e)
+        return False
+    return True
+
+
+def _build_opener(https_only: bool, allow_redirects: bool, allow_localhost: bool,
+                  ssl_context):
+    handlers = []
+    pinned = _PinnedHTTPSHandler(allow_loopback=allow_localhost,
+                                 context=ssl_context)
+    handlers.append(pinned)
+    if allow_redirects:
+        handlers.append(SafeRedirectHandler(https_only=https_only,
+                                            allow_loopback=allow_localhost,
+                                            ssl_context=ssl_context))
+    else:
+        handlers.append(NoRedirectHandler())
+    return urllib.request.build_opener(*handlers)
+
+
+def open_safe_url(url: str, *, timeout: float = 30.0,
+                  max_bytes: int = 0,
+                  https_only: bool = True,
+                  allow_localhost: bool = False,
                   headers: Optional[dict] = None,
                   data: Optional[bytes] = None,
                   allow_redirects: bool = False,
                   method: str = "GET"):
-    """Open a URL with SSRF + size limits.
+    """Open a URL with DNS-rebinding-safe connection pinning.
 
-    Returns the file-like response object. Caller is responsible for
-    reading at most `max_bytes` if provided.
-
-    Raises urllib.error.HTTPError/URLError on invalid URLs.
+    Uses a custom opener that resolves the host, validates every address,
+    connects directly to a chosen validated IP, and verifies the post-
+    connect peer address matches. TLS SNI and certificate validation
+    remain tied to the original hostname.
     """
+    # Pre-flight validate (scheme, host, DNS resolution). This is
+    # redundant with what the opener will do but gives us a clear
+    # error early.
     if not validate_remote_url(url, https_only=https_only,
                                allow_localhost=allow_localhost):
         raise urllib.error.URLError(f"URL failed safety validation: {url}")
 
-    if allow_redirects:
-        handler: urllib.request.BaseHandler = SafeRedirectHandler(
-            https_only=https_only)
-    else:
-        handler = NoRedirectHandler()
-    opener = urllib.request.build_opener(handler)
+    ssl_context = ssl.create_default_context()
+    opener = _build_opener(https_only=https_only,
+                           allow_redirects=allow_redirects,
+                           allow_localhost=allow_localhost,
+                           ssl_context=ssl_context)
     req = urllib.request.Request(url, data=data, method=method)
+    req.timeout = timeout
+    merged_headers = {"User-Agent": DEFAULT_USER_AGENT}
     if headers:
-        for k, v in headers.items():
-            req.add_header(k, v)
+        merged_headers.update(headers)
+    for k, v in merged_headers.items():
+        req.add_header(k, v)
     return opener.open(req, timeout=timeout)
 
 
 def read_limited_response(resp, max_bytes: int) -> bytes:
-    """Read up to max_bytes from a response; raise if exceeded."""
     if max_bytes <= 0:
         return resp.read()
     chunks: List[bytes] = []
@@ -206,6 +443,25 @@ def read_limited_response(resp, max_bytes: int) -> bytes:
             break
         total += len(buf)
         if total > max_bytes:
-            raise ValueError(f"response exceeded size limit of {max_bytes} bytes")
+            # Try to close the connection to signal we're aborting
+            try:
+                resp.close()
+            except Exception:
+                pass
+            raise ValueError(
+                f"response exceeded size limit of {max_bytes} bytes")
         chunks.append(buf)
     return b"".join(chunks)
+
+
+def open_loopback_url(url: str, *, timeout: float = 30.0,
+                      max_bytes: int = 0,
+                      headers: Optional[dict] = None,
+                      data: Optional[bytes] = None,
+                      method: str = "GET"):
+    """Open a loopback-only URL (for Ollama local API). http://127.0.0.1
+    or http://localhost are allowed; addresses are pinned to loopback."""
+    return open_safe_url(url, timeout=timeout, max_bytes=max_bytes,
+                         https_only=False, allow_localhost=True,
+                         headers=headers, data=data,
+                         allow_redirects=False, method=method)

@@ -11,15 +11,13 @@ import json
 import logging
 import os
 import shutil
-import socket
 import threading
 import time
-import urllib.error
 from typing import Optional
 from urllib.parse import urlparse
 
 from ..model_info import ModelInfo
-from ..networking import _is_loopback_host, is_loopback_ip, read_limited_response
+from ..networking import _is_loopback_host, is_loopback_ip
 from ..provider import (
     InferenceRequest,
     InferenceResult,
@@ -81,19 +79,19 @@ class OllamaProvider(Provider):
             raise RuntimeError("ollama not configured for loopback access")
         url = f"{self._host}{path}"
         try:
+            from ..networking import open_loopback_url, read_limited_response
             if data is None:
-                req = urllib.request.Request(url, method="GET")
+                resp = open_loopback_url(url, timeout=timeout, method="GET")
             else:
-                req = urllib.request.Request(
-                    url, data=json.dumps(data).encode("utf-8"),
-                    headers={"Content-Type": "application/json"}, method="POST")
-            # urllib doesn't make cancel easy, but we use a short per-read
-            # timeout so a cancel check can be added in generate().
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                resp = open_loopback_url(
+                    url, timeout=timeout,
+                    data=json.dumps(data).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST")
+            with resp:
                 raw = read_limited_response(resp, MAX_RESPONSE_BYTES)
             return json.loads(raw.decode("utf-8"))
-        except (urllib.error.URLError, socket.timeout, ConnectionError,
-                json.JSONDecodeError, ValueError, OSError) as e:
+        except Exception as e:
             raise RuntimeError(f"ollama API error: {e}") from e
 
     def check_available(self) -> bool:

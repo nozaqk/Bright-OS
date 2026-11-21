@@ -20,6 +20,7 @@ class HealthMonitor:
         self._lock = threading.Lock()
         self._interval = check_interval
         self._stop = threading.Event()
+        self._started = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._state_snapshots: Dict[str, ProviderState] = {}
         self._listeners: List[Callable[[str, ProviderState, ProviderState, Optional[str]], None]] = []
@@ -38,30 +39,42 @@ class HealthMonitor:
         self._listeners.append(cb)
 
     def start(self):
+        """Start the monitor. Safe to call concurrently; only one
+        monitoring thread ever runs. Calling start() after stop()
+        correctly restarts."""
         with self._lock:
-            if self._thread is not None and self._thread.is_alive():
+            if self._started.is_set() and self._thread is not None \
+                    and self._thread.is_alive():
                 return
             self._stop.clear()
+            self._started.set()
             t = threading.Thread(target=self._loop, name="aura-provider-health",
                                  daemon=True)
             self._thread = t
         t.start()
 
     def stop(self):
+        """Stop the monitor and join the thread. Safe to call multiple
+        times or concurrently with start()."""
         self._stop.set()
         with self._lock:
             t = self._thread
             self._thread = None
-        if t is not None:
+            self._started.clear()
+        if t is not None and t.is_alive() and t is not threading.current_thread():
             t.join(timeout=max(5, self._interval + 2))
 
     def _loop(self):
-        while not self._stop.is_set():
-            try:
-                self._check_all()
-            except Exception as e:
-                logger.debug("Health monitor error: %s", e)
-            self._stop.wait(self._interval)
+        try:
+            while not self._stop.is_set():
+                try:
+                    self._check_all()
+                except Exception as e:
+                    logger.debug("Health monitor error: %s", e)
+                self._stop.wait(self._interval)
+        finally:
+            # Ensure restart is possible after the loop exits naturally.
+            self._started.clear()
 
     def _check_all(self):
         with self._lock:
