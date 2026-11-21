@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=org.bright_os.AURA
+Exec=/usr/bin/aura-core-service --foreground
+User=aura
+SystemdService=aura-core.service

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/software/polkit/policyconfig-1.dtd">
+<policyconfig>
+
+  <vendor>Bright OS</vendor>
+  <vendor_url>https://github.com/nozaqk/Bright-OS</vendor_url>
+  <icon_name>aura</icon_name>
+
+  <action id="org.bright_os.AURA.shutdown">
+    <description>Shut down the AURA service</description>
+    <message>Authentication is required to shut down the AURA assistant</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.bright_os.AURA.configure">
+    <description>Change AURA configuration</description>
+    <message>Authentication is required to change AURA settings</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.bright_os.AURA.grant-cloud-consent">
+    <description>Grant cloud access consent to AURA</description>
+    <message>Authentication is required to enable cloud AI access</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
+</policyconfig>

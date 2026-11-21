@@ -40,6 +40,55 @@ except ImportError:
     HAS_DBUS = False
     logger.warning("python3-dbus not available; running in headless/test mode")
 
+# Polkit is used for authorization checks on privileged methods. If the
+# Polkit GObject introspection bindings aren't available we still start but
+# refuse privileged operations for non-root callers (fail closed).
+try:
+    from gi.repository import Polkit
+    HAS_POLKIT = True
+except ImportError:
+    HAS_POLKIT = False
+    logger.info("Polkit gir bindings unavailable; privileged methods require root")
+
+
+def _check_polkit(sender, action_id, bus=None):
+    """Check whether `sender` is authorized for `action_id`.
+
+    Returns (allowed, reason).  If Polkit is unavailable, falls back to
+    root-only (UID 0 on the bus).  Raises dbus.exceptions.DBusException on
+    denial so the method can just raise and return.
+    """
+    if not HAS_DBUS or bus is None:
+        # Headless/test mode — allow (only local code can call us).
+        return True, ""
+    try:
+        pid = bus.get_connection_unix_process_id(sender)
+        uid = bus.get_unix_user(sender)
+    except (dbus.DBusException, AttributeError) as e:
+        return False, f"could not determine caller uid: {e}"
+
+    # Root is always authorized for any action.
+    if uid == 0:
+        return True, ""
+
+    if not HAS_POLKIT:
+        return False, "polkit unavailable; only root may perform this action"
+
+    try:
+        authority = Polkit.Authority.get()
+        subject = Polkit.UnixProcess.new(dbus_info)
+        result = authority.check_authorization_sync(
+            subject, action_id, None,
+            Polkit.CheckAuthorizationFlags.ALLOW_USER_INTERACTION, None)
+        if result.get_is_authorized():
+            return True, ""
+        if result.get_is_challenge():
+            return False, "authentication required"
+        return False, "not authorized"
+    except Exception as e:
+        logger.warning("Polkit check failed for %s: %s", action_id, e)
+        return False, f"polkit error: {e}"
+
 
 class AuraStarterComponent(Component):
     """Placeholder components that represent subsystems not yet implemented."""
@@ -118,6 +167,7 @@ if HAS_DBUS:
                      intelligence_component: "IntelligenceComponent" = None,
                      mainloop=None):
             super().__init__(bus, AURA_OBJECT_PATH)
+            self._bus = bus
             self._components = component_manager
             self._config = config
             self._intel = intelligence_component
@@ -170,9 +220,18 @@ if HAS_DBUS:
             status = self._components.get_status(name)
             return bool(status and status.state == ComponentState.RUNNING)
 
-        @dbus.service.method(AURA_INTERFACE, in_signature="b", out_signature="")
-        def Shutdown(self):
-            logger.info("Shutdown requested via D-Bus")
+        @dbus.service.method(AURA_INTERFACE, in_signature="b", out_signature="",
+                             sender_keyword="sender")
+        def Shutdown(self, sender=None):
+            ok, reason = _check_polkit(
+                sender, "org.bright_os.AURA.shutdown",
+                bus=self._bus if hasattr(self, "_bus") else None)
+            if not ok:
+                logger.warning("Shutdown denied for %s: %s", sender, reason)
+                raise dbus.exceptions.DBusException(
+                    "org.bright_os.AURA.NotAuthorized",
+                    f"Shutdown not authorized: {reason}")
+            logger.info("Shutdown requested via D-Bus by %s", sender)
             self._components.stop_all()
             if self._mainloop is not None:
                 GLib.idle_add(self._mainloop.quit)
@@ -287,8 +346,21 @@ if HAS_DBUS:
             if eng:
                 eng.cancel_all()
 
-        @dbus.service.method(AURA_INTERFACE, in_signature="b", out_signature="b")
-        def GrantCloudConsent(self, granted: bool):
+        @dbus.service.method(AURA_INTERFACE, in_signature="b", out_signature="b",
+                             sender_keyword="sender")
+        def GrantCloudConsent(self, granted: bool, sender=None):
+            # Granting consent is a privileged action (allows cloud traffic);
+            # revoking consent is allowed for any caller (fail-safe).
+            if granted:
+                ok, reason = _check_polkit(
+                    sender, "org.bright_os.AURA.grant-cloud-consent",
+                    bus=self._bus if hasattr(self, "_bus") else None)
+                if not ok:
+                    logger.warning("GrantCloudConsent denied for %s: %s",
+                                   sender, reason)
+                    raise dbus.exceptions.DBusException(
+                        "org.bright_os.AURA.NotAuthorized",
+                        f"Cloud consent not authorized: {reason}")
             eng = self._engine()
             if not eng:
                 return False

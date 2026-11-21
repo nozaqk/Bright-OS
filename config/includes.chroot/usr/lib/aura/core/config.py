@@ -21,13 +21,25 @@ DEFAULTS: Dict[str, Dict[str, Any]] = {
         "component_restart_delay": 3,  # Seconds between restart attempts
     },
     "intelligence": {
-        "mode": "local",               # local, hybrid, offline
-        "provider": "auto",            # auto, qwen, llama.cpp, ollama, none
-        "model_path": "",              # Path to local model file
-        "max_memory_mb": "2048",       # Max RAM for model inference
-        "cloud_endpoint": "",          # Cloud API URL (hybrid mode only)
-        "cloud_api_key": "",           # Cloud API key (hybrid mode only)
-        "require_consent": "true",     # Require consent before cloud calls
+        "mode": "local",                  # local | hybrid | offline
+        "provider": "auto",               # auto | llamacpp | ollama | cloud | none
+        "default_model": "",              # Model ID to auto-load on request
+        "auto_load_at_boot": "false",     # NEVER load a large model at boot
+        "model_dir": "/var/lib/aura/models",  # Model weights directory
+        "max_memory_mb": "0",             # 0 = auto (percentage of RAM)
+        "max_memory_percent": "50",       # Cap RAM use at this % of total
+        "cpu_threads": "0",               # 0 = auto (leave headroom for desktop)
+        "unload_idle_seconds": "600",     # Unload model after this idle time
+        "lazy_load": "true",              # Only load on first inference
+        "battery_low_threshold": "20",    # Below this % go conservative on battery
+        "cloud_endpoint": "",             # Cloud API URL (hybrid mode only)
+        "cloud_api_key_command": "",      # Command printing API key (secure)
+        "cloud_api_key_file": "",         # 0600 file holding API key (secure)
+        "require_consent": "true",        # Require consent before cloud calls
+        "allow_cloud_default": "false",   # Cloud disabled by default
+        "max_context_tokens": "8192",     # Context window size
+        "enable_telemetry": "false",      # No telemetry
+        "edition_profile": "auto",        # auto | home | developer | lite
     },
     "security": {
         "enabled": "true",
