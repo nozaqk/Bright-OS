@@ -1,12 +1,13 @@
 [Unit]
 Description=AURA Core Intelligence Service
 Documentation=https://github.com/nozaqk/Bright-OS
-After=network.target dbus.service systemd-resolved.service
+After=network.target dbus.service systemd-resolved.service systemd-sysusers.service systemd-tmpfiles-setup.service
 Wants=network.target
-Requires=dbus.service
+Wants=dbus.service
 
 # AURA should not block the boot process if it fails
 FailureAction=none
+# AURA starts after sysusers/tmpfiles have created its runtime user and dirs.
 
 [Service]
 Type=simple
@@ -46,6 +47,9 @@ SyslogIdentifier=aura-core
 
 # Working directory
 WorkingDirectory=/var/lib/aura
+
+# Give sysusers/tmpfiles a moment to create /var/lib/aura on first boot
+ExecStartPre=+/bin/systemd-tmpfiles --create /usr/lib/tmpfiles.d/aura.conf
 
 [Install]
 WantedBy=multi-user.target

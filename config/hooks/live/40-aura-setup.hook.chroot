@@ -1,31 +1,34 @@
 #!/bin/bash
 # =============================================================================
 # AURA subsystem installation hook (chroot hook)
-# Runs during live-build chroot phase to install the AURA source tree,
-# create the aura user, enable the systemd service, and set permissions.
+# Runs during live-build chroot phase to apply sysusers/tmpfiles, install
+# the AURA configuration, enable the systemd service, and set permissions.
+#
+# The AURA Python source tree is placed at /usr/lib/aura/ by build.sh
+# BEFORE calling lb config (it copies ${PROJECT_ROOT}/aura/ into
+# config/includes.chroot/usr/lib/aura/), so live-build already lays down
+# the full tree. This hook does not need to copy source.
 # =============================================================================
 set -e
 
 echo "I: Installing AURA subsystem..." | systemd-cat -t bright-os-aura -p info
 
-AURA_SRC="/usr/lib/aura"
 AURA_USER="aura"
+AURA_SRC="/usr/lib/aura"
 
-# --- Copy AURA source tree from the build context ---
-# The aura/ directory from the repository is placed at /usr/lib/aura/
-# by live-build includes.chroot mechanism. Ensure directory exists.
+# --- Ensure /usr/lib/aura exists (build.sh should have populated it) ---
 mkdir -p "$AURA_SRC"
 
-# If the source files aren't there yet (depends on config/includes.chroot),
-# the package-lists/aura-core.list will install them via a .deb.
-# For direct chroot installs, we also handle it here.
-if [ -d /build/aura ]; then
-    cp -r /build/aura/* "$AURA_SRC/"
+# --- Apply sysusers.d (creates 'aura' user/group) ---
+# Files ship in /usr/lib/sysusers.d/ (standard location) so systemd-sysusers
+# auto-applies them at boot/install; apply now during image build too.
+if command -v systemd-sysusers >/dev/null 2>&1; then
+    systemd-sysusers /usr/lib/sysusers.d/aura.conf 2>/dev/null || true
 fi
 
-# --- Ensure the aura user exists ---
+# Fallback: create user manually if sysusers didn't run (e.g. host lacks systemd)
 if ! id "$AURA_USER" >/dev/null 2>&1; then
-    echo "I: Creating aura system user..." | systemd-cat -t bright-os-aura -p info
+    echo "I: Creating aura system user via useradd (fallback)..." | systemd-cat -t bright-os-aura -p info
     useradd --system \
             --no-create-home \
             --home-dir /var/lib/aura \
@@ -35,45 +38,42 @@ if ! id "$AURA_USER" >/dev/null 2>&1; then
             "$AURA_USER" 2>/dev/null || true
 fi
 
-# --- Create state/log directories with correct ownership ---
-mkdir -p /var/lib/aura/backups
-mkdir -p /var/lib/aura/models
-mkdir -p /var/lib/aura/conversations
-mkdir -p /var/log/aura
-chown -R "$AURA_USER:$AURA_USER" /var/lib/aura
-chown "$AURA_USER:adm" /var/log/aura
-chmod 0750 /var/lib/aura
-chmod 0750 /var/lib/aura/backups
-chmod 0750 /var/lib/aura/models
-chmod 0700 /var/lib/aura/conversations
-chmod 0750 /var/log/aura
+# --- Apply tmpfiles.d (creates /var/lib/aura, /var/log/aura with perms) ---
+if command -v systemd-tmpfiles >/dev/null 2>&1; then
+    systemd-tmpfiles --create /usr/lib/tmpfiles.d/aura.conf 2>/dev/null || true
+fi
 
-# --- Create config directory ---
+# --- Ensure config directory and file exist ---
 mkdir -p /etc/bright-os/aura
 chmod 0755 /etc/bright-os/aura
-# If no config file exists yet, install the default
 if [ ! -f /etc/bright-os/aura/aura.conf ]; then
     cp /usr/share/aura/aura.conf.default /etc/bright-os/aura/aura.conf 2>/dev/null || true
 fi
+chmod 0644 /etc/bright-os/aura/aura.conf 2>/dev/null || true
 
 # --- Ensure Python module is importable ---
 touch "$AURA_SRC/__init__.py" 2>/dev/null || true
 
-# --- Make executable ---
+# --- Make launcher executable ---
 chmod +x /usr/bin/aura-core-service 2>/dev/null || true
+
+# --- Install D-Bus and Polkit configs ---
+# The dbus policy file ships in /etc/dbus-1/system.d/ via includes.chroot.
+# Reload dbus config if running in a build chroot (dbus may not be active
+# here; ignore failures).
+if [ -d /etc/dbus-1/system.d ]; then
+    # Files already in place via includes.chroot; nothing to copy.
+    true
+fi
+# Polkit policy ships in /usr/share/polkit-1/actions/ via includes.chroot.
+if [ -d /usr/share/polkit-1/actions ]; then
+    : # already in place
+fi
 
 # --- Enable systemd service ---
 if [ -d /etc/systemd/system ]; then
     systemctl enable aura-core.service 2>/dev/null || true
     echo "I: aura-core.service enabled" | systemd-cat -t bright-os-aura -p info
-fi
-
-# --- Apply sysusers.d/tmpfiles.d if not already applied ---
-if command -v systemd-sysusers >/dev/null 2>&1; then
-    systemd-sysusers /etc/aura/sysusers.d/aura.conf 2>/dev/null || true
-fi
-if command -v systemd-tmpfiles >/dev/null 2>&1; then
-    systemd-tmpfiles --create /etc/aura/tmpfiles.d/aura.conf 2>/dev/null || true
 fi
 
 echo "I: AURA subsystem installation complete." | systemd-cat -t bright-os-aura -p info

@@ -97,15 +97,17 @@ for dir in aura/core aura/intelligence aura/commands aura/security aura/memory a
     fi
 done
 
-# Check required files installed to chroot tree
+# Check required files installed to chroot tree (Phase 3 integration points)
 for f in \
     config/includes.chroot/usr/bin/aura-core-service \
     config/includes.chroot/etc/systemd/system/aura-core.service \
     config/includes.chroot/etc/dbus-1/system.d/org.bright_os.AURA.conf \
+    config/includes.chroot/usr/share/dbus-1/system-services/org.bright_os.AURA.service \
+    config/includes.chroot/usr/share/polkit-1/actions/org.bright_os.AURA.policy \
+    config/includes.chroot/usr/lib/sysusers.d/aura.conf \
+    config/includes.chroot/usr/lib/tmpfiles.d/aura.conf \
     config/includes.chroot/etc/bright-os/aura/aura.conf \
-    config/includes.chroot/etc/aura/sysusers.d/aura.conf \
-    config/includes.chroot/etc/aura/tmpfiles.d/aura.conf \
-    config/includes.chroot/usr/lib/aura/core/aura_core_service.py \
+    config/includes.chroot/usr/share/aura/aura.conf.default \
     config/package-lists/aura-core.list.chroot \
     config/hooks/live/40-aura-setup.hook.chroot \
     docs/aura/ARCHITECTURE.md; do
@@ -115,6 +117,13 @@ for f in \
         fail "Missing installed file: $f"
     fi
 done
+
+# Phase 3: legacy wrong-location files must NOT exist
+if [ -d config/includes.chroot/etc/aura ]; then
+    fail "Legacy /etc/aura/sysusers.d or /etc/aura/tmpfiles.d still present; should be /usr/lib/{sysusers.d,tmpfiles.d}"
+else
+    pass "No legacy /etc/aura/sysusers.d or tmpfiles.d (correctly placed under /usr/lib)"
+fi
 
 echo ""
 echo "--- Configuration defaults ---"
@@ -238,10 +247,118 @@ else
 fi
 
 echo ""
+echo "--- sysusers.d creates aura user ---"
+if grep -q '^u     aura' config/includes.chroot/usr/lib/sysusers.d/aura.conf; then
+    pass "sysusers.d creates 'aura' system user"
+else
+    fail "sysusers.d does not declare 'aura' user"
+fi
+if grep -q '^g     aura' config/includes.chroot/usr/lib/sysusers.d/aura.conf; then
+    pass "sysusers.d creates 'aura' group"
+else
+    fail "sysusers.d does not declare 'aura' group"
+fi
+if grep -q '/var/lib/aura' config/includes.chroot/usr/lib/sysusers.d/aura.conf; then
+    pass "sysusers.d home directory is /var/lib/aura"
+else
+    fail "sysusers.d home directory not set to /var/lib/aura"
+fi
+if grep -q '/usr/sbin/nologin' config/includes.chroot/usr/lib/sysusers.d/aura.conf; then
+    pass "sysusers.d uses /usr/sbin/nologin shell (no login)"
+else
+    fail "sysusers.d does not set nologin shell"
+fi
+
+echo ""
+echo "--- tmpfiles.d creates runtime directories ---"
+for d in /var/lib/aura /var/lib/aura/backups /var/lib/aura/models /var/lib/aura/conversations /var/log/aura /etc/bright-os/aura; do
+    if grep -q "^d     $d" config/includes.chroot/usr/lib/tmpfiles.d/aura.conf; then
+        pass "tmpfiles.d declares $d"
+    else
+        fail "tmpfiles.d does not declare $d"
+    fi
+done
+# Conversations should be 0700 (private)
+if grep -q 'conversations   0700' config/includes.chroot/usr/lib/tmpfiles.d/aura.conf; then
+    pass "conversations directory is mode 0700 (private)"
+else
+    fail "conversations directory not private (0700)"
+fi
+# /var/log/aura owned by aura:adm
+if grep -q '/var/log/aura.*aura adm' config/includes.chroot/usr/lib/tmpfiles.d/aura.conf; then
+    pass "/var/log/aura owned by aura:adm (log group)"
+else
+    fail "/var/log/aura not owned by aura:adm"
+fi
+
+echo ""
+echo "--- D-Bus integration ---"
+# D-Bus system service file for activation
+if grep -q '^Name=org.bright_os.AURA' config/includes.chroot/usr/share/dbus-1/system-services/org.bright_os.AURA.service; then
+    pass "D-Bus service activation file names org.bright_os.AURA"
+else
+    fail "D-Bus service activation file missing Name=org.bright_os.AURA"
+fi
+if grep -q '^User=aura' config/includes.chroot/usr/share/dbus-1/system-services/org.bright_os.AURA.service; then
+    pass "D-Bus activation runs as 'aura' user"
+else
+    fail "D-Bus activation does not set User=aura"
+fi
+if grep -q '^SystemdService=aura-core.service' config/includes.chroot/usr/share/dbus-1/system-services/org.bright_os.AURA.service; then
+    pass "D-Bus activation hands off to systemd aura-core.service"
+else
+    fail "D-Bus service file missing SystemdService=aura-core.service"
+fi
+# D-Bus policy allows aura user to own the name
+if grep -q '<policy user="aura">' config/includes.chroot/etc/dbus-1/system.d/org.bright_os.AURA.conf && \
+   grep -q '<allow own="org.bright_os.AURA"/>' config/includes.chroot/etc/dbus-1/system.d/org.bright_os.AURA.conf; then
+    pass "D-Bus policy grants 'aura' user permission to own org.bright_os.AURA"
+else
+    fail "D-Bus policy does not allow aura user to own the bus name"
+fi
+# D-Bus policy does not allow arbitrary shell execution (check for no send_interface="*")
+if grep -q 'send_interface="\*"' config/includes.chroot/etc/dbus-1/system.d/org.bright_os.AURA.conf; then
+    fail "D-Bus policy has wildcard interface allow (would expose unrestricted methods)"
+else
+    pass "D-Bus policy has no wildcard interface allow"
+fi
+
+echo ""
+echo "--- Polkit policy ---"
+if grep -q 'org.bright_os.AURA.shutdown' config/includes.chroot/usr/share/polkit-1/actions/org.bright_os.AURA.policy; then
+    pass "Polkit defines org.bright_os.AURA.shutdown action"
+else
+    fail "Polkit action org.bright_os.AURA.shutdown missing"
+fi
+if grep -q 'org.bright_os.AURA.grant-cloud-consent' config/includes.chroot/usr/share/polkit-1/actions/org.bright_os.AURA.policy; then
+    pass "Polkit defines org.bright_os.AURA.grant-cloud-consent action"
+else
+    fail "Polkit action org.bright_os.AURA.grant-cloud-consent missing"
+fi
+
+echo ""
+echo "--- systemd security hardening ---"
+for key in ProtectSystem=strict ProtectHome=read-only PrivateTmp=yes PrivateDevices=yes \
+         NoNewPrivileges=yes ProtectKernelTunables=yes ProtectKernelModules=yes \
+         ProtectControlGroups=yes RestrictNamespaces=yes LockPersonality=yes \
+         CapabilityBoundingSet=; do
+    if grep -q "^${key}" config/includes.chroot/etc/systemd/system/aura-core.service; then
+        pass "systemd hardening: $key"
+    else
+        fail "systemd missing hardening: $key"
+    fi
+done
+# No ReadsWritePaths outside /var/lib/aura and /var/log/aura
+if grep -E '^ReadWritePaths=' config/includes.chroot/etc/systemd/system/aura-core.service | grep -qvE 'ReadWritePaths=/var/lib/aura /var/log/aura[[:space:]]*$'; then
+    fail "systemd ReadWritePaths contains unexpected paths"
+else
+    pass "systemd ReadWritePaths restricted to /var/lib/aura /var/log/aura"
+fi
+
+echo ""
 echo "--- Package list consistency ---"
-# Check that aura-core.list.chroot references valid Debian packages
-# (python3-dbus, python3-gi, python3-yaml, dbus, systemd, policykit-1 are in Trixie)
-for pkg in python3 python3-dbus python3-gi python3-yaml dbus systemd policykit-1; do
+# Check that aura-core.list.chroot references required packages
+for pkg in python3 python3-dbus python3-gi python3-yaml python3-psutil dbus systemd policykit-1 gir1.2-polkit-1.0; do
     if grep -q "^$pkg$" config/package-lists/aura-core.list.chroot; then
         pass "Package list includes: $pkg"
     else
@@ -259,6 +376,97 @@ for edition in home developer lite; do
         fail "Missing edition: ${edition}"
     fi
 done
+# Verify the edition file is templated (build.sh writes the edition at build time)
+if grep -q 'BRIGHT_EDITION' build/scripts/build.sh; then
+    pass "build.sh writes edition to /etc/bright-os/edition at build time"
+else
+    fail "build.sh does not set edition marker"
+fi
+# Lite edition masks heavy services (build.sh creates /dev/null symlinks in a loop)
+if grep -q 'for svc in bluetooth.service cups.service ModemManager.service' build/scripts/build.sh; then
+    pass "Lite edition masks bluetooth, cups, ModemManager heavy services"
+else
+    fail "Lite edition does not mask expected heavy services"
+fi
+
+echo ""
+echo "--- No model weights in ISO ---"
+# The ISO must NOT bundle any AI model weights (they're user-installed).
+model_files=$(find config/includes.chroot config/package-lists editions \
+    \( -name "*.gguf" -o -name "*.ggml" -o -name "*.bin" -name "*model*" \) \
+    -not -path "*__pycache__*" 2>/dev/null | head -20)
+if [ -z "$model_files" ]; then
+    pass "No bundled model weight files in ISO config tree"
+else
+    fail "Found potential model weight files in ISO tree: $model_files"
+fi
+# Model dir should be empty in the ISO (created by tmpfiles.d only)
+if [ -d config/includes.chroot/var/lib/aura/models ]; then
+    model_count=$(find config/includes.chroot/var/lib/aura/models -type f 2>/dev/null | wc -l)
+    if [ "$model_count" -eq 0 ]; then
+        pass "/var/lib/aura/models exists but is empty (models user-installed)"
+    else
+        fail "/var/lib/aura/models contains files in ISO (should be empty)"
+    fi
+else
+    pass "/var/lib/aura/models not pre-populated (created at runtime by tmpfiles.d)"
+fi
+# auto_load_at_boot must default to false (critical for Lite performance)
+if grep -q 'auto_load_at_boot.*false' config/includes.chroot/usr/share/aura/aura.conf.default; then
+    pass "auto_load_at_boot defaults to false (no model load at boot)"
+else
+    fail "auto_load_at_boot is not false in default config"
+fi
+if grep -q 'lazy_load.*true' config/includes.chroot/usr/share/aura/aura.conf.default; then
+    pass "lazy_load defaults to true (models loaded on first inference only)"
+else
+    fail "lazy_load is not true in default config"
+fi
+
+echo ""
+echo "--- Edition defaults (from source) ---"
+python3 - << 'PYEOF'
+import sys
+sys.path.insert(0, '.')
+from aura.intelligence.editions import edition_defaults, detect_edition, VALID_EDITIONS
+# Lite should be offline by default
+lite = edition_defaults("lite")
+assert lite["mode"] == "offline", f"Lite default mode should be offline, got {lite['mode']}"
+assert lite["cloud_available"] is False, "Lite should have cloud disabled"
+assert lite["max_memory_percent"] <= 40, f"Lite mem% should be <=40, got {lite['max_memory_percent']}"
+assert lite["unload_idle_seconds"] < 300, "Lite should unload models aggressively"
+# Developer can use more memory
+dev = edition_defaults("developer")
+assert dev["max_memory_percent"] >= 60
+# Home has balanced defaults
+home = edition_defaults("home")
+assert home["mode"] == "local"
+assert home["auto_load_at_boot"] is False
+print("  [PASS] Edition defaults correctly tuned (lite=offline+tight, dev=relaxed, home=local)")
+PYEOF
+if [ $? -eq 0 ]; then
+    pass "Edition defaults correct"
+else
+    fail "Edition defaults incorrect"
+fi
+
+echo ""
+echo "--- Offline mode network restrictions ---"
+python3 - << 'PYEOF'
+import sys
+sys.path.insert(0, '.')
+from aura.core.config import DEFAULTS
+assert DEFAULTS["intelligence"]["mode"] == "local"
+assert DEFAULTS["intelligence"]["allow_cloud_default"] == "false"
+assert DEFAULTS["intelligence"]["require_consent"] == "true"
+assert DEFAULTS["intelligence"]["enable_telemetry"] == "false"
+print("  [PASS] Default mode is local, cloud default-off, consent required, telemetry off")
+PYEOF
+if [ $? -eq 0 ]; then
+    pass "Offline/security defaults correct"
+else
+    fail "Offline/security defaults wrong"
+fi
 
 echo ""
 echo "--- Python regression unit tests ---"
