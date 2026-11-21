@@ -30,7 +30,9 @@ from aura.intelligence.networking import (
     _BLOCKED_NETS,
     _PinnedHTTPSConnection,
     _PinnedHTTPConnection,
+    PeerMismatchError,
     _resolve_valid_addresses,
+    _verify_peer_or_close,
     is_safe_public_ip,
     open_loopback_url,
     open_safe_url,
@@ -38,7 +40,7 @@ from aura.intelligence.networking import (
 )
 from aura.intelligence.model_manager import ModelManager, _sanitize_filename
 from aura.intelligence.secure_store import _file_perms_ok, get_api_key
-from aura.intelligence.health import HealthMonitor
+from aura.intelligence.health import HealthMonitor, _State
 from aura.intelligence.provider import (
     InferenceRequest,
     InferenceResult,
@@ -124,6 +126,127 @@ class DNSRebindingTests(unittest.TestCase):
                 pass
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0], ("93.184.216.34", 443))
+
+    def test_peer_mismatch_raises_and_closes_socket(self):
+        """If getpeername() returns an IP different from the pinned IP,
+        _verify_peer_or_close must raise PeerMismatchError (which is NOT
+        an OSError subclass — this is what prevents the old bug where the
+        exception was swallowed by except (OSError, AttributeError)) and
+        must close the socket."""
+        import ssl as _ssl
+        pinned = "93.184.216.34"
+        evil = "10.0.0.5"
+        # Build a mock socket whose getpeername() returns the evil IP
+        fake_sock = mock.MagicMock(spec=socket.socket)
+        fake_sock.getpeername.return_value = (evil, 443)
+        with self.assertRaises(PeerMismatchError) as cm:
+            _verify_peer_or_close(fake_sock, pinned)
+        self.assertIn(evil, str(cm.exception))
+        self.assertIn(pinned, str(cm.exception))
+        # Socket must be closed on mismatch
+        fake_sock.close.assert_called_once()
+        # Critical: PeerMismatchError must NOT be an OSError subclass
+        # (otherwise except OSError would swallow it, the Phase 2.2 bug)
+        self.assertNotIsInstance(cm.exception, OSError)
+        self.assertNotIsInstance(cm.exception, _ssl.SSLError)
+
+    def test_peer_match_succeeds_and_leaves_socket_open(self):
+        """If getpeername() returns the pinned IP, the helper must return
+        without raising and WITHOUT closing the socket."""
+        pinned = "93.184.216.34"
+        fake_sock = mock.MagicMock(spec=socket.socket)
+        fake_sock.getpeername.return_value = (pinned, 443)
+        # Should not raise
+        _verify_peer_or_close(fake_sock, pinned)
+        fake_sock.close.assert_not_called()
+
+    def test_getpeername_oserror_fails_closed(self):
+        """If getpeername() itself raises OSError (can't verify peer),
+        we must FAIL CLOSED — close the socket and raise
+        PeerMismatchError — rather than silently continuing."""
+        pinned = "93.184.216.34"
+        fake_sock = mock.MagicMock(spec=socket.socket)
+        fake_sock.getpeername.side_effect = OSError("getpeername failed")
+        with self.assertRaises(PeerMismatchError):
+            _verify_peer_or_close(fake_sock, pinned)
+        fake_sock.close.assert_called_once()
+
+    def test_https_connect_does_not_wrap_tls_after_peer_mismatch(self):
+        """After a peer mismatch, connect() must NOT proceed to TLS wrap,
+        because wrapping a socket connected to an attacker would disclose
+        SNI and perform a handshake with the wrong peer."""
+        pinned = "93.184.216.34"
+        evil = "10.0.0.5"
+        fake_sock = mock.MagicMock(spec=socket.socket)
+        fake_sock.getpeername.return_value = (evil, 443)
+
+        fake_context = mock.MagicMock()
+        with mock.patch("socket.create_connection", return_value=fake_sock):
+            c = _PinnedHTTPSConnection("example.com", 443,
+                                       pinned_ip=pinned,
+                                       context=fake_context,
+                                       timeout=2)
+            with self.assertRaises(PeerMismatchError):
+                c.connect()
+        # TLS wrap must NOT have been called
+        fake_context.wrap_socket.assert_not_called()
+        # Socket closed
+        fake_sock.close.assert_called_once()
+
+    def test_http_connect_rejects_mismatched_peer(self):
+        """Plain HTTP (loopback) path must also enforce peer check and
+        raise PeerMismatchError on mismatch (not be swallowed)."""
+        pinned = "127.0.0.1"
+        evil = "10.0.0.5"
+        fake_sock = mock.MagicMock(spec=socket.socket)
+        fake_sock.getpeername.return_value = (evil, 11434)
+        with mock.patch("socket.create_connection", return_value=fake_sock):
+            c = _PinnedHTTPConnection("127.0.0.1", 11434,
+                                      pinned_ip=pinned, timeout=2)
+            with self.assertRaises(PeerMismatchError):
+                c.connect()
+        # On mismatch, self.sock must not be assigned (so http.client
+        # can't proceed to send HTTP to the wrong peer).
+        self.assertIsNone(c.sock)
+        fake_sock.close.assert_called_once()
+
+    def test_legitimate_connection_error_still_propagates(self):
+        """Real network errors (connection refused, timeout) must NOT
+        be converted to PeerMismatchError — they should raise as
+        ordinary OSErrors so callers can try the next IP or report a
+        network failure."""
+        import errno
+        def refuse(address, *a, **kw):
+            raise ConnectionRefusedError(
+                errno.ECONNREFUSED, "Connection refused")
+        with mock.patch("socket.create_connection", side_effect=refuse):
+            c = _PinnedHTTPSConnection("example.com", 443,
+                                       pinned_ip="93.184.216.34",
+                                       timeout=2)
+            with self.assertRaises(OSError):
+                c.connect()
+
+    def test_socket_closed_on_peer_mismatch_not_rewrapped(self):
+        """After a peer mismatch, _verify_peer_or_close closes the
+        socket itself. connect() must NOT attempt to re-close or
+        wrap the socket (the socket is closed and there's nothing to
+        wrap). This test verifies that after a mismatch, neither
+        wrap_socket nor a second close call happens."""
+        pinned = "1.2.3.4"
+        evil = "5.6.7.8"
+        fake_sock = mock.MagicMock(spec=socket.socket)
+        fake_sock.getpeername.return_value = (evil, 443)
+        fake_ctx = mock.MagicMock()
+        with mock.patch("socket.create_connection", return_value=fake_sock):
+            c = _PinnedHTTPSConnection("example.com", 443,
+                                       pinned_ip=pinned,
+                                       context=fake_ctx, timeout=2)
+            with self.assertRaises(PeerMismatchError):
+                c.connect()
+        # Socket closed exactly once (by _verify_peer_or_close)
+        fake_sock.close.assert_called_once()
+        # wrap_socket must not have been called
+        fake_ctx.wrap_socket.assert_not_called()
 
     def test_connection_to_local_server_succeeds_over_loopback(self):
         """Start a local HTTP server and confirm open_loopback_url connects
@@ -352,8 +475,165 @@ class HealthMonitorRaceTests(unittest.TestCase):
         # causes a failure rather than hanging forever.
         ok = done.wait(timeout=3.0)
         self.assertTrue(ok, "callback did not fire or stop() deadlocked")
-        # After stop(), thread should be gone
-        self.assertIsNone(hm._thread)
+        # After stop returns from the callback, the state should
+        # eventually reach STOPPED (the loop still has to exit). Give
+        # it a short wait.
+        for _ in range(50):
+            with hm._cv:
+                if hm._state == _State.STOPPED:
+                    break
+            time.sleep(0.05)
+        with hm._cv:
+            self.assertEqual(hm._state, _State.STOPPED)
+            self.assertIsNone(hm._thread)
+
+    def test_deterministic_start_stop_start_interleaving(self):
+        """Reproduce the Phase 2.2 race deterministically with events:
+
+        1. Thread A calls start(); we hold it inside start() after the
+           state has been set to STARTING but BEFORE t.start() is called.
+        2. Thread B calls stop() while start() is still in this window.
+           With the old code, stop() would see a not-yet-alive thread,
+           skip the join, clear _thread, and return — letting the thread
+           start later with nobody tracking it.
+        3. Thread C calls start() while Thread B's stop() is still
+           running.
+        4. After everything settles (final stop), verify that exactly
+           zero threads are left alive, and that at NO point did two
+           monitor loops run concurrently.
+        """
+        hm = HealthMonitor(check_interval=10.0)  # long interval so loop doesn't tick during test
+        p = self._make_provider()
+        hm.register(p)
+
+        active_loops = []
+        active_loops_lock = threading.Lock()
+        max_concurrent = [0]
+
+        real_loop = hm._loop
+        def instrumented_loop(gen):
+            with active_loops_lock:
+                active_loops.append(threading.current_thread().ident)
+                if len(active_loops) > max_concurrent[0]:
+                    max_concurrent[0] = len(active_loops)
+            try:
+                real_loop(gen)
+            finally:
+                with active_loops_lock:
+                    try:
+                        active_loops.remove(threading.current_thread().ident)
+                    except ValueError:
+                        pass
+        hm._loop = instrumented_loop  # type: ignore[method-assign]
+
+        # Events to pin start() in the STARTING window (after state
+        # transition, before Thread.start is called).
+        reached_starting_window = threading.Event()  # set by the intercepted t.start()
+        release_thread_start = threading.Event()    # set by test to allow t.start()
+        interceptor_entered = threading.Event()     # set when interceptor first fires (diagnostic)
+        real_thread_start = threading.Thread.start
+
+        def paused_start(self, *a, **kw):
+            if getattr(self, "name", "") == "aura-provider-health":
+                interceptor_entered.set()
+                reached_starting_window.set()
+                # Wait until the test allows the monitor thread to start.
+                if not release_thread_start.wait(timeout=10):
+                    raise RuntimeError("test timed out waiting to release Thread.start")
+            return real_thread_start(self, *a, **kw)
+
+        with mock.patch.object(threading.Thread, "start", paused_start):
+            # Step 1: kick off start() in a separate thread.
+            t_start = threading.Thread(target=hm.start, name="start-A")
+            t_start.start()
+            # Wait until the intercepted t.start is about to run (state
+            # is STARTING, self._thread = t, t.start() hasn't been
+            # called yet).
+            self.assertTrue(reached_starting_window.wait(timeout=10),
+                            "start-A never reached STARTING window")
+            with hm._cv:
+                self.assertEqual(hm._state, _State.STARTING)
+                self.assertIsNotNone(hm._thread)
+
+            # Step 2: call stop() from another thread. It must block
+            # waiting for the thread to actually start (rather than
+            # returning early and leaving a zombie).
+            t_stop = threading.Thread(target=hm.stop, name="stop-B")
+            t_stop.start()
+            # Give stop() time to enter the cv-wait for STARTING->RUNNING.
+            time.sleep(0.2)
+            self.assertTrue(t_stop.is_alive(),
+                "stop() returned early before thread started — race not fixed")
+
+            # Step 3: queue another start() behind stop().
+            t_start2 = threading.Thread(target=hm.start, name="start-C")
+            t_start2.start()
+            time.sleep(0.1)
+            self.assertTrue(t_start2.is_alive(),
+                "start-C finished unexpectedly while stop still running")
+
+            # Release the Thread.start so the monitor thread actually
+            # starts. The monitor loop will enter RUNNING, stop() will
+            # observe RUNNING, issue stop, join, and return; start-C
+            # will wait for STOPPED then start a new thread.
+            release_thread_start.set()
+
+        # Wait for all control threads to settle.
+        t_start.join(timeout=10)
+        t_stop.join(timeout=10)
+        t_start2.join(timeout=10)
+        self.assertFalse(t_start.is_alive(),  "start-A didn't finish")
+        self.assertFalse(t_stop.is_alive(),   "stop-B didn't finish")
+        self.assertFalse(t_start2.is_alive(), "start-C didn't finish")
+
+        # After A,B,C settle: start-C brought the monitor to RUNNING.
+        # Stop the monitor and confirm final state is clean.
+        hm.stop()
+
+        with hm._cv:
+            self.assertEqual(hm._state, _State.STOPPED)
+            self.assertIsNone(hm._thread)
+        # At no point did more than one monitoring loop run concurrently.
+        self.assertLessEqual(max_concurrent[0], 1,
+            f"two monitor loops ran concurrently (max={max_concurrent[0]})")
+        self.assertEqual(active_loops, [])
+
+    def test_start_idempotent_under_concurrency(self):
+        """Many concurrent start() calls must produce exactly one thread."""
+        hm = HealthMonitor(check_interval=0.05)
+        p = self._make_provider()
+        hm.register(p)
+        errs = []
+        def s():
+            try: hm.start()
+            except Exception as e: errs.append(e)
+        threads = [threading.Thread(target=s) for _ in range(10)]
+        for t in threads: t.start()
+        for t in threads: t.join(timeout=5)
+        self.assertEqual(errs, [])
+        with hm._cv:
+            self.assertEqual(hm._state, _State.RUNNING)
+            t1 = hm._thread
+        self.assertIsNotNone(t1)
+        self.assertTrue(t1.is_alive())
+        hm.stop()
+        with hm._cv:
+            self.assertEqual(hm._state, _State.STOPPED)
+            self.assertIsNone(hm._thread)
+
+    def test_stop_idempotent(self):
+        """Repeated stop() calls must not raise and must leave the
+        monitor STOPPED."""
+        hm = HealthMonitor(check_interval=0.05)
+        p = self._make_provider()
+        hm.register(p)
+        hm.stop()  # redundant stop on already-stopped monitor
+        hm.start()
+        for _ in range(5):
+            hm.stop()
+        with hm._cv:
+            self.assertEqual(hm._state, _State.STOPPED)
+            self.assertIsNone(hm._thread)
 
 
 # --- Concurrent model download tests ---------------------------------------
@@ -482,49 +762,157 @@ class ConcurrentDownloadTests(unittest.TestCase):
                 self.assertEqual(flags & expected, expected,
                                  f"flags {flags:#o} missing O_NOFOLLOW/CREAT/EXCL for {path}")
 
-    def test_cancel_cleans_up_partial(self):
-        """Start a download and cancel it; no .part file should remain."""
-        body = b"GGUF" + b"x" * (5 * 1024 * 1024)  # 5 MB
-        srv, port = self._start_http_server(body)
+    def _run_download(self, mm, model_id, body, expected_sha256="",
+                      cancel_event=None, progress_cb=None,
+                      delay_per_chunk=0.0):
+        """Run a download using monkey-patched validate_remote_url and
+        open_safe_url so we can stream `body` without real network.
+        Returns the DownloadProgress."""
+        import aura.intelligence.model_manager as mm_mod
+        orig_val = mm_mod.validate_remote_url
+        orig_open_safe = mm_mod.open_safe_url
+        mm_mod.validate_remote_url = lambda u, **k: True
+
+        class _FakeResp:
+            def __init__(self, body):
+                self._body = body
+                self._pos = 0
+                self.headers = {"Content-Length": str(len(body))}
+                self._delay = delay_per_chunk
+            def read(self, n):
+                if self._pos >= len(self._body):
+                    return b""
+                if self._delay:
+                    time.sleep(self._delay)
+                c = self._body[self._pos:self._pos+n]
+                self._pos += len(c)
+                return c
+            def close(self): pass
+        mm_mod.open_safe_url = lambda *a, **k: _FakeResp(body)
         try:
-            with tempfile.TemporaryDirectory() as td:
-                # We need to bypass the https_only check because test server is
-                # plain HTTP.  Use validate_remote_url with allow_localhost=True
-                # — downloads are remote (https) only in real usage.
-                mm = ModelManager(model_dir=td)
-                cancel = threading.Event()
-                dp_result = []
-                def _dl():
-                    # Directly call the download internals with a URL that
-                    # points at our server via a wrapper that bypasses
-                    # https_only for local tests.
-                    url = f"http://127.0.0.1:{port}/m.gguf"
-                    # Monkey-patch validate_remote_url to allow http localhost
-                    import aura.intelligence.model_manager as mm_mod
-                    orig_val = mm_mod.validate_remote_url
-                    mm_mod.validate_remote_url = lambda u, **k: True
-                    try:
-                        dp_result.append(mm.download_model(
-                            "testm", url,
-                            network_enabled=True,
-                            cancel_event=cancel,
-                            # Use http:// in download but validation is
-                            # bypassed above
-                        ))
-                    finally:
-                        mm_mod.validate_remote_url = orig_val
-                t = threading.Thread(target=_dl)
-                t.start()
-                time.sleep(0.2)
-                cancel.set()
-                t.join(timeout=10)
-                # Wait a moment for cleanup
-                time.sleep(0.2)
-                part_files = [f for f in os.listdir(td) if f.endswith(".part")]
-                self.assertEqual(part_files, [],
-                                 f"partial files remain after cancel: {part_files}")
+            return mm.download_model(model_id, "https://example.test/m.gguf",
+                                     expected_sha256=expected_sha256,
+                                     network_enabled=True,
+                                     cancel_event=cancel_event,
+                                     progress_cb=progress_cb,
+                                     overwrite=True)
         finally:
-            srv.shutdown()
+            mm_mod.validate_remote_url = orig_val
+            mm_mod.open_safe_url = orig_open_safe
+
+    def _list_tmp_files(self, d):
+        """List all files in d that match our tmp naming scheme
+        (*.part-<hexdigits>), plus any legacy .part files."""
+        import re as _re
+        pat = _re.compile(r"\.part(-[0-9a-f]+)?$")
+        return [f for f in os.listdir(d) if pat.search(f)]
+
+    def test_cancel_cleans_up_partial_after_chunk_written(self):
+        """Start a download, wait until at least one chunk is written,
+        then cancel. The unique tmp file must be removed."""
+        body = b"GGUF" + b"x" * (2 * 1024 * 1024)  # 2 MB, passes size check
+        with tempfile.TemporaryDirectory() as td:
+            mm = ModelManager(model_dir=td)
+            cancel = threading.Event()
+            wrote_one = threading.Event()
+            def cb(dp):
+                if dp.bytes_downloaded > 0:
+                    wrote_one.set()
+            dp_result = []
+            def _dl():
+                dp_result.append(self._run_download(
+                    mm, "testm", body, cancel_event=cancel,
+                    progress_cb=cb, delay_per_chunk=0.0))
+            t = threading.Thread(target=_dl)
+            t.start()
+            # Wait until at least one chunk was written
+            self.assertTrue(wrote_one.wait(timeout=10),
+                            "no chunk written within timeout")
+            cancel.set()
+            t.join(timeout=10)
+            dp = dp_result[0]
+            self.assertEqual(dp.status, "cancelled", dp.error)
+            self.assertEqual(self._list_tmp_files(td), [],
+                "tmp files remain after cancel: %r" % os.listdir(td))
+
+    def test_failed_hash_validation_removes_tmp(self):
+        """If the SHA-256 doesn't match, the tmp file must be removed
+        (never promoted, never left behind)."""
+        body = b"GGUF" + b"y" * (1024 * 1024 + 16)
+        with tempfile.TemporaryDirectory() as td:
+            mm = ModelManager(model_dir=td)
+            dp = self._run_download(mm, "badhash", body,
+                                    expected_sha256="0"*64)
+            self.assertEqual(dp.status, "error")
+            self.assertIn("sha256", dp.error.lower())
+            self.assertEqual(self._list_tmp_files(td), [],
+                "tmp files remain after hash failure: %r" % os.listdir(td))
+            # Also the destination must NOT exist (not promoted)
+            dest = os.path.join(td, "badhash.gguf")
+            self.assertFalse(os.path.exists(dest))
+
+    def test_successful_promotion_leaves_no_tmp(self):
+        """On success the tmp file is atomically promoted to the dest
+        path; no tmp file must remain."""
+        import hashlib as _h
+        body = b"GGUF" + b"z" * (1024 * 1024 + 16)
+        sha = _h.sha256(body).hexdigest()
+        with tempfile.TemporaryDirectory() as td:
+            mm = ModelManager(model_dir=td)
+            dp = self._run_download(mm, "good", body, expected_sha256=sha)
+            self.assertEqual(dp.status, "done", dp.error)
+            self.assertEqual(self._list_tmp_files(td), [],
+                "tmp files remain after success: %r" % os.listdir(td))
+            dest = os.path.join(td, "good.gguf")
+            self.assertTrue(os.path.exists(dest))
+
+    def test_one_failed_download_does_not_delete_another_tmp(self):
+        """Concurrent downloads of two different models: if one fails
+        hash check, its tmp cleanup must NOT touch the other download's
+        tmp file."""
+        import hashlib as _h
+        good_body = b"GGUF" + b"g" * (1024 * 1024 + 16)
+        bad_body = b"GGUF" + b"b" * (1024 * 1024 + 16)
+        good_sha = _h.sha256(good_body).hexdigest()
+        with tempfile.TemporaryDirectory() as td:
+            mm = ModelManager(model_dir=td)
+            # Hold up the "good" download inside its write loop so its
+            # tmp file exists when the "bad" download fails.
+            good_started = threading.Event()
+            hold_good = threading.Event()
+            release_good = threading.Event()
+            good_dp = []
+            def good_cb(dp):
+                if dp.bytes_downloaded > 0 and not good_started.is_set():
+                    good_started.set()
+                if hold_good.is_set() and not release_good.is_set():
+                    release_good.wait(timeout=5)
+            def good_dl():
+                good_dp.append(self._run_download(
+                    mm, "goodm", good_body,
+                    expected_sha256=good_sha,
+                    progress_cb=good_cb))
+            # Start good download and wait for it to begin writing,
+            # then put it on hold.
+            tg = threading.Thread(target=good_dl)
+            tg.start()
+            self.assertTrue(good_started.wait(timeout=10))
+            hold_good.set()
+            time.sleep(0.1)  # Let it park in the hold
+            # Now run the bad download synchronously; it should fail
+            # hash check without removing goodm's tmp.
+            bad_dp = self._run_download(
+                mm, "badm", bad_body, expected_sha256="0"*64)
+            self.assertEqual(bad_dp.status, "error")
+            # Release good download and let it finish
+            release_good.set()
+            tg.join(timeout=10)
+            self.assertEqual(good_dp[0].status, "done", good_dp[0].error)
+            # Final state: only promoted goodm.gguf exists, no tmps.
+            self.assertEqual(self._list_tmp_files(td), [],
+                "tmp files remain: %r" % os.listdir(td))
+            self.assertTrue(os.path.exists(os.path.join(td, "goodm.gguf")))
+            self.assertFalse(os.path.exists(os.path.join(td, "badm.gguf")))
 
 
 # --- Whole-service security boundary tests --------------------------------
