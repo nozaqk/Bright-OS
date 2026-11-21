@@ -1,0 +1,29 @@
+# =============================================================================
+# AURA Core — Native Intelligence Platform (Foundation Packages)
+# These packages are required for the AURA Core service and are included
+# in ALL editions (Home, Developer, Lite). AURA Core runs without AI models
+# and without internet, providing security monitoring and service management.
+# Target: Debian 13 (Trixie) amd64
+# =============================================================================
+
+# --- Python 3 runtime (for the AURA service) ---
+python3
+python3-dbus
+python3-gi
+python3-yaml
+python3-pip
+python3-setuptools
+
+# --- D-Bus and systemd (required for service activation) ---
+dbus
+systemd
+policykit-1
+
+# --- Security monitoring prerequisites ---
+# Used by Phase 4 security engine
+auditd
+apparmor
+apparmor-utils
+iptables
+nftables
+inotify-tools

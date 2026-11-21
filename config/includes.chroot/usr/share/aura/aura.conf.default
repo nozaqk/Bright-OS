@@ -1,0 +1,64 @@
+# =============================================================================
+# AURA Core Configuration
+# Bright OS native intelligence and cybersecurity platform
+#
+# This file contains default settings. Administrator can override by editing.
+# All sections and keys have safe defaults if this file is missing.
+# =============================================================================
+
+[core]
+# Logging level: debug, info, warning, error
+log_level = info
+# Maximum restart attempts for a failed component before giving up
+component_restart_limit = 5
+# Seconds to wait between restart attempts
+component_restart_delay = 3
+
+[intelligence]
+# Operating mode: local, hybrid, offline
+#   local  — local models only (default)
+#   hybrid — local + cloud (requires consent for cloud calls)
+#   offline — no network AI; local models only; security functions active
+mode = local
+# AI provider: auto, qwen, llama.cpp, ollama, none
+provider = auto
+# Path to local model file (leave empty for auto-discovery)
+model_path =
+# Maximum RAM (MB) for model inference
+max_memory_mb = 2048
+# Cloud endpoint URL (hybrid mode only)
+cloud_endpoint =
+# Cloud API key (hybrid mode only; stored in user keyring preferred)
+cloud_api_key =
+# Require explicit user consent before any cloud calls
+require_consent = true
+
+[security]
+# Enable security monitoring
+enabled = true
+# Monitor critical file integrity
+file_integrity_check = true
+# Monitor processes for suspicious behaviour
+process_monitoring = true
+# Monitor network connections
+network_monitoring = true
+# Allow autonomous emergency isolation (default off; requires opt-in)
+auto_isolate = false
+# Log security events
+audit_log = true
+
+[memory]
+# Enable user memory
+enabled = true
+# Maximum memory entries
+max_entries = 10000
+# Days to retain memory entries
+retention_days = 90
+
+[recovery]
+# Enable recovery/backup functionality
+enabled = true
+# Backup storage directory
+backup_dir = /var/lib/aura/backups
+# Maximum number of backups to retain
+max_backups = 10

@@ -1,0 +1,52 @@
+[Unit]
+Description=AURA Core Intelligence Service
+Documentation=https://github.com/nozaqk/Bright-OS
+After=network.target dbus.service systemd-resolved.service
+Wants=network.target
+Requires=dbus.service
+
+# AURA should not block the boot process if it fails
+FailureAction=none
+
+[Service]
+Type=simple
+User=aura
+Group=aura
+ExecStart=/usr/bin/aura-core-service --foreground
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/lib/aura /var/log/aura
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+# Capabilities
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=aura-core
+
+# Working directory
+WorkingDirectory=/var/lib/aura
+
+[Install]
+WantedBy=multi-user.target
+Alias=aura.service

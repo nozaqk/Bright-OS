@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+"""Launcher wrapper for the AURA Core service.
+Finds the installed aura module and runs aura_core_service.main().
+
+This wrapper exists in /usr/bin to satisfy systemd ExecStart while the
+Python package lives under /usr/lib/aura/.
+"""
+import sys
+import os
+
+# Add the aura library path
+sys.path.insert(0, "/usr/lib/aura")
+
+from aura.core.aura_core_service import main
+
+if __name__ == "__main__":
+    sys.exit(main())
