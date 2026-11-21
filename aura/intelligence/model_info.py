@@ -113,12 +113,25 @@ def detect_quant_from_name(name: str) -> str:
     return ""
 
 
+def _has_gguf_magic(path: str) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return f.read(4) == b"GGUF"
+    except OSError:
+        return False
+
+
 def detect_format(path: str) -> ModelFormat:
     ext = os.path.splitext(path)[1].lower()
+    # If the extension matches, trust it
     if ext in GGUF_EXTENSIONS:
         return ModelFormat.GGUF
     if ext in SAFETENSORS_EXTENSIONS:
         return ModelFormat.SAFETENSORS
+    # Fall back to content sniffing so temp files without proper extensions
+    # can still be validated.
+    if _has_gguf_magic(path):
+        return ModelFormat.GGUF
     return ModelFormat.UNKNOWN
 
 

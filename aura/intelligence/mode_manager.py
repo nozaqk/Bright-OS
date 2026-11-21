@@ -82,22 +82,29 @@ class ModeManager:
 
         In LOCAL and OFFLINE: always False.
         In HYBRID: requires an interactive consent check via the consent
-        callback, AND require_consent config (set by caller).
+        callback. Mode is re-checked AFTER the consent callback returns
+        to avoid a race where the user switches mode mid-prompt.
         """
         with self._lock:
             if self._mode != AIMode.HYBRID:
                 return False
             if self._consent_cb is None:
-                # No way to ask for consent => deny
                 logger.warning("Hybrid mode active but no consent callback "
                                "registered; denying cloud call")
                 return False
-        # Call callback outside the lock
+            cb = self._consent_cb
+        # Call callback outside the lock (it may open a UI dialog)
         try:
-            granted = bool(self._consent_cb(reason))
+            granted = bool(cb(reason))
         except Exception as e:
             logger.error("Consent callback failed: %s", e)
             granted = False
+        # Double-check mode after callback: user could have switched to OFFLINE
+        # while the dialog was open.
+        with self._lock:
+            if self._mode != AIMode.HYBRID:
+                logger.info("Mode changed during consent prompt; denying cloud")
+                return False
         if not granted:
             logger.info("User denied cloud consent for: %s", reason[:80])
         return granted

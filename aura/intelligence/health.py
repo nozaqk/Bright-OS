@@ -38,18 +38,22 @@ class HealthMonitor:
         self._listeners.append(cb)
 
     def start(self):
-        if self._thread and self._thread.is_alive():
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, name="aura-provider-health",
-                                        daemon=True)
-        self._thread.start()
+        with self._lock:
+            if self._thread is not None and self._thread.is_alive():
+                return
+            self._stop.clear()
+            t = threading.Thread(target=self._loop, name="aura-provider-health",
+                                 daemon=True)
+            self._thread = t
+        t.start()
 
     def stop(self):
         self._stop.set()
-        if self._thread:
-            self._thread.join(timeout=3)
-        self._thread = None
+        with self._lock:
+            t = self._thread
+            self._thread = None
+        if t is not None:
+            t.join(timeout=max(5, self._interval + 2))
 
     def _loop(self):
         while not self._stop.is_set():
