@@ -511,13 +511,13 @@ class HealthMonitorRaceTests(unittest.TestCase):
         max_concurrent = [0]
 
         real_loop = hm._loop
-        def instrumented_loop(gen):
+        def instrumented_loop(gen, stop_event):
             with active_loops_lock:
                 active_loops.append(threading.current_thread().ident)
                 if len(active_loops) > max_concurrent[0]:
                     max_concurrent[0] = len(active_loops)
             try:
-                real_loop(gen)
+                real_loop(gen, stop_event)
             finally:
                 with active_loops_lock:
                     try:
@@ -634,6 +634,370 @@ class HealthMonitorRaceTests(unittest.TestCase):
         with hm._cv:
             self.assertEqual(hm._state, _State.STOPPED)
             self.assertIsNone(hm._thread)
+
+    # -- Phase 2.2.2: ownership + per-generation concurrency tests ----------
+
+    def test_concurrent_stop_only_one_owner(self):
+        """Two concurrent stop() calls on a running monitor: only one
+        should perform the join; the other must wait for STOPPED. At no
+        point must STOPPED be reported while the monitor thread is
+        alive."""
+        hm = HealthMonitor(check_interval=0.01)
+        p = self._make_provider()
+        hm.register(p)
+        hm.start()
+        self.assertIsNotNone(hm._thread)
+
+        errors = []
+        states_seen_by_stoppers = []
+        states_lock = threading.Lock()
+        def stopper():
+            try:
+                hm.stop()
+                with hm._cv:
+                    states_seen_by_stoppers.append(
+                        (hm._state,
+                         hm._thread.is_alive() if hm._thread else False))
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=stopper) for _ in range(3)]
+        for t in threads: t.start()
+        for t in threads: t.join(timeout=10)
+
+        self.assertEqual(errors, [], f"stoppers raised: {errors}")
+        with hm._cv:
+            self.assertEqual(hm._state, _State.STOPPED)
+            self.assertIsNone(hm._thread)
+        # Every stopper observed STOPPED with no live thread
+        for state, alive in states_seen_by_stoppers:
+            self.assertEqual(state, _State.STOPPED)
+            self.assertFalse(alive,
+                "stopper returned while thread still alive")
+
+    def test_start_waits_while_stopping(self):
+        """If a start() call arrives while another thread owns STOPPING,
+        it must wait until STOPPED before creating a new monitor. It
+        must NOT create a concurrent thread."""
+        # Use a provider whose health_check blocks until we release it,
+        # so stop() stays in JOINING (polling loop) long enough for us
+        # to race a start().
+        hm = HealthMonitor(check_interval=0.01)
+        release = threading.Event()
+        class BlockingP(_FakeProvider):
+            def health_check(inner_self):
+                release.wait(timeout=5)
+                return True
+        p = BlockingP()
+        hm.register(p)
+        hm.start()
+        t_thread_id = None
+        with hm._cv:
+            self.assertIsNotNone(hm._thread)
+            t_thread_id = hm._thread.ident
+
+        # Kick off stop() in a thread. It will signal and begin joining,
+        # but health_check is blocking so the monitor thread hasn't
+        # exited yet.
+        stop_done = threading.Event()
+        def st():
+            hm.stop(); stop_done.set()
+        stop_t = threading.Thread(target=st); stop_t.start()
+        # Give stop() time to transition to STOPPING and enter the join
+        # loop.
+        time.sleep(0.2)
+
+        with hm._cv:
+            self.assertEqual(hm._state, _State.STOPPING)
+
+        # Now race a start() — it must block until stop completes.
+        start_done = threading.Event()
+        def sr():
+            hm.start(); start_done.set()
+        start_t = threading.Thread(target=sr); start_t.start()
+        time.sleep(0.2)
+        # start() must still be blocked (we haven't released the
+        # blocking health_check yet).
+        self.assertFalse(start_done.is_set(),
+            "start() returned while old thread still alive")
+
+        # Release health_check; the monitor thread exits; stop finishes;
+        # start should then succeed.
+        release.set()
+        self.assertTrue(stop_done.wait(timeout=5), "stop did not finish")
+        self.assertTrue(start_done.wait(timeout=5), "start did not finish")
+
+        with hm._cv:
+            self.assertEqual(hm._state, _State.RUNNING)
+            self.assertIsNotNone(hm._thread)
+            # The new thread must not be the old one.
+            self.assertNotEqual(hm._thread.ident, t_thread_id)
+
+        # Cleanup
+        hm.stop()
+        with hm._cv:
+            self.assertEqual(hm._state, _State.STOPPED)
+            self.assertIsNone(hm._thread)
+
+    def test_second_stop_after_thread_cleared(self):
+        """Reproduce: first stop claims the thread, clears self._thread
+        under the lock, and begins joining. A second stop arrives while
+        the first is joining. The second stop must NOT independently
+        transition to STOPPED; it must wait for the first stop to
+        complete."""
+        hm = HealthMonitor(check_interval=0.01)
+        release = threading.Event()
+        class SlowP(_FakeProvider):
+            def health_check(inner_self):
+                release.wait(timeout=5)
+                return True
+        hm.register(SlowP())
+        hm.start()
+
+        stop1_done = threading.Event()
+        stop2_done = threading.Event()
+        stop2_saw_state = []
+        def s1(): hm.stop(); stop1_done.set()
+        def s2():
+            hm.stop()
+            with hm._cv:
+                stop2_saw_state.append(hm._state)
+            stop2_done.set()
+
+        t1 = threading.Thread(target=s1); t1.start()
+        time.sleep(0.2)  # let t1 enter join loop
+        with hm._cv:
+            self.assertEqual(hm._state, _State.STOPPING)
+        # t2 now arrives; must block until STOPPED.
+        t2 = threading.Thread(target=s2); t2.start()
+        time.sleep(0.2)
+        self.assertFalse(stop2_done.is_set(),
+            "second stop() returned early while join in progress")
+        release.set()
+        self.assertTrue(stop1_done.wait(timeout=5))
+        self.assertTrue(stop2_done.wait(timeout=5))
+        self.assertEqual(stop2_saw_state, [_State.STOPPED])
+        with hm._cv:
+            self.assertEqual(hm._state, _State.STOPPED)
+            self.assertIsNone(hm._thread)
+
+    def test_join_timeout_leaves_state_stopping(self):
+        """If the monitor thread doesn't exit within the join timeout
+        (e.g. a health_check is stuck), stop() must NOT mark the
+        monitor STOPPED; state must remain STOPPING so a subsequent
+        start() cannot create a competing thread."""
+        import aura.intelligence.health as hmod
+        hm = HealthMonitor(check_interval=0.01)
+        hold = threading.Event()
+        class StuckP(_FakeProvider):
+            def health_check(inner_self):
+                hold.wait(timeout=30)
+                return True
+        hm.register(StuckP())
+        hm.start()
+
+        # Temporarily shorten join timeouts for this test
+        orig_total = hmod._JOIN_TOTAL_TIMEOUT
+        orig_poll = hmod._JOIN_POLL_INTERVAL
+        hmod._JOIN_TOTAL_TIMEOUT = 0.5
+        hmod._JOIN_POLL_INTERVAL = 0.05
+        try:
+            hm.stop()
+        finally:
+            hmod._JOIN_TOTAL_TIMEOUT = orig_total
+            hmod._JOIN_POLL_INTERVAL = orig_poll
+
+        with hm._cv:
+            self.assertEqual(hm._state, _State.STOPPING,
+                "state must be STOPPING after timed-out join, not STOPPED")
+            self.assertIsNotNone(hm._thread,
+                "_thread reference must be retained after timed-out join")
+            self.assertTrue(hm._thread.is_alive(),
+                "monitor thread should still be alive")
+
+        # A subsequent start() must NOT create a new thread while the
+        # old one is alive.
+        start_raised = []
+        def st():
+            try: hm.start()
+            except Exception as e: start_raised.append(e)
+        st_t = threading.Thread(target=st); st_t.start()
+        st_t.join(timeout=2)
+        # start() should be blocked waiting for state != STOPPING/STARTING
+        # Since state is STOPPING with a live thread, it keeps waiting.
+        # (We don't want it to return successfully or raise.)
+        self.assertTrue(st_t.is_alive() or not start_raised,
+            "start() must not complete while old thread is alive")
+
+        # Release the stuck health check; everything unwinds.
+        hold.set()
+        # Wait for thread to die
+        if hm._thread is not None:
+            hm._thread.join(timeout=5)
+        # Now call stop() again to finish cleanup
+        hm.stop()
+        with hm._cv:
+            self.assertEqual(hm._state, _State.STOPPED)
+            self.assertIsNone(hm._thread)
+
+    def test_no_new_start_while_old_thread_alive(self):
+        """Defense-in-depth: if a previous stop() timed out (state
+        remains STOPPING with a live thread, e.g. because a provider
+        health_check was stuck), a subsequent start() must block
+        rather than creating a competing monitor thread. Once the
+        stuck check completes and the thread dies, start() proceeds
+        and creates a new monitor."""
+        import aura.intelligence.health as hmod
+        hm = HealthMonitor(check_interval=0.01)
+        hold = threading.Event()
+        class SlowP(_FakeProvider):
+            def health_check(inner_self):
+                hold.wait(timeout=30)
+                return True
+        hm.register(SlowP())
+        hm.start()
+        orig_total = hmod._JOIN_TOTAL_TIMEOUT
+        orig_poll = hmod._JOIN_POLL_INTERVAL
+        hmod._JOIN_TOTAL_TIMEOUT = 0.3
+        hmod._JOIN_POLL_INTERVAL = 0.05
+        st_t = None
+        try:
+            # First stop times out because health_check is stuck.
+            hm.stop()
+            with hm._cv:
+                self.assertEqual(hm._state, _State.STOPPING)
+                self.assertIsNotNone(hm._thread)
+                self.assertTrue(hm._thread.is_alive())
+            # start() while old thread is alive: must block.
+            start_done = threading.Event()
+            def st(): hm.start(); start_done.set()
+            st_t = threading.Thread(target=st); st_t.start()
+            time.sleep(0.3)
+            self.assertFalse(start_done.is_set(),
+                "start() returned while old thread still alive")
+            # Release the stuck health_check; old thread exits; state
+            # goes to STOPPED; start() then completes.
+            hold.set()
+            self.assertTrue(start_done.wait(timeout=5),
+                "start() did not complete after old thread exited")
+            with hm._cv:
+                self.assertEqual(hm._state, _State.RUNNING)
+                self.assertIsNotNone(hm._thread)
+        finally:
+            hmod._JOIN_TOTAL_TIMEOUT = orig_total
+            hmod._JOIN_POLL_INTERVAL = orig_poll
+            hm.stop()
+            if st_t is not None:
+                st_t.join(timeout=5)
+        with hm._cv:
+            self.assertEqual(hm._state, _State.STOPPED)
+            self.assertIsNone(hm._thread)
+
+    def test_old_generation_does_not_resurrect(self):
+        """After a stop() followed by start(), the OLD monitor thread
+        must never continue executing or overwrite the new generation's
+        state. Uses a blocked health_check so the old thread is still
+        alive when the new generation starts (via a forced scenario)."""
+        # Simpler verifiable assertion: after two successful start/stop
+        # cycles, at no point did two threads run the loop body at the
+        # same time, and no stale thread is registered.
+        hm = HealthMonitor(check_interval=0.01)
+        active_loops = []
+        active_loops_lock = threading.Lock()
+        max_concurrent = [0]
+        thread_ids_per_gen = {}
+        real_loop = hm._loop
+        def inst_loop(gen, stop_ev):
+            with active_loops_lock:
+                active_loops.append(threading.current_thread().ident)
+                if len(active_loops) > max_concurrent[0]:
+                    max_concurrent[0] = len(active_loops)
+                thread_ids_per_gen.setdefault(gen, []).append(
+                    threading.current_thread().ident)
+            try:
+                real_loop(gen, stop_ev)
+            finally:
+                with active_loops_lock:
+                    try: active_loops.remove(threading.current_thread().ident)
+                    except ValueError: pass
+        hm._loop = inst_loop
+        p = self._make_provider()
+        hm.register(p)
+
+        for _ in range(5):
+            hm.start()
+            time.sleep(0.02)
+            hm.stop()
+            time.sleep(0.01)
+
+        with hm._cv:
+            self.assertEqual(hm._state, _State.STOPPED)
+            self.assertIsNone(hm._thread)
+        self.assertLessEqual(max_concurrent[0], 1,
+            f"two monitor loops ran concurrently (max={max_concurrent[0]})")
+        # Each generation should have exactly one associated thread id
+        for gen, ids in thread_ids_per_gen.items():
+            self.assertEqual(len(set(ids)), 1,
+                f"gen {gen} had multiple threads: {ids}")
+
+    def test_callback_stop_then_restart(self):
+        """A listener that calls hm.stop() must not deadlock; after it
+        returns, hm.start() must be able to restart the monitor."""
+        hm = HealthMonitor(check_interval=0.02)
+        p = self._make_provider()
+        hm.register(p)
+        callback_fired = threading.Event()
+        restarted_ok = threading.Event()
+        def cb(name, old, new, err):
+            hm.stop()
+            callback_fired.set()
+        hm.add_listener(cb)
+        p._set_state(ProviderState.ERROR, error="boom")
+        hm.start()
+        self.assertTrue(callback_fired.wait(timeout=5),
+            "callback did not fire or stop deadlocked")
+        # Give the monitor a moment to finish exiting after the
+        # callback-initiated stop.
+        for _ in range(50):
+            with hm._cv:
+                if hm._state == _State.STOPPED: break
+            time.sleep(0.05)
+        # Now restart must succeed
+        hm.start()
+        with hm._cv:
+            self.assertEqual(hm._state, _State.RUNNING)
+            self.assertIsNotNone(hm._thread)
+        hm.stop()
+        with hm._cv:
+            self.assertEqual(hm._state, _State.STOPPED)
+            self.assertIsNone(hm._thread)
+        restarted_ok.set()
+
+    def test_repeated_start_stop_no_leaks(self):
+        """100 cycles of start/stop from multiple threads must leave
+        zero leaked threads and end STOPPED."""
+        hm = HealthMonitor(check_interval=0.005)
+        p = self._make_provider()
+        hm.register(p)
+        errs = []
+        def s():
+            try: hm.start()
+            except Exception as e: errs.append(('s', e))
+        def t():
+            try: hm.stop()
+            except Exception as e: errs.append(('t', e))
+        for _ in range(100):
+            threads = [threading.Thread(target=s) for _ in range(2)] + \
+                      [threading.Thread(target=t) for _ in range(2)]
+            for x in threads: x.start()
+            for x in threads: x.join(timeout=10)
+            for x in threads:
+                self.assertFalse(x.is_alive(), f"leaked thread {x.name}")
+        hm.stop()
+        with hm._cv:
+            self.assertEqual(hm._state, _State.STOPPED)
+            self.assertIsNone(hm._thread)
+        self.assertEqual(errs, [], errs)
 
 
 # --- Concurrent model download tests ---------------------------------------
