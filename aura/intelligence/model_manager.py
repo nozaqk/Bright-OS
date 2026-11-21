@@ -31,6 +31,7 @@ import stat
 import threading
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional
 
@@ -42,7 +43,7 @@ from .model_info import (
     scan_model_directory,
     validate_model_file,
 )
-from .networking import open_safe_url, read_limited_response
+from .networking import open_safe_url, read_limited_response, validate_remote_url
 
 logger = logging.getLogger("aura.intelligence.model_manager")
 
@@ -116,6 +117,10 @@ class ModelManager:
         self._lock = threading.RLock()
         self._downloads: Dict[str, DownloadProgress] = {}
         self._download_lock = threading.Lock()
+        # Per-model-id locks so two concurrent downloads of the SAME model
+        # serialize, while downloads of DIFFERENT models proceed in parallel.
+        self._per_model_locks: Dict[str, threading.Lock] = {}
+        self._per_model_locks_lock = threading.Lock()
         # trusted_manifest maps model_id -> expected sha256 hex
         self._trusted_hashes: Dict[str, str] = dict(trusted_manifest or {})
         self._refresh_models()
@@ -351,131 +356,149 @@ class ModelManager:
             return DownloadProgress(model_id=safe_id, url=url, status="error",
                                     error="path escapes model directory")
 
-        if os.path.exists(dest) and not overwrite:
-            return DownloadProgress(model_id=safe_id, url=url, status="error",
-                                    error="destination exists; set overwrite=True to replace")
+        # Acquire per-model lock so two downloads of the same model_id
+        # serialize (avoiding tmp-file races) while different models
+        # download in parallel.
+        with self._per_model_locks_lock:
+            model_lock = self._per_model_locks.setdefault(
+                safe_id, threading.Lock())
+        with model_lock:
+            if os.path.exists(dest) and not overwrite:
+                return DownloadProgress(model_id=safe_id, url=url, status="error",
+                                        error="destination exists; set overwrite=True to replace")
 
-        dp = DownloadProgress(model_id=safe_id, url=url,
-                              status="downloading",
-                              expected_sha256=hash_expected)
-        with self._download_lock:
-            self._downloads[safe_id] = dp
+            dp = DownloadProgress(model_id=safe_id, url=url,
+                                  status="downloading",
+                                  expected_sha256=hash_expected)
+            with self._download_lock:
+                self._downloads[safe_id] = dp
 
-        tmp = dest + ".part"
-        # Clean any stale partial file
-        try:
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-        except OSError:
-            pass
+            # Unique tmp path per attempt so concurrent downloads / retries
+            # never write to the same .part file.
+            tmp = f"{dest}.part-{uuid.uuid4().hex[:12]}"
+            tmp_fd = None
 
-        try:
-            if cancel_event and cancel_event.is_set():
-                dp.status = "cancelled"
-                return dp
-
-            # Validate the URL BEFORE opening a connection
-            from .networking import validate_remote_url
-            if not validate_remote_url(url, https_only=True):
-                dp.status = "error"
-                dp.error = "URL failed safety validation (must be https, public IP)"
-                return dp
-
-            resp = open_safe_url(url, timeout=60.0, https_only=True,
-                                 allow_redirects=True, method="GET")
             try:
-                content_length = 0
+                if cancel_event and cancel_event.is_set():
+                    dp.status = "cancelled"
+                    return dp
+
+                # Validate the URL BEFORE opening a connection (open_safe_url
+                # will also pin to a validated address; this pre-check is
+                # kept for a clearer error message).
+                if not validate_remote_url(url, https_only=True):
+                    dp.status = "error"
+                    dp.error = "URL failed safety validation (must be https, public IP)"
+                    return dp
+
+                resp = open_safe_url(url, timeout=60.0, https_only=True,
+                                     allow_redirects=True, method="GET")
                 try:
-                    content_length = int(resp.headers.get("Content-Length", 0))
-                except (TypeError, ValueError):
                     content_length = 0
-                dp.total_bytes = content_length
+                    try:
+                        content_length = int(resp.headers.get("Content-Length", 0))
+                    except (TypeError, ValueError):
+                        content_length = 0
+                    dp.total_bytes = content_length
 
-                hasher = hashlib.sha256() if hash_expected else None
-                downloaded = 0
-                with open(tmp, "wb") as f:
-                    while True:
-                        if cancel_event and cancel_event.is_set():
-                            dp.status = "cancelled"
-                            return dp
-                        chunk = resp.read(DOWNLOAD_CHUNK)
-                        if not chunk:
-                            break
-                        downloaded += len(chunk)
-                        if downloaded > MAX_DOWNLOAD_BYTES:
-                            dp.status = "error"
-                            dp.error = f"download exceeded size cap ({MAX_DOWNLOAD_BYTES} bytes)"
-                            return dp
-                        f.write(chunk)
-                        if hasher is not None:
-                            hasher.update(chunk)
-                        dp.bytes_downloaded = downloaded
-                        if progress_cb:
-                            try:
-                                progress_cb(dp)
-                            except Exception:
-                                pass
+                    # Open tmp with O_NOFOLLOW + O_CREAT + O_EXCL so that
+                    # we refuse to follow a symlink placed at `tmp` and we
+                    # fail if the path already exists (defending against a
+                    # racing attacker who predicts the unique name).
+                    o_flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+                    if hasattr(os, "O_NOFOLLOW"):
+                        o_flags |= os.O_NOFOLLOW
+                    tmp_fd = os.open(tmp, o_flags, 0o640)
+                    hasher = hashlib.sha256() if hash_expected else None
+                    downloaded = 0
+                    with os.fdopen(tmp_fd, "wb") as f:
+                        tmp_fd = None  # fdopen owns it now
+                        while True:
+                            if cancel_event and cancel_event.is_set():
+                                dp.status = "cancelled"
+                                return dp
+                            chunk = resp.read(DOWNLOAD_CHUNK)
+                            if not chunk:
+                                break
+                            downloaded += len(chunk)
+                            if downloaded > MAX_DOWNLOAD_BYTES:
+                                dp.status = "error"
+                                dp.error = (f"download exceeded size cap "
+                                            f"({MAX_DOWNLOAD_BYTES} bytes)")
+                                return dp
+                            f.write(chunk)
+                            if hasher is not None:
+                                hasher.update(chunk)
+                            dp.bytes_downloaded = downloaded
+                            if progress_cb:
+                                try:
+                                    progress_cb(dp)
+                                except Exception:
+                                    pass
+                finally:
+                    resp.close()
+
+                # Validate hash BEFORE promoting
+                if hasher is not None:
+                    actual = hasher.hexdigest()
+                    if actual.lower() != hash_expected.lower():
+                        dp.status = "error"
+                        dp.error = (f"sha256 mismatch "
+                                    f"(expected {hash_expected[:16]}..., "
+                                    f"got {actual[:16]}...)")
+                        return dp
+
+                dp.status = "validating"
+                if progress_cb:
+                    try:
+                        progress_cb(dp)
+                    except Exception:
+                        pass
+
+                # os.replace is atomic on POSIX; we don't need to unlink
+                # dest first (replace does that for us, atomically).
+                if not self._validate_and_promote(tmp, dest, hash_expected):
+                    dp.status = "error"
+                    dp.error = "validation failed; refusing to load model"
+                    return dp
+                # tmp was moved on success; don't unlink it below
+                tmp = ""
+
+                info = build_model_info(dest, model_id=safe_id)
+                if not info:
+                    dp.status = "error"
+                    dp.error = "failed to build model info"
+                    return dp
+                if hash_expected:
+                    info.sha256 = hash_expected.lower()
+                with self._lock:
+                    self._models[safe_id] = info
+                self._save_manifest()
+                dp.status = "done"
+                return dp
+            except (urllib.error.URLError, OSError, ValueError) as e:
+                dp.status = "error"
+                dp.error = str(e)[:500]
+                return dp
             finally:
-                resp.close()
-
-            # Validate hash BEFORE promoting
-            if hasher is not None:
-                actual = hasher.hexdigest()
-                if actual.lower() != hash_expected.lower():
-                    dp.status = "error"
-                    dp.error = f"sha256 mismatch (expected {hash_expected[:16]}..., got {actual[:16]}...)"
-                    return dp
-
-            dp.status = "validating"
-            if progress_cb:
-                try:
-                    progress_cb(dp)
-                except Exception:
-                    pass
-
-            # Remove existing dest if overwriting
-            if overwrite and os.path.exists(dest):
-                try:
-                    os.unlink(dest)
-                except OSError as e:
-                    dp.status = "error"
-                    dp.error = f"cannot remove existing file: {e}"
-                    return dp
-
-            if not self._validate_and_promote(tmp, dest, hash_expected):
-                dp.status = "error"
-                dp.error = "validation failed; refusing to load model"
-                return dp
-
-            info = build_model_info(dest, model_id=safe_id)
-            if not info:
-                dp.status = "error"
-                dp.error = "failed to build model info"
-                return dp
-            if hash_expected:
-                info.sha256 = hash_expected.lower()
-            with self._lock:
-                self._models[safe_id] = info
-            self._save_manifest()
-            dp.status = "done"
-            return dp
-        except (urllib.error.URLError, OSError, ValueError) as e:
-            dp.status = "error"
-            dp.error = str(e)[:500]
-            return dp
-        finally:
-            # Clean up temp file unless we succeeded
-            if dp.status in ("error", "cancelled"):
-                try:
-                    if os.path.exists(tmp):
-                        os.unlink(tmp)
-                except OSError:
-                    pass
-            if progress_cb:
-                try:
-                    progress_cb(dp)
-                except Exception:
-                    pass
+                if tmp_fd is not None:
+                    try:
+                        os.close(tmp_fd)
+                    except OSError:
+                        pass
+                # Clean up our own temp file unless we succeeded (tmp=""
+                # after successful promotion).
+                if tmp and dp.status in ("error", "cancelled"):
+                    try:
+                        if os.path.exists(tmp):
+                            os.unlink(tmp)
+                    except OSError:
+                        pass
+                if progress_cb:
+                    try:
+                        progress_cb(dp)
+                    except Exception:
+                        pass
 
     def download_status(self, model_id: str) -> Optional[DownloadProgress]:
         with self._download_lock:
