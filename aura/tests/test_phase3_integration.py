@@ -20,7 +20,22 @@ import time
 import unittest
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent.parent
-CONFIG = PROJECT_ROOT / "config" / "includes.chroot"
+
+
+def _find_config_root():
+    """Find the root holding config/includes.chroot (either source tree root
+    or installed system root)."""
+    for cand in (
+        PROJECT_ROOT,
+        pathlib.Path("/"),
+    ):
+        if (cand / "config/includes.chroot/etc/systemd/system/aura-core.service").exists():
+            return cand
+    return PROJECT_ROOT
+
+
+CONFIG_ROOT = _find_config_root()
+CONFIG = CONFIG_ROOT / "config" / "includes.chroot"
 
 
 def _read(path):

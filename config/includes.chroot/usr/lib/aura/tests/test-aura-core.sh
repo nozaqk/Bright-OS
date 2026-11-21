@@ -10,12 +10,24 @@
 set -eu
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# tests are in aura/tests/ → project root is two levels up
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+# Determine PROJECT_ROOT. In the source tree this script lives at
+# <root>/aura/tests/, so ../.. gives the repository root. When installed
+# to /usr/lib/aura/tests/ we fall back to /usr and look for the config tree.
+SRC_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+if [ -d "${SRC_ROOT}/aura" ] && [ -f "${SRC_ROOT}/aura/__init__.py" ]; then
+    PROJECT_ROOT="${SRC_ROOT}"
+elif [ -d /usr/lib/aura ] && [ -f /usr/lib/aura/__init__.py ] \
+     && [ -d "${SRC_ROOT}/../../../config" ] 2>/dev/null; then
+    # Installed location; use / as reference root for file-existence checks
+    PROJECT_ROOT="$(cd "${SRC_ROOT}/../../.." && pwd)"
+else
+    PROJECT_ROOT="${SRC_ROOT}"
+fi
 cd "$PROJECT_ROOT"
 
-# Ensure aura source is importable for Python test snippets
-export PYTHONPATH="${PROJECT_ROOT}:${PYTHONPATH:-}"
+# Make aura importable: prefer the source tree, then /usr/lib/aura.
+export PYTHONPATH="${SRC_ROOT}:/usr/lib/aura:${PYTHONPATH:-}"
 
 PASS=0; FAIL=0
 RED='\033[0;31m'; GREEN='\033[0;32m'; NC='\033[0m'
