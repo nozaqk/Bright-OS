@@ -143,6 +143,55 @@ def _resolve_valid_addresses(host: str, port: int, *, allow_loopback: bool) -> L
     return valid
 
 
+class PeerMismatchError(Exception):
+    """Raised when a pinned-IP connection actually lands on a different
+    peer address. Deliberately NOT an OSError subclass so it cannot be
+    accidentally swallowed by an except OSError in callers (urllib,
+    http.client, or our own TLS-wrapping code)."""
+
+
+def _verify_peer_or_close(sock: socket.socket, pinned_ip: str) -> None:
+    """Verify the connected socket's peer matches pinned_ip exactly.
+
+    Stages (ordered so we never mis-handle errors):
+      1. Call getpeername(). If this raises, we cannot verify; fail CLOSED.
+      2. Extract the IP string. If the sockaddr is malformed, fail closed.
+      3. Compare to pinned_ip. Mismatch → close socket, raise
+         PeerMismatchError (non-OSError, cannot be swallowed).
+
+    On any failure the socket is CLOSED before raising. On success the
+    socket is left open for the caller to use.
+    """
+    try:
+        peer = sock.getpeername()
+    except OSError as e:
+        # getpeername() failed — cannot verify peer identity.
+        # Fail CLOSED per spec.
+        try:
+            sock.close()
+        except OSError:
+            pass
+        raise PeerMismatchError(
+            f"getpeername() failed on pinned connection to {pinned_ip}: {e}") from e
+    try:
+        peer_ip = peer[0]
+    except (IndexError, TypeError, AttributeError) as e:
+        try:
+            sock.close()
+        except OSError:
+            pass
+        raise PeerMismatchError(
+            f"malformed getpeername() result {peer!r} on pinned connection "
+            f"to {pinned_ip}") from e
+    if peer_ip != pinned_ip:
+        try:
+            sock.close()
+        except OSError:
+            pass
+        raise PeerMismatchError(
+            f"peer address {peer_ip!r} does not match pinned {pinned_ip!r}")
+
+
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
     """HTTPSConnection that connects to a pre-validated IP but still
     performs TLS certificate verification against the original hostname."""
@@ -152,36 +201,55 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
         self._pinned_ip = pinned_ip
 
     def connect(self):
-        # Build socket connected to pinned IP, not self.host
+        # Stage 1: create plain TCP socket connected to pinned IP.
+        # This call may raise OSError (timeout, refused, network unreachable)
+        # — let it propagate; that's a legitimate connection failure, not a
+        # security event.
         sock = socket.create_connection(
             (self._pinned_ip, self.port),
             timeout=self.timeout,
             source_address=self.source_address,
         )
-        # Post-connect check: verify peer is actually the pinned IP.
-        # This catches NAT/transparent-proxy surprises.
-        try:
-            peer = sock.getpeername()
-            peer_ip = peer[0]
-            if peer_ip != self._pinned_ip:
-                sock.close()
-                raise ssl.SSLError(
-                    f"peer address {peer_ip} does not match pinned {self._pinned_ip}")
-        except (OSError, AttributeError):
-            # getpeername may fail on some platforms; continue but note
-            logger.debug("Could not verify peer address on pin")
-        # Wrap with TLS, passing server_hostname so SNI/cert validation
-        # uses the ORIGINAL hostname, not the IP.
+
+        # Stage 2: verify peer (fail-closed). On any failure the helper
+        # closes sock before raising. PeerMismatchError is NOT an OSError,
+        # so nothing downstream in http.client or our TLS wrap can
+        # accidentally swallow it.
+        _verify_peer_or_close(sock, self._pinned_ip)
+
+        # Stage 3: proxy tunnel check (we don't support CONNECT proxies for
+        # cloud access; fail before doing TLS).
         if self._tunnel_host:
-            # Tunnel over CONNECT proxy: not supported for AURA cloud
-            sock.close()
+            try:
+                sock.close()
+            except OSError:
+                pass
             raise ValueError("proxy CONNECT tunneling not supported")
-        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+
+        # Stage 4: wrap with TLS ONLY AFTER peer has been verified to be
+        # the pinned IP. server_hostname ensures SNI + cert validation use
+        # the ORIGINAL hostname (not the pinned IP), preserving HTTPS
+        # security.
+        try:
+            self.sock = self._context.wrap_socket(
+                sock, server_hostname=self.host)
+        except Exception:
+            # TLS wrap failed; make sure we don't leak the plain socket.
+            try:
+                sock.close()
+            except OSError:
+                pass
+            raise
+
+        # Stage 5: hostname verification against the server certificate.
         if getattr(self, "_check_hostname", True):
             try:
                 ssl.match_hostname(self.sock.getpeercert(), self.host)
-            except Exception as e:
-                self.sock.close()
+            except Exception:
+                try:
+                    self.sock.close()
+                except OSError:
+                    pass
                 raise
 
 
@@ -194,18 +262,17 @@ class _PinnedHTTPConnection(http.client.HTTPConnection):
         self._pinned_ip = pinned_ip
 
     def connect(self):
-        self.sock = socket.create_connection(
+        # Stage 1: TCP connect to pinned IP.
+        sock = socket.create_connection(
             (self._pinned_ip, self.port),
             timeout=self.timeout,
             source_address=self.source_address,
         )
-        try:
-            peer = self.sock.getpeername()
-            if peer[0] != self._pinned_ip:
-                self.sock.close()
-                raise ConnectionError("peer IP mismatch on plain HTTP")
-        except (OSError, AttributeError):
-            pass
+        # Stage 2: peer verification (same fail-closed policy as HTTPS).
+        _verify_peer_or_close(sock, self._pinned_ip)
+        # Stage 3: only after peer is verified do we expose the socket to
+        # http.client.
+        self.sock = sock
 
 
 class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
