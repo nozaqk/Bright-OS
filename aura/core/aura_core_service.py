@@ -54,20 +54,30 @@ except ImportError:
 def _check_polkit(sender, action_id, bus=None):
     """Check whether `sender` is authorized for `action_id`.
 
-    Returns (allowed, reason).  If Polkit is unavailable, falls back to
-    root-only (UID 0 on the bus).  Raises dbus.exceptions.DBusException on
-    denial so the method can just raise and return.
+    Returns (allowed, reason). If Polkit is unavailable, falls back to
+    root-only (UID 0 on the bus). Fail closed if caller identity cannot
+    be obtained or verified.
     """
     if not HAS_DBUS or bus is None:
-        # Headless/test mode — allow (only local code can call us).
+        # Headless/test mode with no D-Bus — only local code can call us,
+        # so allow. In any real service path bus is always set.
         return True, ""
+    if sender is None:
+        return False, "no sender identity"
     try:
         pid = bus.get_connection_unix_process_id(sender)
         uid = bus.get_unix_user(sender)
     except (dbus.DBusException, AttributeError) as e:
-        return False, f"could not determine caller uid: {e}"
+        logger.warning("Polkit: could not determine caller identity: %s", e)
+        return False, f"could not determine caller identity: {e}"
 
-    # Root is always authorized for any action.
+    # Validate PID/UID before using them.
+    if not isinstance(pid, int) or pid <= 0:
+        return False, "invalid caller pid"
+    if not isinstance(uid, int) or uid < 0:
+        return False, "invalid caller uid"
+
+    # Root (UID 0) is always authorized for any action.
     if uid == 0:
         return True, ""
 
@@ -76,7 +86,11 @@ def _check_polkit(sender, action_id, bus=None):
 
     try:
         authority = Polkit.Authority.get()
-        subject = Polkit.UnixProcess.new(dbus_info)
+        # Polkit.UnixProcess.new(pid) takes a single int PID. Polkit
+        # internally reads /proc/<pid>/status to verify the UID, so a
+        # stale/reused PID would not be confused with another user's
+        # process (the UID mismatch causes authorization to fail).
+        subject = Polkit.UnixProcess.new(pid)
         result = authority.check_authorization_sync(
             subject, action_id, None,
             Polkit.CheckAuthorizationFlags.ALLOW_USER_INTERACTION, None)
@@ -86,7 +100,8 @@ def _check_polkit(sender, action_id, bus=None):
             return False, "authentication required"
         return False, "not authorized"
     except Exception as e:
-        logger.warning("Polkit check failed for %s: %s", action_id, e)
+        logger.warning("Polkit check failed for %s pid=%d uid=%d: %s",
+                       action_id, pid, uid, e)
         return False, f"polkit error: {e}"
 
 

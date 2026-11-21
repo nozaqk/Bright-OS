@@ -31,10 +31,15 @@
   <action id="org.bright_os.AURA.grant-cloud-consent">
     <description>Grant cloud access consent to AURA</description>
     <message>Authentication is required to enable cloud AI access</message>
+    <!-- Granting cloud consent enables outbound network requests to
+         third-party AI providers with user data; require administrator
+         authorization in all contexts (active, inactive, remote).
+         Revoking consent is enforced in code (GrantCloudConsent(False)
+         skips the Polkit check) so users can always disable cloud. -->
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>yes</allow_active>
+      <allow_active>auth_admin_keep</allow_active>
     </defaults>
   </action>
 
