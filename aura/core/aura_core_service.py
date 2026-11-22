@@ -235,7 +235,7 @@ if HAS_DBUS:
             status = self._components.get_status(name)
             return bool(status and status.state == ComponentState.RUNNING)
 
-        @dbus.service.method(AURA_INTERFACE, in_signature="b", out_signature="",
+        @dbus.service.method(AURA_INTERFACE, in_signature="", out_signature="",
                              sender_keyword="sender")
         def Shutdown(self, sender=None):
             ok, reason = _check_polkit(
