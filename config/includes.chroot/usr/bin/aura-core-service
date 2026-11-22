@@ -3,13 +3,15 @@
 Finds the installed aura module and runs aura_core_service.main().
 
 This wrapper exists in /usr/bin to satisfy systemd ExecStart while the
-Python package lives under /usr/lib/aura/.
+Python package lives at /usr/lib/aura/ (the 'aura' package directory).
+sys.path must contain the PARENT of the package directory so that
+`import aura` resolves to /usr/lib/aura/.
 """
 import sys
 import os
 
-# Add the aura library path
-sys.path.insert(0, "/usr/lib/aura")
+# /usr/lib is the parent of the 'aura' package directory.
+sys.path.insert(0, "/usr/lib")
 
 from aura.core.aura_core_service import main
 
