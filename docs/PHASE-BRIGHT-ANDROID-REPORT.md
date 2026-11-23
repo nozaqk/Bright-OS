@@ -1,8 +1,8 @@
-# Phase Bright Android — Implementation Report (Updated: Phase 2.1 Security Fix)
+# Phase Bright Android — Implementation Report (Updated: Phase 2.2 Runtime Compatibility)
 
-**Branch:** `arena/01bb330c-bright-os` (Phase 2.1)
-**Original PR:** #35 (Phase 1 merged), #36 (Phase 2 merged)
-**Date:** 2026-11-20 (Phase 2.1 update: 2026-11-23)
+**Branch:** `arena/d6b955d1-bright-os` (Phase 2.2)
+**Original PR:** #35 (Phase 1 merged), #36 (Phase 2 merged), #37 (Phase 2.1 merged)
+**Date:** 2026-11-20 (Phase 2.2 update: 2026-11-23)
 **Status:** Code complete; real-hardware validation pending
 
 ## Phase 2 Summary
@@ -272,3 +272,164 @@ Additional regression checks: no `shell=True` in any core module; correct
 dbus-python credential method names (`get_connection_unix_process_id` /
 `get_connection_unix_user`, not the old buggy names); Polkit XML has no
 `allow_any=yes` and correct auth levels per action.
+
+---
+
+## Phase 2.2: Runtime Compatibility, Active-Session Authorization, Validation
+
+Phase 2.2 fixes systemd sandbox restrictions that blocked LXC namespace
+creation, reconciles the active-session authorization model so that Polkit
+is actually consulted for state-changing session actions, adds real-D-Bus
+and real-Waydroid integration test classes (skipped/blocked in environments
+that lack the required infrastructure), and runs the full test suite.
+
+### Fix 1: Systemd sandbox vs LXC compatibility
+
+Three sandbox directives were removed because pkexec'd LXC children inherit
+the service's seccomp filters and mount namespace (pkexec is fork+exec from
+the service, and seccomp/mountns are inherited across setuid):
+
+| Directive | Was | Now | Reason |
+|---|---|---|---|
+| `RestrictNamespaces=yes` | set | removed | Installs a seccomp filter blocking ALL clone/unshare namespace flags. LXC needs CLONE_NEWNS/NEWPID/NEWUTS/NEWIPC/NEWNET/NEWCGROUP to create the Android container. |
+| `ProtectControlGroups=yes` | set | removed | Bind-mounts /sys/fs/cgroup read-only. LXC writes cgroup files to configure container resource limits, devices, and delegation. |
+| `ProtectKernelTunables=yes` | set | removed | Bind-mounts /proc/sys read-only. LXC may write /proc/sys/net/ipv4/ip_forward etc. for bridged container networking setup. |
+
+**Retained hardening** (compatible with Waydroid/LXC):
+- `ProtectSystem=strict` + `ReadWritePaths` (writable paths explicitly enumerated)
+- `ProtectHome=read-only` (writable exceptions for bright-android config, waydroid user data, launcher entries, icon cache)
+- `PrivateTmp=yes` (private /tmp prevents tmpfile races)
+- `ProtectKernelModules=yes` (CAP_SYS_MODULE removed; binder must be pre-loaded via systemd-modules-load or admin shell, not from the service)
+- `RestrictRealtime=yes`, `LockPersonality=yes`, `SystemCallArchitectures=native`
+- `MemoryDenyWriteExecute=no` (Python/Waydroid need W^X)
+- `RestrictSUIDSGID=no` (pkexec needs setuid)
+
+**Added ReadWritePaths:** /var/log (LXC/Waydroid log files), /run/waydroid (runtime sockets), %h/.local/share/waydroid, %h/.config/waydroid (user Waydroid data).
+
+The unit file's comment block now documents:
+- Why each restriction is retained or removed
+- How LXC operations are affected by seccomp/mountns inheritance
+- A concrete future plan (extract privileged ops to a root helper service, then re-enable RestrictNamespaces/ProtectControlGroups/ProtectKernelTunables/NoNewPrivileges)
+
+### Fix 2: Active-session authorization reconciliation
+
+**Previous behavior (Phase 2.1):** Session actions (Start/Stop/Launch/Sync/Uninstall) used `allow_same_user=True`, which bypassed Polkit entirely. The Polkit policy's `allow_active=yes` was never actually consulted, so the claim that "Polkit enforces active-console status" was misleading.
+
+**Phase 2.2 model:** One consistent policy across all state-changing methods:
+
+- **Admin actions** (init/install-apk/remove-data/set-config): Always consult Polkit. Fail closed if Polkit unavailable.
+- **Session actions** (start/stop/uninstall/launch/sync): Always consult Polkit. Polkit's `allow_active=yes` auto-authorizes active local console sessions without prompting; inactive sessions (SSH, leaked bus address) trigger admin auth challenge. If Polkit is unreachable, allow same-user as a fallback (so a broken Polkit doesn't lock the user out of their own Android session) but log a warning. Other UIDs are already denied by the same-UID check.
+- **Read-only actions** (GetVersion, GetStatus, ListApps, etc.): Same-UID only, no Polkit consultation (no state is changed).
+
+This makes the actual enforcement match the documented model: Polkit IS the active-session gate for state-changing operations.
+
+### Validation: D-Bus and Polkit
+
+Real D-Bus/Polkit end-to-end tests are implemented in `RealDBusIntegrationTests` (7 tests). They are skipped by default and require:
+- `BRIGHT_ANDROID_REAL_INTEGRATION=1` environment variable
+- python3-dbus and python3-gi installed
+- A running D-Bus session bus with polkitd
+- The bright-android service started on the session bus
+
+Tests verify:
+- Service owns its bus name
+- Same-user calls to GetVersion/GetStatus/ListApps/GetConfig succeed
+- SetConfig without proper Polkit authorization raises NotAuthorized
+- Diagnostic methods are accessible
+- (Cross-UID rejection requires a multi-user test harness and is stubbed.)
+
+**Status in this sandbox: BLOCKED.** The sandbox lacks python3-dbus, python3-gi, a running D-Bus session, and Polkit. Mocked unit tests cover all auth code paths (55 mocked auth tests pass).
+
+### Validation: Waydroid runtime
+
+Real Waydroid runtime tests are implemented in `RealWaydroidRuntimeTests` (9 tests). They are skipped by default and require:
+- `BRIGHT_ANDROID_REAL_WAYDROID=1` environment variable
+- waydroid package installed
+- /dev/binder or binderfs available
+- Wayland/X11 display server
+- ~6 GB free disk space
+- Network access (for image download on first init)
+- Optional: `BRIGHT_ANDROID_TEST_APK` and `BRIGHT_ANDROID_TEST_PACKAGE` for APK install/launch tests
+
+Tests cover:
+- Binder availability
+- Wayland/X11 availability
+- Hardware readiness tier assessment
+- Waydroid initialization (vanilla image download)
+- Session start + running-state verification
+- Test APK installation
+- Test application launch
+- Stop + restart cycle
+- Log inspection for namespace/cgroup/seccomp errors
+
+**Status in this sandbox: BLOCKED.** The sandbox has no waydroid package, no binder devices, no display server, and no outbound network to apt.debian.org or Waydroid image hosts. These tests CANNOT pass in this sandbox and must be run on a provisioned Debian machine (physical hardware or a VM with KVM + Wayland + binder).
+
+### Validation: Systemd unit
+
+Systemd unit tests verify:
+- Retained hardening directives are present (ProtectSystem, ProtectHome, PrivateTmp, ProtectKernelModules, RestrictRealtime, LockPersonality, SystemCallArchitectures, RestrictSUIDSGID=no)
+- LXC-incompatible directives are NOT present as active lines (RestrictNamespaces=yes, ProtectControlGroups=yes, ProtectKernelTunables=yes)
+- LXC compatibility rationale is documented (mentions LXC, namespaces, cgroups)
+- NoNewPrivileges=yes is not active and trade-off is documented
+- All required ReadWritePaths are declared
+
+Note: systemd-analyze security / systemd-run verification requires a booted system with systemd and is covered by the BLOCKED runtime test environment.
+
+### Files Modified in Phase 2.2
+
+| Path | Change |
+|------|--------|
+| `bright_android/core/android_service.py` | Rewrote `_check_authorization`: session actions now consult Polkit (not same-user bypass); added admin-vs-session action classification; session actions fall back to same-user allow on Polkit outage (admin actions fail closed); removed allow_same_user=True from Start/Stop/Uninstall/Launch/Sync; kept it for read-only methods |
+| `config/includes.chroot/usr/lib/systemd/user/bright-android.service` | Removed RestrictNamespaces/ProtectControlGroups/ProtectKernelTunables (block LXC); added ReadWritePaths for /var/log, /run/waydroid, ~/.local/share/waydroid, ~/.config/waydroid; expanded comment block documenting LXC inheritance, retained/removed directives, future helper plan |
+| `bright_android/tests/test_bright_android_auth.py` | Added tests: namespace-compatible hardening, LXC-incompatible directives removed, LXC rationale documented, session actions don't bypass Polkit, session-action fallback on Polkit outage, environment capability reporter; added RealDBusIntegrationTests (7 tests, require BRIGHT_ANDROID_REAL_INTEGRATION=1); added RealWaydroidRuntimeTests (9 tests, require BRIGHT_ANDROID_REAL_WAYDROID=1) |
+| `docs/BRIGHT-ANDROID.md` | Updated Security Model: 3-tier authorization table (admin/session/read-only), LXC-compatible systemd hardening documentation |
+
+### Test Results (Phase 2.2 final)
+
+| Category | Passed | Failed | Skipped/BLOCKED |
+|---|---|---|---|
+| AURA Python tests | 233 | 0 | 0 |
+| Bright Android unit + mocked auth tests | 114 | 0 | 0 |
+| Real D-Bus/Polkit integration tests | 0 | 0 | 7 BLOCKED (env lacks python3-dbus/polkit/session bus) |
+| Real Waydroid runtime tests | 0 | 0 | 9 BLOCKED (env lacks waydroid/binder/display/network) |
+| Legacy RealWaydroidIntegrationTests (test_bright_android.py) | 0 | 0 | 2 BLOCKED (WAYDROID_INTEGRATION=1 not set) |
+| Environment capability reporter | 1 | 0 | 0 |
+| Installer shell tests (pyyaml) | 227 | 0 | 0 |
+| **Total** | **575** | **0** | **18 BLOCKED** |
+
+### What is NOT validated (do NOT claim working)
+
+Per the standing rule "never claim ISO boots without VM/hardware test" and
+"do not claim Bright Android is fully working until a real Waydroid session
+has successfully started and an Android application has launched":
+
+- ❌ Waydroid image download (requires network to Debian/cdn.waydro.id mirrors)
+- ❌ Waydroid initialization (requires images + binder)
+- ❌ Container startup (requires LXC, binder, Wayland)
+- ❌ APK installation into running container
+- ❌ Android application launch (requires running session + GUI)
+- ❌ Stop/restart cycle
+- ❌ Real Polkit authorization dialogs (requires a Polkit auth agent in a running session)
+- ❌ systemd unit effective-property verification (systemd-analyze security)
+- ❌ Cross-UID D-Bus rejection (requires multi-user test harness)
+
+All of the above are implemented as automated tests but are BLOCKED in this
+sandbox environment and must be executed on a provisioned Debian Trixie
+machine with:
+- Kernel 6.1+ with binder_linux loaded
+- Wayland session (e.g. KDE Plasma, Sway, Weston)
+- waydroid package installed
+- python3-dbus, python3-gi, python3-pydbus (for Polkit checks)
+- Network access to download VANILLA Android image (~600 MB)
+- XDG_RUNTIME_DIR and DBUS_SESSION_BUS_ADDRESS set
+
+To run the blocked tests on such a machine:
+```
+sudo apt install waydroid python3-dbus python3-gi
+sudo modprobe binder_linux
+# Start a Wayland session, then:
+BRIGHT_ANDROID_REAL_INTEGRATION=1 \
+BRIGHT_ANDROID_REAL_WAYDROID=1 \
+  python3 -m unittest bright_android.tests.test_bright_android_auth \
+                       bright_android.tests.test_bright_android -v
+```

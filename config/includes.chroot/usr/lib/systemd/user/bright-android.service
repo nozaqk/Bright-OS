@@ -25,48 +25,105 @@ Slice=app.slice
 # service process, which prevents pkexec from elevating privileges and
 # breaks all privileged operations.
 #
-# Security trade-off:
-#   - Authorization is enforced by Polkit policies (admin password required
-#     for init/install-apk/remove-data/set-config; allow_active=yes for
-#     start/stop/launch/sync/uninstall which only active console users can
-#     invoke).
-#   - All D-Bus methods validate caller UID against the service UID via
-#     get_connection_unix_process_id/get_connection_unix_user; other local
-#     users cannot call into this service even if they obtain a session-bus
-#     connection.
-#   - Other sandboxing directives below are retained to limit damage from
-#     a compromise (read-only /usr and /home, private /tmp, no kernel
-#     modification, no new namespaces, locked personality, native syscalls
-#     only).
-#   - RestrictSUIDSGID is explicitly set to no so pkexec can execute.
+# Security model (Phase 2.2):
+#   - All D-Bus methods verify caller UID via get_connection_unix_process_id/
+#     get_connection_unix_user; other local users are denied. Root is allowed.
+#   - Privileged actions (init/install-apk/remove-data/set-config) ALWAYS
+#     consult Polkit and require admin authentication; if Polkit is unavailable
+#     they fail closed.
+#   - Session actions (start/stop/uninstall/launch/sync) consult Polkit;
+#     Polkit's allow_active=yes automatically authorizes active local console
+#     sessions without prompting. Inactive sessions (e.g. SSH) require admin
+#     auth. If Polkit is unavailable, same-user session actions fall back to
+#     allow (same-UID is sufficient).
+#   - Read-only actions (GetVersion, GetStatus, ListApps, etc.) require same-UID
+#     but do not consult Polkit.
 #
-# Future improvement: move privileged waydroid operations into a dedicated
-# pkexec helper (/usr/lib/bright-android/bright-android-pkexec) with a narrow
-# Polkit action, at which point NoNewPrivileges can be turned back on. This
-# is tracked as a follow-up hardening task.
+# Systemd sandboxing compatibility with LXC/Waydroid:
+#   Waydroid uses LXC to create the Android container. LXC needs to:
+#     - Create new namespaces (CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUTS,
+#       CLONE_NEWIPC, CLONE_NEWNET, CLONE_NEWCGROUP)
+#     - Write to cgroups for container resource management
+#     - Mount filesystems and set up mount propagation
+#   The pkexec'd waydroid/lxc process inherits the service's seccomp filters
+#   and mount namespace (because pkexec is invoked as a child process via
+#   fork+exec and seccomp/mountns are inherited across setuid). Therefore
+#   restrictions that block namespace creation, cgroup writes, or required
+#   mounts must be relaxed. Directives that do not interfere with LXC are
+#   retained.
+#
+# Retained hardening (compatible with LXC):
+#   - ProtectSystem=strict + ReadWritePaths: /usr, /etc, /boot, most of /var
+#     are read-only; explicit ReadWritePaths cover all paths the service and
+#     its pkexec'd children need to write.
+#   - ProtectHome=read-only: user home directories are read-only except for
+#     the config/launcher/cache subtrees listed in ReadWritePaths.
+#   - PrivateTmp=yes: service gets its own /tmp; prevents tmpfile-based races
+#     with other services.
+#   - ProtectKernelModules=yes: removes CAP_SYS_MODULE and blocks init_module/
+#     finit_module/delete_module syscalls. Waydroid/LXC does not load kernel
+#     modules; binder_linux must be loaded before the service starts (via
+#     systemd-modules-load or manual pkexec modprobe from a login shell).
+#   - RestrictSUIDSGID=no: pkexec needs to execute setuid-root binaries.
+#   - RestrictRealtime=yes: blocks SCHED_FIFO/RR realtime scheduling (Waydroid
+#     and LXC do not require realtime priority).
+#   - LockPersonality=yes: blocks personality() syscall (prevents legacy
+#     UNAME26 / PER_LINUX32 tricks; not needed by LXC on native arch).
+#   - MemoryDenyWriteExecute=no: Python's JIT/asm routines and Waydroid's
+#     ashmem/memfd support need W^X not to be globally enforced.
+#   - SystemCallArchitectures=native: blocks 32-bit syscall ABIs on 64-bit
+#     kernels; Waydroid/LXC uses native syscalls.
+#
+# Relaxed / removed restrictions (would block LXC/Waydroid):
+#   - RestrictNamespaces=NO (removed): LXC MUST be able to call unshare/clone
+#     with CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWUTS, CLONE_NEWIPC, CLONE_NEWNET,
+#     and CLONE_NEWCGROUP. RestrictNamespaces=yes installs a seccomp filter
+#     blocking ALL clone/unshare namespace flags, which would prevent the
+#     container from starting. Future work: extract privileged operations
+#     into a separate root helper service, after which RestrictNamespaces=yes
+#     can be re-applied to the user service.
+#   - ProtectControlGroups=NO (removed): LXC writes to cgroup v1/v2 hierarchies
+#     to set container resource limits, device access, and delegation.
+#     ProtectControlGroups=yes bind-mounts /sys/fs/cgroup read-only, which
+#     causes lxc-start to fail with "Permission denied" writing cgroup files.
+#   - ProtectKernelTunables=NO (removed): LXC may write to /proc/sys/net/...
+#     during container network setup (e.g. net.ipv4.ip_forward for bridged
+#     networking). ProtectKernelTunables=yes makes /proc/sys read-only.
+#
+# Future hardening (tracked as follow-up work):
+#   Extract privileged Waydroid operations into a dedicated root system
+#   service (/usr/lib/bright-android/bright-android-privileged.service or
+#   a pkexec helper binary), with a narrow D-Bus interface and its own
+#   Polkit action. The user-facing service could then re-enable:
+#     - NoNewPrivileges=yes
+#     - RestrictNamespaces=yes
+#     - ProtectControlGroups=yes
+#     - ProtectKernelTunables=yes
+#     - CapabilityBoundingSet= (empty)
 # ---------------------------------------------------------------------------
 ProtectSystem=strict
 ProtectHome=read-only
 PrivateTmp=yes
-ProtectKernelTunables=yes
 ProtectKernelModules=yes
-ProtectControlGroups=yes
 RestrictSUIDSGID=no
-RestrictNamespaces=yes
 RestrictRealtime=yes
 LockPersonality=yes
 MemoryDenyWriteExecute=no
 SystemCallArchitectures=native
 
 # Writable paths needed by the service and its pkexec'd children
-# (which share the mount namespace due to not being a separate exec-domain):
+# (which share the mount namespace because pkexec is fork+exec'd from the
+# service and mount namespaces are inherited):
 #   - /etc/waydroid        : waydroid.cfg written by `waydroid init`
-#   - /var/lib/waydroid    : Android images and data
-#   - ~/.config/...        : user config
-#   - ~/.local/...         : .desktop launcher entries
-#   - ~/.cache/...         : icon cache
-ReadWritePaths=/etc/waydroid /var/lib/waydroid
+#   - /var/lib/waydroid    : Android system images, data, and overlays
+#   - /var/log             : Waydroid/LXC log files (lxc-monitor.log, etc.)
+#   - /run/waydroid        : runtime sockets and PidFiles (if used by future helper)
+#   - ~/.config/...        : user config (Bright Android + Waydroid session config)
+#   - ~/.local/...         : .desktop launcher entries and Waydroid user data
+#   - ~/.cache/...         : icon cache, Waydroid image download cache
+ReadWritePaths=/etc/waydroid /var/lib/waydroid /var/log /run/waydroid
 ReadWritePaths=%h/.config/bright-android %h/.local/share/applications %h/.cache/bright-android
+ReadWritePaths=%h/.local/share/waydroid %h/.config/waydroid
 
 [Install]
 WantedBy=graphical-session.target
