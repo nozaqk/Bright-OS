@@ -168,7 +168,7 @@ Some applications require full-screen mode (games, video players) and will use t
 
 - Android runs inside an LXC container managed by Waydroid
 - Android applications do NOT run as root on the host
-- **D-Bus authorization (fail-closed, Phase 2.2):**
+- **D-Bus authorization (fail-closed, Phase 2.3):**
   - The service never trusts session-bus callers implicitly. Every D-Bus
     method obtains the caller's PID and UID via the correct dbus-python API
     (`get_connection_unix_process_id` / `get_connection_unix_user`) and
@@ -186,27 +186,32 @@ Some applications require full-screen mode (games, video players) and will use t
       IS consulted. The Polkit policy's `allow_active=yes` automatically
       authorizes callers in the active local console session WITHOUT
       prompting, but callers from inactive sessions (e.g. SSH connections
-      with a leaked DBUS_SESSION_BUS_ADDRESS) are challenged or denied. If
-      Polkit is unreachable, same-user session actions fall back to allow
-      (broken Polkit must not lock the user out of their own session); other
-      UIDs are already denied by the same-UID check.
+      with a leaked DBUS_SESSION_BUS_ADDRESS) are challenged or denied.
     - **Privileged admin actions** (Initialize, InstallApk, RemoveData,
       SetConfig): Polkit is always consulted. `auth_admin_keep` for
       init/install/set-config; `auth_admin` for remove-data (no credential
-      caching for destructive data wipe). If Polkit is unavailable these
-      FAIL CLOSED even for the same user.
+      caching for destructive data wipe).
+    - **Polkit failures always fail closed (Phase 2.3):** If Polkit is
+      unavailable, if the Polkit authority cannot be obtained, or if
+      `check_authorization_sync` raises ANY exception, ALL state-changing
+      actions (both admin AND session) are DENIED with a clear error
+      message distinguishing "Polkit unavailable", "Polkit authority
+      initialization failed", "Polkit authorization check failed",
+      "authentication required", and "not authorized". There is NO
+      same-user fallback that converts a Polkit failure into a successful
+      authorization.
 - **Polkit action matrix:**
-  | Action | Tier | Active session | Inactive/remote | Polkit unavailable |
+  | Action | Tier | Active session | Inactive/remote | Polkit unavailable/error |
   |---|---|---|---|---|
   | `init` | admin | auth_admin_keep | auth_admin | deny |
   | `install-apk` | admin | auth_admin_keep | auth_admin | deny |
   | `remove-data` | admin | auth_admin | auth_admin | deny |
   | `set-config` | admin | auth_admin_keep | auth_admin | deny |
-  | `start` | session | yes (auto) | auth_admin | allow same-user |
-  | `stop` | session | yes (auto) | auth_admin | allow same-user |
-  | `uninstall-app` | session | yes (auto) | auth_admin | allow same-user |
-  | `launch-app` | session | yes (auto) | auth_admin | allow same-user |
-  | `sync-apps` | session | yes (auto) | auth_admin | allow same-user |
+  | `start` | session | yes (auto) | auth_admin | deny (fail-closed) |
+  | `stop` | session | yes (auto) | auth_admin | deny (fail-closed) |
+  | `uninstall-app` | session | yes (auto) | auth_admin | deny (fail-closed) |
+  | `launch-app` | session | yes (auto) | auth_admin | deny (fail-closed) |
+  | `sync-apps` | session | yes (auto) | auth_admin | deny (fail-closed) |
   - No action grants `allow_any=yes` (remote unauthenticated callers are never
     authorized without admin auth).
 - **Authentication is independent of confirmation:** AURA may additionally

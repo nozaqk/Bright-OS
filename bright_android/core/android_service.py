@@ -93,17 +93,29 @@ def _get_caller_credentials(sender, bus) -> tuple:
 
     Returns (ok: bool, pid: int, uid: int, reason: str). When ok is False,
     pid/uid are 0 and reason describes why credentials could not be obtained.
+
+    Production-invariant: when HAS_DBUS is True and the call was dispatched by
+    dbus-python, `bus` is always the service's Connection object and `sender`
+    is always a non-None bus name. The in-process/headless path below is only
+    reachable when HAS_DBUS is False (dbus module unavailable, e.g. unit tests
+    or headless CLI use) and does NOT apply to real D-Bus-dispatched calls.
     """
-    if not HAS_DBUS or bus is None:
-        # Headless/test mode: no real D-Bus connection (either the dbus module
-        # is unavailable, or this is a direct in-process call not through D-Bus).
-        # In production, bus is always populated by dbus-python for every
-        # D-Bus-dispatched method call. When bus is None we trust the call as
-        # coming from our own process (e.g. internal signal handlers, unit tests
-        # that construct the service directly). This path is NOT reachable from
-        # a remote D-Bus caller because dbus-python always supplies a sender and
-        # bus for actual D-Bus method invocations.
+    if not HAS_DBUS:
+        # dbus-python is not importable in this process: we are running in
+        # headless mode or unit tests. There is no D-Bus attack surface.
         return True, 0, SERVICE_UID, "in-process call (no D-Bus bus)"
+
+    # When HAS_DBUS is True but bus is None, this is a programming error in
+    # the caller (method was invoked without passing self._bus) or a direct
+    # in-process call. To prevent accidentally authorizing a call that should
+    # have gone through D-Bus, we deny here. Production dbus-python dispatch
+    # always passes bus=self._bus.
+    if bus is None:
+        logger.warning(
+            "Authorization called without bus while HAS_DBUS=True; "
+            "denying to prevent in-process bypass"
+        )
+        return False, 0, 0, "no bus provided (in-process call denied when D-Bus is available)"
 
     if sender is None:
         return False, 0, 0, "no sender identity provided"
@@ -137,33 +149,37 @@ def _check_authorization(sender, action_id: str, bus=None,
                          allow_same_user: bool = False) -> tuple:
     """Authorize a D-Bus method call.
 
-    Authorization model (Phase 2.2):
-      0. In-process calls (no bus, or HAS_DBUS=False): allow (trusted path).
-         Not reachable from a remote D-Bus peer.
+    Authorization model (Phase 2.3 — FAIL-CLOSED for all state changes):
+      0. In-process calls (HAS_DBUS=False): allow (trusted path).
+         Not reachable from any real D-Bus dispatch; dbus-python always
+         supplies a bus object and sender for dispatched methods. If HAS_DBUS
+         is True and bus is None (caller error), we DENY to prevent accidental
+         in-process bypass.
       1. Credentials must be obtainable (PID/UID) → fail closed otherwise.
       2. Root is always authorized.
       3. Same-UID check: caller UID must match service UID. Other local
          accounts cannot control this user's Android environment even if
          they can reach the session bus.
-      4. For read-only methods (allow_same_user=True, no action_id needed):
-         allow the same user without consulting Polkit.
-      5. For state-changing methods (allow_same_user=False, the default):
-         - Consult Polkit. For actions with allow_active=yes (start/stop/
-           launch/sync/uninstall), Polkit automatically authorizes callers
-           in the active local console session without prompting, but
-           denies or challenges callers from inactive sessions (e.g. SSH).
-           For admin actions (init/install-apk/remove-data/set-config),
-           Polkit requires admin authentication.
-         - If Polkit is unavailable (polkitd unreachable, no agent):
-             * PRIVILEGED admin actions: FAIL CLOSED. These are destructive
-               (init, install-apk, remove-data, set-config) and must not run
-               without verified authorization.
-             * USER session actions (start/stop/uninstall/launch/sync):
-               allow the same user. These are user-scoped actions that
-               control the caller's own session; a broken Polkit must not
-               lock the user out of their own Android environment. This
-               fallback only applies when uid == SERVICE_UID; other UIDs
-               are already denied at step 3.
+      4. Read-only methods (allow_same_user=True): same-user authorized
+         WITHOUT Polkit. These do not change any state.
+      5. State-changing methods (allow_same_user=False, the default):
+         ALWAYS consult Polkit. There is NO same-user fallback when Polkit
+         is unavailable or raises an exception — doing so would convert a
+         Polkit failure into a successful authorization, which is the very
+         failure mode "fail closed" is meant to prevent.
+           - Polkit returns is_authorized=True → allow (active session or
+             admin authenticated).
+           - Polkit returns is_challenge=True → deny ("authentication required").
+           - Polkit returns not-authorized → deny ("not authorized").
+           - Polkit module unavailable → deny with a clear error.
+           - Polkit authority lookup or check_authorization_sync raises →
+             deny with a clear error. The error message identifies whether
+             Polkit is unavailable vs an exception was raised.
+         Admin vs session actions differ ONLY in what Polkit policy does:
+         admin actions trigger an admin password prompt (auth_admin_keep),
+         session actions auto-allow active local console (allow_active=yes)
+         and challenge inactive sessions. The service treats both uniformly
+         at this layer: Polkit's decision is final.
 
     Args:
         sender: D-Bus sender bus name (provided by dbus-python via
@@ -171,18 +187,27 @@ def _check_authorization(sender, action_id: str, bus=None,
         action_id: Polkit action ID (one of the POLKIT_ACTION_* constants).
         bus: D-Bus connection object (self._bus inside the service class).
         allow_same_user: If True, same-user callers are authorized without
-            Polkit consultation. Use ONLY for read-only methods that do
-            not change any state. State-changing methods must pass False
-            so Polkit can verify active-session status.
+            Polkit consultation. USE ONLY FOR READ-ONLY METHODS. All
+            state-changing methods must pass False so that Polkit is the
+            sole authority.
     Returns:
-        (allowed: bool, reason: str)
+        (allowed: bool, reason: str). reason is a short human-readable
+        explanation intended for D-Bus error messages; it distinguishes:
+          - "root caller"
+          - "same-user authorized" (read-only only)
+          - "polkit authorized"
+          - "authentication required"  (challenge not completed)
+          - "not authorized"           (Polkit denied)
+          - "Polkit is unavailable: <detail>"
+          - "Polkit error: <detail>"
+          - "caller uid X does not match service uid Y"
+          - "could not determine caller identity: <detail>"
     """
     ok, pid, uid, reason = _get_caller_credentials(sender, bus)
     if not ok:
         return False, reason
 
-    # In-process / headless mode: _get_caller_credentials returned ok=True
-    # with reason indicating this is not a real D-Bus call. Allow.
+    # In-process / headless mode (HAS_DBUS=False): trusted path.
     if "in-process" in reason or "headless" in reason:
         return True, reason
 
@@ -201,42 +226,37 @@ def _check_authorization(sender, action_id: str, bus=None,
             "other users cannot control this Android session"
         )
 
-    # Read-only methods: same-user is sufficient. Do not consult Polkit
-    # (no state change; no active-session concern).
+    # Read-only methods: same-user is sufficient. Do not consult Polkit.
     if allow_same_user:
         return True, "same-user authorized"
 
-    # Determine whether this is a privileged (admin) action or a user-session
-    # action. Admin actions always require Polkit and fail closed when Polkit
-    # is unavailable. User-session actions fall back to same-user allow when
-    # Polkit is unreachable (don't brick the user's own session).
-    admin_actions = {
-        POLKIT_ACTION_INIT,
-        POLKIT_ACTION_INSTALL,
-        POLKIT_ACTION_REMOVE_DATA,
-        POLKIT_ACTION_SET_CONFIG,
-    }
-    is_admin_action = action_id in admin_actions
+    # ---------------- State-changing path: POLKIT IS REQUIRED ----------------
+    # All state-changing actions (admin AND session) require a Polkit
+    # authorization result. There is no same-user bypass. If Polkit cannot be
+    # reached or raises, we FAIL CLOSED. This is the Phase 2.3 hardening:
+    # never convert a Polkit failure into a successful authorization.
 
-    # For state-changing actions, query Polkit
     if not HAS_POLKIT:
-        if is_admin_action:
-            return False, (
-                "Polkit is unavailable; cannot verify authorization for "
-                f"{action_id}. Only root may perform this action."
-            )
-        else:
-            # User-session action: same-user fallback. Log a warning so the
-            # administrator can notice the Polkit outage.
-            logger.warning(
-                "Polkit unavailable; allowing same-user session action %s "
-                "(uid=%d) because this is a non-destructive user-session action.",
-                action_id, uid,
-            )
-            return True, "same-user authorized (Polkit unavailable, user session action)"
+        logger.warning(
+            "Denied action=%s caller uid=%d: Polkit is unavailable; "
+            "state-changing actions require Polkit authorization.",
+            action_id, uid,
+        )
+        return False, (
+            f"Polkit is unavailable; cannot verify authorization for {action_id}. "
+            "State-changing operations require Polkit."
+        )
 
     try:
         authority = Polkit.Authority.get_sync(None)
+    except Exception as e:
+        logger.warning(
+            "Failed to obtain Polkit authority for action=%s pid=%d uid=%d: %s",
+            action_id, pid, uid, e,
+        )
+        return False, f"Polkit authority unavailable: {e}"
+
+    try:
         subject = Polkit.UnixProcess.new(pid)
         result = authority.check_authorization_sync(
             subject,
@@ -245,26 +265,19 @@ def _check_authorization(sender, action_id: str, bus=None,
             Polkit.CheckAuthorizationFlags.ALLOW_USER_INTERACTION,
             None,
         )
-        if result.get_is_authorized():
-            return True, "polkit authorized"
-        elif result.get_is_challenge():
-            return False, "authentication required"
-        else:
-            return False, "not authorized"
     except Exception as e:
         logger.warning(
-            "Polkit check failed for action=%s pid=%d uid=%d: %s",
+            "Polkit check_authorization_sync raised for action=%s pid=%d uid=%d: %s",
             action_id, pid, uid, e,
         )
-        if is_admin_action:
-            return False, f"polkit error: {e}"
-        else:
-            # Same fallback as Polkit-unavailable for user-session actions.
-            logger.warning(
-                "Polkit error; allowing same-user session action %s.",
-                action_id,
-            )
-            return True, "same-user authorized (Polkit error, user session action)"
+        return False, f"Polkit authorization check failed: {e}"
+
+    if result.get_is_authorized():
+        return True, "polkit authorized"
+    elif result.get_is_challenge():
+        return False, "authentication required"
+    else:
+        return False, "not authorized"
 
 
 # Backwards-compatible alias (old name); prefer _check_authorization in new code.
