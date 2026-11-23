@@ -332,6 +332,15 @@ for cmd in $VALIDATION_TOOLS; do
 done
 
 echo ""
+info "Python test dependencies:"
+if python3 -c "import yaml" 2>/dev/null; then
+    pass "python3-yaml available (needed for installer tests)"
+else
+    warn "python3-yaml not installed (install with: pip3 install pyyaml, or apt install python3-yaml)"
+    info "  Installer/Calamares YAML validation tests will skip without it."
+fi
+
+echo ""
 info "Recommended packages (not required but improve the build):"
 for pkg in $RECOMMENDED_PKGS; do
     if dpkg-query -W -f='${Status}' "$pkg" 2>/dev/null | grep -q "install ok installed" || command -v "$pkg" >/dev/null 2>&1; then

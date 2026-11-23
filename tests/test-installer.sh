@@ -11,13 +11,16 @@ cd "$REPO_ROOT"
 
 PASS=0
 FAIL=0
+WARN_COUNT=0
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
+YELLOW='\033[1;33m'
 NC='\033[0m'
 
 pass() { echo -e "${GREEN}[PASS]${NC} $1"; PASS=$((PASS+1)); }
 fail() { echo -e "${RED}[FAIL]${NC} $1"; FAIL=$((FAIL+1)); }
+warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 
 assert_file() {
     local path="$1" desc="$2"
@@ -47,12 +50,36 @@ assert_not_contains() {
 }
 
 # YAML validation (requires python3 + yaml)
+# Detect missing pyyaml once and report clearly instead of producing
+# false "YAML parse error" failures for every file.
+_YAML_MODULE_CHECKED=false
+_YAML_MODULE_AVAILABLE=false
+_check_yaml_module() {
+    if [ "$_YAML_MODULE_CHECKED" = true ]; then
+        return 0
+    fi
+    _YAML_MODULE_CHECKED=true
+    if python3 -c "import yaml" 2>/dev/null; then
+        _YAML_MODULE_AVAILABLE=true
+    else
+        echo "  [WARN] python3-yaml not installed; YAML validation will be skipped."
+        echo "         Install with: pip3 install pyyaml  (or apt install python3-yaml)"
+    fi
+    return 0
+}
+
 validate_yaml() {
     local file="$1" desc="$2"
-    if python3 -c "import yaml; yaml.safe_load(open('$file'))" 2>/dev/null; then
+    _check_yaml_module
+    if [ "$_YAML_MODULE_AVAILABLE" != true ]; then
+        warn "$desc (skipped: python3-yaml not installed)"
+        WARN_COUNT=$((WARN_COUNT+1))
+        return 0
+    fi
+    if err=$(python3 -c "import yaml; yaml.safe_load(open('$file'))" 2>&1); then
         pass "$desc"
     else
-        fail "$desc (YAML parse error: $file)"
+        fail "$desc (YAML parse error: $file: $err)"
     fi
 }
 
@@ -97,6 +124,8 @@ in_yaml_list "installer/calamares/settings.conf" "umount" && pass "umount module
 ! in_yaml_list "installer/calamares/settings.conf" "ucode" && pass "No non-existent 'ucode' module referenced" || fail "Non-existent 'ucode' module referenced"
 
 # Ordering: packages before initramfscfg (required for LUKS)
+_check_yaml_module
+if [ "$_YAML_MODULE_AVAILABLE" = true ]; then
 python3 -c "
 import yaml
 with open('installer/calamares/settings.conf') as f:
@@ -118,6 +147,10 @@ assert dm_idx >= 0, 'displaymanager must be present'
 assert umount_idx == len(exec_mods) - 1, 'umount must be last'
 print('order OK')
 " && pass "Module ordering correct (packages before initramfs, luksbootkeyfile before initramfscfg, umount last)" || fail "Module ordering incorrect"
+else
+warn "Module ordering check skipped (python3-yaml not installed)"
+WARN_COUNT=$((WARN_COUNT+1))
+fi
 
 echo ""
 
