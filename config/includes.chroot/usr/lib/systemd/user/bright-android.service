@@ -1,0 +1,25 @@
+[Unit]
+Description=Bright Android Management Service
+Documentation=file:///usr/share/doc/bright-android/README.md
+PartOf=graphical-session.target
+After=graphical-session.target wayland-session.target
+Wants=wayland-session.target
+
+[Service]
+Type=dbus
+BusName=org.bright_os.BrightAndroid
+ExecStart=/usr/bin/bright-android --service
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+Slice=app.slice
+
+# Security hardening (user service, so capabilities are already limited)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.config/bright-android %h/.local/share/applications %h/.cache/bright-android
+PrivateTmp=yes
+
+[Install]
+WantedBy=graphical-session.target

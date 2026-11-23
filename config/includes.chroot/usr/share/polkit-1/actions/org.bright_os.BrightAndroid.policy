@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE policyconfig PUBLIC
+ "-//freedesktop//DTD PolicyKit Policy Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/PolicyKit/1/policyconfig.dtd">
+<policyconfig>
+
+  <vendor>Bright OS</vendor>
+  <vendor_url>https://github.com/nozaqk/Bright-OS</vendor_url>
+  <icon_name>bright-android</icon_name>
+
+  <action id="org.bright_os.BrightAndroid.init">
+    <description>Initialize Android runtime</description>
+    <message>Authentication is required to download and set up the Android system image</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.bright_os.BrightAndroid.start">
+    <description>Start Android runtime</description>
+    <message>Authentication is required to start the Android container</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.bright_os.BrightAndroid.stop">
+    <description>Stop Android runtime</description>
+    <message>Authentication is required to stop the Android container</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.bright_os.BrightAndroid.install-apk">
+    <description>Install Android application</description>
+    <message>Authentication is required to install an APK</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.bright_os.BrightAndroid.uninstall-app">
+    <description>Uninstall Android application</description>
+    <message>Authentication is required to uninstall an Android application</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.bright_os.BrightAndroid.remove-data">
+    <description>Remove all Android data</description>
+    <message>Authentication is required to delete all Android data (this is irreversible)</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
+    </defaults>
+  </action>
+
+</policyconfig>

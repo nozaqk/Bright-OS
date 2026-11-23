@@ -1,0 +1,52 @@
+#!/bin/bash
+# Developer edition: preinstall adb and enable developer defaults
+# for Bright Android in the system-wide config template.
+set -e
+
+# Write developer-defaults into /usr/share/bright-android/config.ini.default
+# (user config at ~/.config/bright-android/config.ini will override these)
+mkdir -p /usr/share/bright-android
+cat > /usr/share/bright-android/config.ini.default << 'INI'
+# Bright Android default configuration (Developer edition defaults)
+[runtime]
+auto_start = false
+start_on_demand = true
+stop_on_idle = false
+idle_timeout_minutes = 30
+suspend_when_inactive = true
+
+[integration]
+clipboard_share = true
+notification_forward = true
+shared_clipboard_bidirectional = true
+app_integration = true
+window_integration = true
+
+[storage]
+shared_downloads = true
+shared_documents = true
+shared_pictures = false
+shared_music = false
+shared_videos = false
+data_path = /var/lib/waydroid
+
+[developer]
+adb_enabled = true
+adb_port = 5555
+show_logs = true
+debug_mode = false
+nogpu_mode = false
+
+[appearance]
+force_landscape = false
+dpi = 0
+freeform_windows = true
+INI
+
+# Also update /etc/bright-android/config.ini if it was already placed
+if [ -f /etc/bright-android/config.ini ]; then
+    cp /usr/share/bright-android/config.ini.default /etc/bright-android/config.ini
+fi
+
+echo "I: Developer Android defaults applied (ADB+logs enabled by default)" \
+    | systemd-cat -t bright-os-developer -p info

@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""Launcher wrapper for the Bright Android management GUI and service.
+
+Usage:
+  bright-android                     Launch the GUI
+  bright-android --service           Run the D-Bus service
+  bright-android --launch <package>  Launch an installed Android app
+  bright-android --install-apk <path> Install an APK
+"""
+import sys
+import os
+
+# Library path: bright_android Python package lives under /usr/lib/
+sys.path.insert(0, "/usr/lib")
+
+def launch_gui():
+    # The GUI script is at /usr/lib/bright-android/bright-android-gui.py
+    # or we import it directly
+    from bright_android.gui import main as gui_main
+    return gui_main()
+
+if __name__ == "__main__":
+    args = sys.argv[1:]
+
+    if "--service" in args:
+        from bright_android.core.android_service import main as service_main
+        sys.exit(service_main())
+
+    if "--launch" in args:
+        try:
+            idx = args.index("--launch")
+            package = args[idx + 1] if idx + 1 < len(args) else None
+            if not package:
+                print("Usage: bright-android --launch <package-name>", file=sys.stderr)
+                sys.exit(1)
+            from bright_android.core import waydroid_manager, config as ba_config
+            if not waydroid_manager.is_running():
+                if ba_config.get_bool("runtime", "start_on_demand", True):
+                    waydroid_manager.start_session()
+                else:
+                    print("Android runtime is not running.", file=sys.stderr)
+                    sys.exit(1)
+            waydroid_manager.launch_app(package)
+            sys.exit(0)
+        except Exception as e:
+            print(f"Error launching app: {e}", file=sys.stderr)
+            sys.exit(1)
+
+    if "--install-apk" in args:
+        idx = args.index("--install-apk")
+        path = args[idx + 1] if idx + 1 < len(args) else None
+        if not path:
+            print("Usage: bright-android --install-apk <path>", file=sys.stderr)
+            sys.exit(1)
+        from bright_android.core import waydroid_manager
+        result = waydroid_manager.install_apk(path)
+        print(f"Installed: {result.get('label', result.get('package', ''))}")
+        sys.exit(0)
+
+    # Default: launch GUI
+    sys.exit(launch_gui())

@@ -1,0 +1,37 @@
+# Bright Android default configuration
+# This file is at /usr/share/bright-android/config.ini.default
+# User configuration is at ~/.config/bright-android/config.ini
+
+[runtime]
+auto_start = false
+start_on_demand = true
+stop_on_idle = false
+idle_timeout_minutes = 30
+suspend_when_inactive = true
+
+[integration]
+clipboard_share = true
+notification_forward = true
+shared_clipboard_bidirectional = true
+app_integration = true
+window_integration = true
+
+[storage]
+shared_downloads = true
+shared_documents = false
+shared_pictures = false
+shared_music = false
+shared_videos = false
+data_path = /var/lib/waydroid
+
+[developer]
+adb_enabled = false
+adb_port = 5555
+show_logs = false
+debug_mode = false
+nogpu_mode = false
+
+[appearance]
+force_landscape = false
+dpi = 0
+freeform_windows = true
