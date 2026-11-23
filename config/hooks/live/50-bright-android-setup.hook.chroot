@@ -1,0 +1,40 @@
+#!/bin/bash
+# =============================================================================
+# Bright Android subsystem installation hook (chroot hook)
+# Runs during live-build chroot phase to set up the Bright Android
+# management service, D-Bus activation, and desktop integration.
+# =============================================================================
+set -e
+
+echo "I: Installing Bright Android subsystem..." | systemd-cat -t bright-os-android -p info
+
+BA_DIR="/usr/lib/bright-android"
+BA_BIN="/usr/bin/bright-android"
+BA_USER_SERVICE="/usr/lib/systemd/user/bright-android.service"
+
+# --- Ensure Python module directory exists ---
+mkdir -p "$BA_DIR"
+touch "$BA_DIR/__init__.py" 2>/dev/null || true
+
+# --- Make launcher executable ---
+chmod +x "$BA_BIN" 2>/dev/null || true
+
+# --- Create config directory ---
+mkdir -p /etc/bright-android
+chmod 0755 /etc/bright-android
+if [ -f /usr/share/bright-android/config.ini.default ]; then
+    # Don't overwrite existing config
+    if [ ! -f /etc/bright-android/config.ini ]; then
+        cp /usr/share/bright-android/config.ini.default /etc/bright-android/config.ini 2>/dev/null || true
+    fi
+fi
+
+# --- Ensure D-Bus system.d directory exists ---
+mkdir -p /etc/dbus-1/system.d 2>/dev/null || true
+
+# --- Enable user service (don't start; it's a user service, starts on login) ---
+# User services can't be enabled via systemctl in chroot; we ship preset
+mkdir -p /usr/lib/systemd/user-preset
+echo "enable bright-android.service" > /usr/lib/systemd/user-preset/10-bright-android.preset 2>/dev/null || true
+
+echo "I: Bright Android subsystem installation complete." | systemd-cat -t bright-os-android -p info

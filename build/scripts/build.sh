@@ -401,6 +401,40 @@ if [ -d "${AURA_SRC_DIR}" ]; then
     log_info "Copied AURA source tree to ${AURA_DEST_DIR}"
 fi
 
+# --- Copy Bright Android source tree to chroot ---
+BA_SRC_DIR="${PROJECT_ROOT}/bright_android"
+BA_DEST_DIR="config/includes.chroot/usr/lib/bright-android"
+if [ -d "${BA_SRC_DIR}" ]; then
+    mkdir -p "${BA_DEST_DIR}"
+    cp -r "${BA_SRC_DIR}/"* "${BA_DEST_DIR}/"
+    log_info "Copied Bright Android source tree to ${BA_DEST_DIR}"
+    # Make GUI launcher executable
+    chmod +x config/includes.chroot/usr/bin/bright-android 2>/dev/null || true
+fi
+
+# --- Copy Bright Android GUI application ---
+if [ -f "${PROJECT_ROOT}/applications/bright-android/bright-android" ]; then
+    mkdir -p "${BA_DEST_DIR}"
+    cp "${PROJECT_ROOT}/applications/bright-android/bright-android" "${BA_DEST_DIR}/bright-android-gui.py"
+    chmod 0644 "${BA_DEST_DIR}/bright-android-gui.py"
+fi
+if [ -f "${PROJECT_ROOT}/applications/bright-android/bright-android.desktop" ]; then
+    cp "${PROJECT_ROOT}/applications/bright-android/bright-android.desktop" \
+       config/includes.chroot/usr/share/applications/
+fi
+
+# --- Android package list: included for Home/Developer, optional for Lite ---
+ANDROID_PKGS="${CONFIG_DIR}/package-lists/android.list.chroot"
+if [ "${EDITION}" = "lite" ]; then
+    # Lite: Android is optional; do not include the package list by default
+    log_info "Lite edition: Android support optional (not installed by default)"
+else
+    if [ -f "${ANDROID_PKGS}" ]; then
+        cp "${ANDROID_PKGS}" "config/package-lists/android-packages.list.chroot"
+        log_info "Android packages: included (Home/Developer edition)"
+    fi
+fi
+
 # --- Apply edition-specific configuration ---
 mkdir -p config/includes.chroot/etc/bright-os
 echo "${EDITION}" > config/includes.chroot/etc/bright-os/edition

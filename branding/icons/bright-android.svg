@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#3b82f6;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#1d4ed8;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <rect width="128" height="128" rx="24" ry="24" fill="url(#bg)"/>
+  <!-- Android robot body -->
+  <rect x="32" y="50" width="64" height="44" rx="8" ry="8" fill="#a4de6c"/>
+  <!-- Head -->
+  <rect x="38" y="30" width="52" height="28" rx="14" ry="14" fill="#a4de6c"/>
+  <!-- Antennae -->
+  <line x1="48" y1="24" x2="42" y2="14" stroke="#a4de6c" stroke-width="4" stroke-linecap="round"/>
+  <line x1="80" y1="24" x2="86" y2="14" stroke="#a4de6c" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="42" cy="13" r="3" fill="#a4de6c"/>
+  <circle cx="86" cy="13" r="3" fill="#a4de6c"/>
+  <!-- Eyes -->
+  <circle cx="52" cy="42" r="4" fill="#0f172a"/>
+  <circle cx="76" cy="42" r="4" fill="#0f172a"/>
+  <!-- Arms -->
+  <rect x="22" y="52" width="10" height="28" rx="5" ry="5" fill="#a4de6c"/>
+  <rect x="96" y="52" width="10" height="28" rx="5" ry="5" fill="#a4de6c"/>
+  <!-- Legs -->
+  <rect x="42" y="94" width="12" height="20" rx="4" ry="4" fill="#a4de6c"/>
+  <rect x="74" y="94" width="12" height="20" rx="4" ry="4" fill="#a4de6c"/>
+  <!-- Bright badge -->
+  <circle cx="100" cy="96" r="14" fill="#0f172a" opacity="0.85"/>
+  <text x="100" y="101" text-anchor="middle" font-family="sans-serif" font-size="14" font-weight="bold" fill="#3b82f6">B</text>
+</svg>

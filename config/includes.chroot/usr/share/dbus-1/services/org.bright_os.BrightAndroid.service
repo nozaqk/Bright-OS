@@ -1,0 +1,4 @@
+[D-Bus Service]
+Name=org.bright_os.BrightAndroid
+Exec=/usr/bin/bright-android --service --session
+SystemdService=bright-android.service

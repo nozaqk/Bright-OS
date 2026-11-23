@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Bright Android
+Comment=Manage Android applications on Bright OS
+Exec=/usr/bin/bright-android
+Icon=bright-android
+Terminal=false
+Categories=Settings;System;Utility;
+Keywords=android;waydroid;apps;mobile;
+X-Bright-OS-System=true

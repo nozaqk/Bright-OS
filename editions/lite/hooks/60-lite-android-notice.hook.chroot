@@ -1,0 +1,20 @@
+#!/bin/bash
+# Lite edition: Android is optional and NOT installed by default.
+# This hook places a notice in the motd and ensures bright-android
+# is not listed as installed.
+set -e
+
+# Lite notice for motd
+mkdir -p /etc/motd.d 2>/dev/null || true
+cat > /etc/motd.d/android-lite 2>/dev/null << 'EOF'
+Note: Android application support (Bright Android / Waydroid) is not installed
+by default in Bright OS Lite to conserve RAM and disk space. To install it
+later, run:  sudo apt install waydroid && bright-android
+EOF
+
+# Mask the systemd user service preset so Android doesn't auto-start
+mkdir -p /usr/lib/systemd/user-preset
+echo "disable bright-android.service" > /usr/lib/systemd/user-preset/10-bright-android.preset 2>/dev/null || true
+
+echo "I: Lite edition: Android support disabled (optional, manual install)" \
+    | systemd-cat -t bright-os-lite -p info
