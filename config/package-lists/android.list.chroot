@@ -1,31 +1,27 @@
 # =============================================================================
 # Bright OS — Android Application Support (Bright Android)
-# Optional Waydroid-based Android runtime for running Android applications.
-# Not included in Lite by default; optional in Home/Developer.
+# Waydroid-based Android runtime for running Android applications.
+# Included in Home and Developer editions; available but not preinstalled
+# in Lite (user must install waydroid manually).
 # Target: Debian 13 (Trixie) amd64
 # =============================================================================
 
-# --- Waydroid runtime ---
+# --- Waydroid runtime (pulls in lxc, python3, etc. as deps) ---
 waydroid
 
-# --- Container support ---
-lxc
-lxc-templates
-lxcfs
-dbus-user-session
-binder-user-systemd
+# --- Binder kernel module (DKMS) for kernels without CONFIG_ANDROID_BINDER_IPC ---
+# On standard Debian kernels, this package provides binder_linux.ko.
+binder-linux-module-dkms
 
-# --- Image tools (for init) ---
-curl
-ca-certificates
-python3-gbinder
-
-# --- ADB for developer tools ---
+# --- ADB / fastboot for developer tools ---
 adb
 fastboot
 
-# --- Clipboard integration ---
+# --- Clipboard integration for Wayland ---
 wl-clipboard
 
-# --- Dependencies for .desktop file creation ---
+# --- For .desktop file database updates ---
 desktop-file-utils
+
+# --- Image download and TLS ---
+ca-certificates

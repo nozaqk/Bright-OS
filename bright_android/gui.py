@@ -71,15 +71,17 @@ STATUS_INITIALIZING = "🟡 Setting up..."
 
 
 class StatusWorker(QThread):
-    """Background worker for running waydroid operations."""
+    """Background worker for running waydroid operations that
+    may take time (init, start, stop, APK install)."""
     finished = pyqtSignal(bool, str)
     progress = pyqtSignal(str)
 
-    def __init__(self, func, *args, **kwargs):
+    def __init__(self, func, *args, op_name="Operation", **kwargs):
         super().__init__()
         self.func = func
         self.args = args
         self.kwargs = kwargs
+        self.op_name = op_name
 
     def run(self):
         try:
@@ -89,6 +91,53 @@ class StatusWorker(QThread):
             self.finished.emit(True, "")
         except Exception as e:
             self.finished.emit(False, str(e))
+
+
+class StatusRefreshWorker(QThread):
+    """Background worker for GUI status refreshes.
+
+    Runs all the heavyweight checks (kernel, disk, waydroid status, app list)
+    off the GUI thread. Returns a dict with compat report, runtime status,
+    and app list. Short-lived caching in waydroid_manager avoids duplicate
+    subprocess calls if other UI pages request the same state.
+    """
+    finished = pyqtSignal(dict)
+
+    def run(self):
+        try:
+            from bright_android.core import waydroid_manager, compatibility
+            compat = compatibility.run_full_check()
+            runtime = {"running": False, "starting": False, "session": "STOPPED"}
+            apps = []
+            if compat.get("packages", {}).get("waydroid_installed"):
+                try:
+                    runtime = waydroid_manager.get_status()
+                except Exception:
+                    runtime = compat.get("runtime", runtime)
+                if runtime.get("running"):
+                    try:
+                        apps = waydroid_manager.list_apps()
+                    except Exception:
+                        apps = []
+            self.finished.emit({"compat": compat, "runtime": runtime, "apps": apps})
+        except Exception as e:
+            self.finished.emit({"error": str(e), "compat": {}, "runtime": {}, "apps": []})
+
+
+class AppListWorker(QThread):
+    """Background worker for fetching the installed-app list."""
+    finished = pyqtSignal(bool, list, str)  # running, apps, error
+
+    def run(self):
+        try:
+            from bright_android.core import waydroid_manager
+            if not waydroid_manager.is_running():
+                self.finished.emit(False, [], "")
+                return
+            apps = waydroid_manager.list_apps()
+            self.finished.emit(True, apps, "")
+        except Exception as e:
+            self.finished.emit(False, [], str(e))
 
 
 class HomePage(QWidget):
@@ -180,11 +229,13 @@ class HomePage(QWidget):
 
         self.layout.addStretch()
 
-        # Auto-refresh timer
+        # Auto-refresh timer (every 10s — long enough to avoid hammering
+        # subprocess calls; waydroid_manager has a 3s TTL status cache too)
         self.refresh_timer = QTimer(self)
         self.refresh_timer.timeout.connect(self.refresh_status)
-        self.refresh_timer.start(5000)
+        self.refresh_timer.start(10000)
 
+        self._refresh_worker = None
         self.refresh_status()
 
     def _detect_edition(self) -> str:
@@ -196,72 +247,137 @@ class HomePage(QWidget):
             return "Home"
 
     def refresh_status(self):
-        """Update all status displays."""
-        from bright_android.core import waydroid_manager, compatibility
+        """Trigger an async status refresh (never blocks the GUI thread).
 
-        compat = compatibility.run_full_check()
+        Heavy checks (kernel config, mount parsing, waydroid status command,
+        app listing) all run on a background thread; results are applied
+        when done. Short-lived caching in waydroid_manager prevents
+        duplicate subprocess calls.
+        """
+        # Don't overlap a refresh if one is already running
+        if hasattr(self, "_refresh_worker") and self._refresh_worker is not None:
+            if self._refresh_worker.isRunning():
+                return
+        self._refresh_worker = StatusRefreshWorker()
+        self._refresh_worker.finished.connect(self._apply_status)
+        self._refresh_worker.start()
 
-        if not compat["packages"]["waydroid_installed"]:
+    def _apply_status(self, data):
+        """Apply results of the async status refresh."""
+        compat = data.get("compat", {})
+        runtime = data.get("runtime", {})
+        apps = data.get("apps", [])
+        error = data.get("error", "")
+
+        if error:
+            self.status_label.setText(f"⚠️ Error: {error}")
+            self.status_label.setObjectName("statusErr")
+
+        packages = compat.get("packages", {})
+        initialized = compat.get("initialized", {})
+        ram = compat.get("ram", {})
+        disk = compat.get("disk", {})
+        hw = compat.get("hardware_readiness", {})
+
+        installed = packages.get("waydroid_installed", False)
+        is_init = initialized.get("initialized", False)
+        running = runtime.get("running", False)
+        starting = runtime.get("starting", False)
+        version = packages.get("waydroid_version", "")
+
+        if not installed:
             self.status_label.setText(STATUS_NOT_INSTALLED)
             self.status_label.setObjectName("statusErr")
             self.start_btn.setEnabled(False)
             self.stop_btn.setEnabled(False)
             self.init_btn.setEnabled(False)
-            self.version_label.setText("Not installed")
-            self.ram_label.setText(f"{compat['ram']['total_mb']} MB")
-            self.storage_label.setText(f"{compat['disk']['available_gb']} GB available")
-            return
-
-        if not compat["initialized"]["initialized"]:
+            self.version_label.setText("Not installed (sudo apt install waydroid)")
+        elif not is_init:
             self.status_label.setText("⚪ Not initialized")
             self.status_label.setObjectName("statusWarn")
             self.start_btn.setEnabled(False)
             self.stop_btn.setEnabled(False)
             self.init_btn.setEnabled(True)
-        elif compat["running"] if False else False:
+            self.version_label.setText(version or "-")
+        elif starting:
+            self.status_label.setText(STATUS_INITIALIZING)
+            self.status_label.setObjectName("statusWarn")
+            self.start_btn.setEnabled(False)
+            self.stop_btn.setEnabled(True)
+            self.init_btn.setEnabled(False)
+            self.version_label.setText(version or "-")
+        elif running:
             self.status_label.setText(STATUS_RUNNING)
             self.status_label.setObjectName("statusOk")
             self.start_btn.setEnabled(False)
             self.stop_btn.setEnabled(True)
             self.init_btn.setEnabled(False)
+            self.version_label.setText(version or "-")
         else:
             self.status_label.setText(STATUS_STOPPED)
             self.status_label.setObjectName("statusErr")
             self.start_btn.setEnabled(True)
             self.stop_btn.setEnabled(False)
             self.init_btn.setEnabled(False)
+            self.version_label.setText(version or "-")
 
-        self.version_label.setText(compat["packages"]["details"][0] if compat["packages"]["details"] else "-")
-        self.ram_label.setText(f"{compat['ram']['total_mb']} MB")
-        self.storage_label.setText(f"{compat['disk']['available_gb']} GB available")
+        # Resource info
+        total_ram = ram.get("total_mb", 0)
+        avail_disk = disk.get("available_gb", 0)
+        self.ram_label.setText(f"{total_ram} MB" + ("  ⚠️" if ram.get("low_resource") else ""))
+        self.storage_label.setText(f"{avail_disk} GB available")
 
-        # Force style refresh
+        # Hardware-readiness warnings (prominent for 8 GB systems)
+        warning_text = ""
+        if hw.get("status") == "supported_with_limitations":
+            w = hw.get("warnings", [])
+            if w:
+                warning_text = w[0]
+        elif hw.get("status") == "unsupported":
+            b = hw.get("blockers", [])
+            if b:
+                warning_text = "Blocked: " + b[0]
+
+        # App count (only valid when running)
+        if running:
+            self.apps_count_label.setText(f"{len(apps)} application(s) installed")
+            if apps:
+                names = ", ".join(a["name"] for a in apps[:10])
+                if len(apps) > 10:
+                    names += f" … and {len(apps) - 10} more"
+                self.apps_list_label.setText(names)
+            else:
+                self.apps_list_label.setText("No Android applications installed yet")
+        elif is_init and not running:
+            self.apps_count_label.setText("Start Android to view applications")
+            self.apps_list_label.setText(warning_text or "")
+        elif not is_init and installed:
+            self.apps_count_label.setText("Initialize Android to install applications")
+            self.apps_list_label.setText(warning_text or "")
+        else:
+            self.apps_count_label.setText("Install Waydroid to enable Android support")
+            self.apps_list_label.setText(warning_text or "")
+
+        # Update warning style
+        if warning_text and "Blocked" in warning_text:
+            self.apps_list_label.setStyleSheet("color: #ef4444; font-size: 12px;")
+        elif warning_text:
+            self.apps_list_label.setStyleSheet("color: #f59e0b; font-size: 12px;")
+        else:
+            self.apps_list_label.setStyleSheet("color: #64748b; font-size: 12px;")
+
+        # Force style refresh on status label
         self.status_label.style().unpolish(self.status_label)
         self.status_label.style().polish(self.status_label)
+        self._refresh_worker = None
 
-        # App count
-        if compat["initialized"]["initialized"] and waydroid_manager.is_running():
-            try:
-                apps = waydroid_manager.list_apps()
-                self.apps_count_label.setText(f"{len(apps)} application(s) installed")
-                if apps:
-                    names = ", ".join(a["name"] for a in apps[:10])
-                    if len(apps) > 10:
-                        names += f" ... and {len(apps) - 10} more"
-                    self.apps_list_label.setText(names)
-            except Exception:
-                self.apps_count_label.setText("Cannot list apps (runtime may be starting)")
-        else:
-            self.apps_count_label.setText("Start Android to view applications")
-            self.apps_list_label.setText("")
-
-    def _run_worker(self, func, *args, op_name="Operation"):
+    def _run_worker(self, func, *args, op_name="Operation", **kwargs):
         self.progress_bar.setVisible(True)
         self.progress_label.setVisible(True)
         self.progress_label.setText(f"{op_name}...")
         self.setEnabled(False)
 
-        self.worker = StatusWorker(func, *args)
+        self.worker = StatusWorker(func, *args, op_name=op_name, **kwargs)
         self.worker.progress.connect(lambda msg: self.progress_label.setText(msg))
         self.worker.finished.connect(self._on_worker_done)
         self.worker.start()
@@ -353,21 +469,37 @@ class ApplicationsPage(QWidget):
 
         self.layout.addStretch()
 
+        self._apps_refresh_worker = None
+
     def refresh_apps(self):
-        from bright_android.core import waydroid_manager
-        if not waydroid_manager.is_running():
-            self.apps_placeholder.setText("Start Android to view installed applications")
+        """Refresh the app list (uses a short spinner to avoid freezing)."""
+        self.apps_placeholder.setText("Loading applications...")
+        if not hasattr(self, "_apps_refresh_worker") or self._apps_refresh_worker is None:
+            self._apps_refresh_worker = AppListWorker()
+            self._apps_refresh_worker.finished.connect(self._apply_app_list)
+            self._apps_refresh_worker.start()
+
+    def _apply_app_list(self, running, apps, error):
+        self._apps_refresh_worker = None
+        if error:
+            self.apps_placeholder.setText(f"Error: {error}")
+            return
+        if not running:
+            self.apps_placeholder.setText(
+                "Start Android to view installed applications.\n"
+                "Go to Android Home → ▶ Start Android"
+            )
             # Clear existing widget list
             while self.apps_layout.count() > 1:
                 item = self.apps_layout.takeAt(1)
                 if item.widget():
                     item.widget().deleteLater()
-            return
-
-        try:
-            apps = waydroid_manager.list_apps()
-        except Exception as e:
-            self.apps_placeholder.setText(f"Error listing apps: {e}")
+                elif item.layout():
+                    # Remove nested layouts
+                    while item.layout().count():
+                        c = item.layout().takeAt(0)
+                        if c.widget():
+                            c.widget().deleteLater()
             return
 
         # Clear existing
@@ -375,9 +507,17 @@ class ApplicationsPage(QWidget):
             item = self.apps_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
+            elif item.layout():
+                while item.layout().count():
+                    c = item.layout().takeAt(0)
+                    if c.widget():
+                        c.widget().deleteLater()
 
         if not apps:
-            label = QLabel("No Android applications installed.\nUse 'Install APK' to add applications.")
+            label = QLabel(
+                "No Android applications installed.\n"
+                "Use 'Install APK...' to add applications."
+            )
             label.setStyleSheet("color: #64748b; padding: 16px;")
             label.setAlignment(Qt.AlignmentFlag.AlignCenter)
             self.apps_layout.addWidget(label)
@@ -441,12 +581,40 @@ class ApplicationsPage(QWidget):
 
         from bright_android.core import waydroid_manager
         if not waydroid_manager.is_running():
-            QMessageBox.information(self, "Starting Android", "Android runtime needs to be started first.")
+            reply = QMessageBox.question(
+                self, "Start Android",
+                "Android runtime needs to be started before installing apps.\n"
+                "Start it now?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+            self.progress_bar.setVisible(True)
+            self.setEnabled(False)
+            self.worker = StatusWorker(waydroid_manager.start_session,
+                                      op_name="Starting Android...")
+            # After start completes, chain to install
+            self.worker.finished.connect(lambda ok, err: self._on_start_then_install(ok, err, path))
+            self.worker.start()
             return
 
+        self._do_install_apk(path)
+
+    def _on_start_then_install(self, ok, err, apk_path):
+        if not ok:
+            self.progress_bar.setVisible(False)
+            self.setEnabled(True)
+            QMessageBox.critical(self, "Start Failed", f"Could not start Android: {err}")
+            return
+        self._do_install_apk(apk_path)
+
+    def _do_install_apk(self, path):
+        from bright_android.core import waydroid_manager
         self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, 0)
         self.setEnabled(False)
-        self.worker = StatusWorker(waydroid_manager.install_apk, path)
+        self.worker = StatusWorker(waydroid_manager.install_apk, path,
+                                  op_name=f"Installing {Path(path).name}")
         self.worker.finished.connect(self._on_install_done)
         self.worker.start()
 
@@ -726,54 +894,103 @@ class CompatibilityPage(QWidget):
     def run_check(self):
         from bright_android.core import compatibility
         report = compatibility.run_full_check()
+        hw = report.get("hardware_readiness", {})
 
-        lines = ["=== Bright Android Compatibility Report ===\n"]
+        lines = ["=== Bright Android Hardware Readiness Report ===\n"]
+
+        # Overall readiness badge
+        status_icon = {"supported": "✅", "supported_with_limitations": "⚠️",
+                       "unsupported": "❌"}.get(hw.get("status", ""), "?")
+        lines.append(f"Overall status: {status_icon} {hw.get('summary', 'Unknown')}")
+        lines.append("")
+
+        # Blockers
+        if hw.get("blockers"):
+            lines.append("--- Blocking Issues ---")
+            for b in hw["blockers"]:
+                lines.append(f"  ❌ {b}")
+            lines.append("")
+
+        if hw.get("warnings"):
+            lines.append("--- Limitations / Warnings ---")
+            for w in hw["warnings"]:
+                lines.append(f"  ⚠️  {w}")
+            lines.append("")
+
+        if hw.get("recommendations"):
+            lines.append("--- Recommendations ---")
+            for r in hw["recommendations"]:
+                lines.append(f"  💡 {r}")
+            lines.append("")
 
         lines.append(f"Can install runtime: {'✅ YES' if report['can_install'] else '❌ NO'}")
         lines.append(f"Can run apps now:    {'✅ YES' if report['can_run'] else '❌ NO'}")
         lines.append("")
 
-        lines.append("--- Kernel & Drivers ---")
-        lines.append(f"  Binder (/dev/binder): {'✅ Available' if report['binder']['binder_available'] else '❌ Not available'}")
-        for d in report['binder'].get('details', []):
+        lines.append("--- CPU & Architecture ---")
+        cpu = report.get("cpu", {})
+        lines.append(f"  Architecture: {cpu.get('arch', '?')} ({'✅' if cpu.get('compatible') else '❌'} x86_64 required)")
+        lines.append(f"  CPU cores: {cpu.get('cores', '?')}")
+        if cpu.get("model"):
+            lines.append(f"  Model: {cpu['model']}")
+        lines.append("")
+
+        lines.append("--- Kernel & Memory ---")
+        binder = report.get("binder", {})
+        lines.append(f"  Binder: {'✅ Available' if binder.get('binder_available') else '❌ Not available'}")
+        if binder.get("module_needs_loading"):
+            lines.append(f"    → Module needs loading: pkexec modprobe binder_linux")
+        for d in binder.get('details', []):
             lines.append(f"    {d}")
-        lines.append(f"  Wayland session: {'✅ Running' if report['wayland']['wayland_available'] else '❌ Not detected'}")
-        for d in report['wayland'].get('details', []):
-            lines.append(f"    {d}")
-        lines.append(f"  Graphics: {'✅ Detected' if report['graphics'].get('graphics_ok') else '⚠️ Limited'}")
-        for d in report['graphics'].get('details', []):
+        memfd = report.get("memfd", {})
+        lines.append(f"  memfd: {'✅ Available' if memfd.get('memfd_available') else '❌ Missing'}")
+        for d in memfd.get('details', []):
             lines.append(f"    {d}")
         lines.append("")
 
-        lines.append("--- System Resources ---")
-        lines.append(f"  RAM: {report['ram']['total_mb']} MB")
-        for d in report['ram'].get('details', []):
+        lines.append("--- Session & Graphics ---")
+        wayland = report.get("wayland", {})
+        lines.append(f"  Wayland session: {'✅ Running' if wayland.get('wayland_available') else '❌ Not detected'}")
+        for d in wayland.get('details', []):
             lines.append(f"    {d}")
-        lines.append(f"  Disk: {report['disk']['available_gb']} GB available")
-        for d in report['disk'].get('details', []):
-            lines.append(f"    {d}")
-        lines.append("")
-
-        lines.append("--- Packages ---")
-        lines.append(f"  Waydroid: {'✅ Installed' if report['packages']['waydroid_installed'] else '❌ Not installed'}")
-        for d in report['packages'].get('details', []):
-            lines.append(f"    {d}")
-        lines.append(f"  Android image: {'✅ Initialized' if report['initialized']['initialized'] else '⚪ Not initialized'}")
-        for d in report['initialized'].get('details', []):
+        gfx = report.get("graphics", {})
+        lines.append(f"  GPU: {gfx.get('renderer', 'unknown')}")
+        lines.append(f"  Vendor: {gfx.get('vendor', 'unknown')}")
+        lines.append(f"  OpenGL: {gfx.get('gl_version', 'unknown')}")
+        if gfx.get("software_rendering"):
+            lines.append("  ⚠️  Software rendering detected (very slow)")
+        for d in gfx.get('details', []):
             lines.append(f"    {d}")
         lines.append("")
 
-        if report['issues']:
-            lines.append("--- Blocking Issues ---")
-            for issue in report['issues']:
-                lines.append(f"  ❌ {issue}")
-            lines.append("")
+        lines.append("--- Memory ---")
+        ram = report.get("ram", {})
+        swap = report.get("swap", {})
+        lines.append(f"  RAM total: {ram.get('total_mb', 0)} MB  (available: {ram.get('available_mb', 0)} MB)")
+        for d in ram.get('details', []):
+            lines.append(f"    {d}")
+        lines.append(f"  Swap: {swap.get('swap_total_mb', 0)} MB" +
+                     (" (none configured)" if not swap.get("swap_available") else f" ({swap.get('swap_free_mb', 0)} MB free)"))
+        for d in swap.get('details', []):
+            lines.append(f"    {d}")
+        lines.append("")
 
-        if report['warnings']:
-            lines.append("--- Warnings ---")
-            for w in report['warnings']:
-                lines.append(f"  ⚠️  {w}")
-            lines.append("")
+        lines.append("--- Storage ---")
+        disk = report.get("disk", {})
+        lines.append(f"  Free space: {disk.get('available_gb', 0):.1f} GB of {disk.get('total_gb', 0):.1f} GB")
+        for d in disk.get('details', []):
+            lines.append(f"    {d}")
+        lines.append("")
+
+        lines.append("--- Runtime Status ---")
+        pkgs = report.get("packages", {})
+        init = report.get("initialized", {})
+        lines.append(f"  Waydroid installed: {'✅' if pkgs.get('waydroid_installed') else '❌'} " +
+                     (pkgs.get('waydroid_version', '') if pkgs.get('waydroid_installed') else "(install: sudo apt install waydroid)"))
+        lines.append(f"  Android image: {'✅ Initialized' if init.get('initialized') else '⚪ Not initialized'}")
+        for d in init.get('details', []):
+            lines.append(f"    {d}")
+        lines.append(f"  Running now: {'✅ YES' if report.get('running') else '❌ NO'}")
 
         self.report_area.setPlainText("\n".join(lines))
 
