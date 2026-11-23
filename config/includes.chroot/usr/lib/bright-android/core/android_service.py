@@ -78,41 +78,45 @@ POLKIT_ACTION_REMOVE_DATA = "org.bright_os.BrightAndroid.remove-data"
 
 
 def _check_polkit(sender, action_id: str, bus=None) -> tuple:
-    """Check Polkit authorization.
+    """Check Polkit authorization for a D-Bus caller.
 
     Returns (allowed: bool, reason: str).
-    - If Polkit is unavailable and sender is root, allow.
-    - If Polkit is unavailable and sender is not root, deny (fail closed).
-    - If Polkit is available, query authority.
+    - If Polkit is unavailable and caller is root, allow.
+    - If Polkit is unavailable and caller is not root, deny (fail closed).
+    - If Polkit is available, query the authority properly.
+
+    In dbus-python, bus.get_unix_process_id(name) returns the PID as an int
+    directly (not a dict), and get_unix_user_id(name) returns a UID as int.
     """
     if sender is None:
-        return False, "No sender"
+        # Session bus: calls from our own GUI on the same session are considered
+        # authorized because the user is already at an active console session.
+        # On the system bus this would be different.
+        return True, "session bus implicit trust"
 
-    # Get PID of caller
     pid = None
     uid = None
-    if bus is not None and HAS_DBUS:
+    if bus is not None:
         try:
-            dbus_info = bus.get_unix_process_id(sender)
-            pid = dbus_info.get("pid") if isinstance(dbus_info, dict) else None
-            uid_info = bus.get_unix_user_id(sender)
-            uid = uid_info.get("uid") if isinstance(uid_info, dict) else None
-        except Exception:
-            pass
+            # dbus-python's get_unix_process_id/get_unix_user_id return ints
+            pid = bus.get_unix_process_id(sender)
+            uid = bus.get_unix_user_id(sender)
+        except Exception as e:
+            logger.debug("Could not get caller credentials: %s", e)
 
-    # Validate pid/uid
+    # Validate credentials
     if not isinstance(pid, int) or pid <= 0:
-        return False, "Invalid or missing PID"
+        return False, "Cannot determine caller PID"
     if not isinstance(uid, int) or uid < 0:
-        return False, "Invalid or missing UID"
+        return False, "Cannot determine caller UID"
 
-    # Root is always allowed (for system services)
+    # Root callers are always allowed
     if uid == 0:
-        return True, "root"
+        return True, "root caller"
 
     if not HAS_POLKIT:
-        # Polkit unavailable: only root can do privileged ops (fail closed)
-        return False, "Polkit unavailable; operation requires root"
+        # Polkit unavailable and caller is not root — fail closed
+        return False, "Polkit unavailable; operation requires administrator privileges"
 
     try:
         authority = Polkit.Authority.get_sync(None)
@@ -129,7 +133,8 @@ def _check_polkit(sender, action_id: str, bus=None) -> tuple:
         else:
             return False, "not authorized"
     except Exception as e:
-        logger.warning("Polkit check failed for %s: %s", action_id, e)
+        logger.warning("Polkit check failed for action %s pid=%s uid=%s: %s",
+                       action_id, pid, uid, e)
         return False, f"Polkit error: {e}"
 
 

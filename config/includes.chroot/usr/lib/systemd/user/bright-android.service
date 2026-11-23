@@ -8,18 +8,33 @@ Wants=wayland-session.target
 [Service]
 Type=dbus
 BusName=org.bright_os.BrightAndroid
-ExecStart=/usr/bin/bright-android --service
+ExecStart=/usr/bin/bright-android --service --session
 Restart=on-failure
 RestartSec=5
-TimeoutStopSec=10
+TimeoutStopSec=15
 Slice=app.slice
 
-# Security hardening (user service, so capabilities are already limited)
-NoNewPrivileges=yes
+# Security hardening
+# NOTE: NoNewPrivileges is NOT set because this service legitimately
+# needs to call pkexec (setuid root) for privileged Waydroid operations.
+# Authorization is enforced by Polkit policies which require admin
+# authentication for destructive actions (init, install-apk, remove-data).
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=%h/.config/bright-android %h/.local/share/applications %h/.cache/bright-android
 PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=no
+# Allow access to paths waydroid needs (service + pkexec'd children share
+# the mount namespace, so these must be writable):
+#   - /etc/waydroid     : waydroid.cfg written by `waydroid init`
+#   - /var/lib/waydroid : Android images and data
+#   - ~/.config/...     : user config
+#   - ~/.local/...      : .desktop launcher entries
+#   - ~/.cache/...      : icon cache
+ReadWritePaths=/etc/waydroid /var/lib/waydroid
+ReadWritePaths=%h/.config/bright-android %h/.local/share/applications %h/.cache/bright-android
 
 [Install]
 WantedBy=graphical-session.target

@@ -39,14 +39,43 @@ Bright Android is the native Android application compatibility layer for Bright 
 - **RAM:** 2 GB (4 GB recommended)
 - **Storage:** 6 GB free for Android image + apps
 - **GPU:** OpenGL ES 3.0 capable (Mesa, Intel, AMD, NVIDIA)
-- **Kernel:** Binder IPC (`/dev/binder`) and Ashmem or memfd support
-  - Most Debian 12/13 kernels include binder as module (`binder_linux`)
+- **Kernel:** Binder IPC (`/dev/binder` or binderfs) and memfd support
+  - Debian 13 (Trixie) kernels include binder; the `binder-linux-module-dkms` package
+    provides binder_linux.ko as a fallback.
+  - memfd_create(2) is available on all Linux kernels >= 3.17 (ashmem is NOT required
+    for Waydroid 1.4+).
+- **Session:** Wayland (KWin, Weston, Sway)
 
 ### Recommended
-- 4+ GB RAM
+- 8+ GB RAM (see note below about 8 GB systems)
 - SSD storage
-- Intel/AMD GPU with Mesa drivers
-- Wayland session (KWin on Bright OS Home/Developer; KWin Lite on Lite)
+- Intel/AMD GPU with Mesa drivers and >= 1 GB VRAM
+- Wayland session (KWin on Bright OS Home/Developer)
+
+### 8 GB RAM Systems
+Bright Android runs on 8 GB RAM systems (like the AMD A10-8700P), but with
+caveats:
+- Android auto-start is **disabled by default** to preserve RAM.
+- The GUI shows a prominent warning about resource contention.
+- Running Android + a full desktop + browser simultaneously may cause pressure.
+- Adding 2-4 GB compressed swap (zram) is strongly recommended:
+  `sudo apt install zram-tools`
+- Close heavy desktop apps before starting Android.
+- Systems with integrated GPUs (like AMD Radeon R6) share VRAM with system RAM,
+  reducing available memory further.
+
+See `docs/PHASE-BRIGHT-ANDROID-HARDWARE-READINESS.md` for a full assessment
+of the AMD A10-8700P target system.
+
+### Binder Module Loading
+The compatibility checker reports whether binder is available but **does not**
+load kernel modules automatically (that requires root). If binder is not loaded,
+the recommended remediation is:
+```
+pkexec modprobe binder_linux
+echo 'binder_linux' | pkexec tee /etc/modules-load.d/binder.conf
+```
+Polkit will prompt for administrator authorization.
 
 ## Installation
 
