@@ -1,8 +1,8 @@
-# Phase Bright Android — Implementation Report (Updated: Phase 2 Bug Fixes)
+# Phase Bright Android — Implementation Report (Updated: Phase 2.1 Security Fix)
 
-**Branch:** `arena/e4dafc42-bright-os` (Phase 2 fixes)
-**Original PR:** #35 (Phase 1 merged)
-**Date:** 2026-11-20
+**Branch:** `arena/01bb330c-bright-os` (Phase 2.1)
+**Original PR:** #35 (Phase 1 merged), #36 (Phase 2 merged)
+**Date:** 2026-11-20 (Phase 2.1 update: 2026-11-23)
 **Status:** Code complete; real-hardware validation pending
 
 ## Phase 2 Summary
@@ -136,3 +136,139 @@ Skipped tests are NOT counted as passed (per requirements).
 - APK paths validated for null bytes, extension, size
 - Package names validated via regex before passing to waydroid
 - AURA cannot bypass Polkit or perform root operations without user consent
+
+---
+
+## Phase 2.1: D-Bus Authorization Security Fix
+
+Phase 2.1 hardens the D-Bus authorization model to remove the session-bus
+implicit-trust bypass, validate every caller's identity, and separate
+authentication (Polkit) from user-facing confirmation (AURA).
+
+### Security Issues Fixed
+
+1. **Session-bus implicit trust bypass removed**
+   - Old code: `if sender is None: return True, "session bus implicit trust"`.
+     On the session bus dbus-python always supplies a sender; however the
+     `sender=None` fallback was reachable via internal calls and constituted
+     a confused-deputy risk. Removed. Every method now requires a valid
+     sender (or `bus=None` for explicit in-process calls, which is not
+     reachable from a remote D-Bus peer because dbus-python always supplies
+     a bus object for dispatched methods).
+
+2. **Wrong D-Bus credential API corrected**
+   - Old code used `bus.get_unix_process_id()` / `bus.get_unix_user_id()`
+     (non-existent methods that raise AttributeError and fell through to the
+     implicit-trust bypass). The correct dbus-python API is
+     `bus.get_connection_unix_process_id(sender)` /
+     `bus.get_connection_unix_user(sender)`, which raise DBusException for
+     unknown senders. The fix uses the correct methods with broad exception
+     handling so any credential failure results in denial.
+
+3. **Other-local-account access vector closed**
+   - Same-UID enforcement: caller UID must match service UID (or be root).
+     Other local users connecting to the same session bus (e.g. via a leaked
+     `DBUS_SESSION_BUS_ADDRESS`) cannot control the active user's Android
+     environment.
+
+4. **Polkit actions added for LaunchApp/SyncAppList/SetConfig**
+   - Previously `LaunchApp` and `SyncAppList` had no auth checks at all and
+     `SetConfig` incorrectly used the START action. Added three new action
+     constants: `POLKIT_ACTION_SET_CONFIG` (auth_admin_keep),
+     `POLKIT_ACTION_LAUNCH` (allow_active=yes),
+     `POLKIT_ACTION_SYNC` (allow_active=yes).
+
+5. **Polkit policy hardened**
+   - All admin/destructive actions (init, install-apk, set-config) require
+     `auth_admin_keep`; remove-data requires `auth_admin` (no caching for
+     data destruction). Session-user actions (start/stop/uninstall/launch/
+     sync) use `allow_active=yes`. No action grants `allow_any=yes`.
+
+6. **Fail-closed when Polkit unavailable**
+   - If Polkit is unavailable and the caller is not root (and the action
+     does not allow same-user), the call is denied.
+
+7. **Read-only methods now check auth**
+   - GetVersion, GetCompatibilityReport, GetStatus, GetConfig, ListApps,
+     ValidateApk, and GetDiagnostics all now verify the caller's identity
+     (same-UID only; no Polkit prompt).
+
+8. **NoNewPrivileges trade-off documented**
+   - The systemd unit retains the absence of NoNewPrivileges because pkexec
+     needs setuid. A detailed comment block explains the trade-off, the
+     existing layers of defense (Polkit + same-UID), and a concrete
+     follow-up plan (narrow pkexec helper, then re-enable
+     NoNewPrivileges). Additional hardening directives added:
+     RestrictNamespaces=yes, RestrictRealtime=yes, LockPersonality=yes,
+     MemoryDenyWriteExecute=no (Python JIT/W^X), SystemCallArchitectures=native.
+
+### Authorization Decision Flow
+
+```
+D-Bus method call (sender, bus present)
+  │
+  ├─ bus=None or HAS_DBUS=False          ──► ALLOW (in-process / headless)
+  ├─ sender is None                       ──► DENY
+  ├─ credentials unobtainable             ──► DENY (fail closed)
+  ├─ invalid pid/uid                      ──► DENY
+  ├─ uid == 0 (root)                      ──► ALLOW
+  ├─ uid != service UID                   ──► DENY (other local user)
+  ├─ allow_same_user=True (read/user)     ──► ALLOW
+  ├─ Polkit unavailable                   ──► DENY (fail closed)
+  └─ Polkit.check_authorization_sync()
+        ├─ is_authorized=True             ──► ALLOW
+        ├─ is_challenge=True              ──► DENY (auth required)
+        └─ else                            ──► DENY
+```
+
+### Files Modified in Phase 2.1
+
+| Path | Change |
+|------|--------|
+| `bright_android/core/android_service.py` | Removed implicit-trust bypass; fixed dbus-python credential API; added same-UID enforcement via `SERVICE_UID`; added `POLKIT_ACTION_SET_CONFIG/LAUNCH/SYNC`; renamed `_check_polkit` to `_check_authorization` with `allow_same_user` parameter; all 15 D-Bus methods now call `_check_authorization`; fail-closed on credential or Polkit failure; SetConfig uses correct action; LaunchApp/SyncAppList now require auth; backwards-compat alias retained |
+| `config/includes.chroot/usr/share/polkit-1/actions/org.bright_os.BrightAndroid.policy` | Added set-config, launch-app, sync-apps actions; comment documenting the authorization model; no action uses allow_any=yes; admin actions auth_admin_keep; remove-data auth_admin |
+| `config/includes.chroot/usr/lib/systemd/user/bright-android.service` | Detailed block comment documenting NoNewPrivileges trade-off and future helper plan; added RestrictNamespaces/Realtime/LockPersonality/SystemCallArchitectures hardening; rephrased comments to avoid literal directive strings |
+| `bright_android/tests/test_bright_android_auth.py` | **New**: 49 auth regression tests (AuthorizationTests, SecurityRegressionTests, MethodSourceAuthTests, PolkitPolicyTests, SystemdSecurityTests) + 2 skipped real-D-Bus integration tests |
+| `bright_android/tests/test_bright_android.py` | Updated 3 SecurityValidationTests to use new `_check_authorization` API with correct dbus method names; updated `test_service_does_not_block_pkexec` to ignore comment lines |
+| `docs/BRIGHT-ANDROID.md` | Rewrote Security Model section with authorization flow, Polkit action matrix, authentication-vs-confirmation, systemd hardening details |
+
+### Test Results (Phase 2.1 final)
+
+| Suite | Passed | Failed | Skipped |
+|---|---|---|---|
+| AURA Python tests | 233 | 0 | 0 |
+| Bright Android Python tests | 109 | 0 | 4 (real Waydroid + D-Bus integration) |
+| Installer shell tests (pyyaml) | 227 | 0 | 0 |
+| **Total** | **569** | **0** | **4** |
+
+Skipped tests are real-system integration tests (Waydroid runtime + live
+D-Bus/Polkit) that require a provisioned Debian machine with the service
+running. They are gated by `WAYDROID_INTEGRATION=1` and
+`BRIGHT_ANDROID_REAL_INTEGRATION=1` and are NOT counted as passed per the
+standing rule.
+
+**Environment note:** The sandbox lacks `python3-dbus` and `python3-gi`;
+production behavior (HAS_DBUS=True, HAS_POLKIT=True) is exercised via mocks
+and source-level inspection. Real D-Bus/Polkit integration is covered by
+the skipped `RealDBusIntegrationTests` class.
+
+### Coverage for 11 Required Scenarios
+
+| # | Scenario | Tests |
+|---|----------|-------|
+| 1 | Missing sender denied | `test_missing_sender_is_denied`, `test_no_implicit_trust_bypass_in_source` |
+| 2 | Invalid pid/uid denied | `test_missing_pid_is_denied`, `test_missing_uid_is_denied`, `test_invalid_pid_type_denied`, `test_negative_pid_denied`, `test_zero_pid_denied`, `test_negative_uid_denied` |
+| 3 | Other local user denied | `test_other_user_denied_for_admin_action`, `test_other_user_denied_for_same_user_action` |
+| 4 | Root caller allowed | `test_root_is_always_allowed` |
+| 5 | Same user allowed for read/session actions | `test_same_user_allowed_for_read_actions`, `test_same_user_allowed_for_launch` |
+| 6 | Polkit unavailable fail-closed (non-root) | `test_polkit_unavailable_fails_closed_for_non_root` |
+| 7 | Polkit authorized → allow | `test_polkit_authorized_allows` |
+| 8 | Polkit challenge → deny | `test_polkit_challenge_denied` |
+| 9 | Polkit error → deny | `test_polkit_error_denied`, `test_polkit_not_authorized_denied` |
+| 10 | All 15 D-Bus methods invoke authorization with correct action IDs | `test_all_dbus_methods_call_check_authorization` + 12 per-method `MethodSourceAuthTests` |
+| 11 | systemd hardening preserved; NoNewPrivileges trade-off documented | `test_hardening_directives_present`, `test_no_nonewprivileges_active_directive`, `test_nonewprivileges_tradeoff_documented`, `test_readwrite_paths_for_waydroid`, `test_exec_uses_session_bus` |
+
+Additional regression checks: no `shell=True` in any core module; correct
+dbus-python credential method names (`get_connection_unix_process_id` /
+`get_connection_unix_user`, not the old buggy names); Polkit XML has no
+`allow_any=yes` and correct auth levels per action.

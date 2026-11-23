@@ -604,29 +604,40 @@ class SecurityValidationTests(unittest.TestCase):
                 "_run must never pass shell=True to subprocess.run")
 
     def test_polkit_check_rejects_no_sender(self):
-        """On system bus (or if sender info unavailable), fail closed unless
-        it's session bus (implicit trust)."""
-        from bright_android.core.android_service import _check_polkit
-        # sender=None returns True for session-bus implicit trust
-        ok, reason = _check_polkit(None, "org.bright_os.BrightAndroid.init")
-        self.assertTrue(ok)  # session bus implicit trust
-        self.assertIn("session bus", reason)
+        """When a real bus is present, sender=None must be denied (fail-closed).
+        bus=None in-process calls are allowed separately."""
+        from bright_android.core.android_service import _check_authorization
+        import bright_android.core.android_service as svc
+        bus_mock = mock.MagicMock()
+        with mock.patch.object(svc, "HAS_DBUS", True):
+            ok, reason = _check_authorization(
+                None, "org.bright_os.BrightAndroid.init", bus=bus_mock
+            )
+        self.assertFalse(ok, f"Expected denial for None sender, got: {reason}")
 
     def test_polkit_check_rejects_invalid_pid(self):
-        from bright_android.core.android_service import _check_polkit
-        # Fake a bus that returns bad pid
+        from bright_android.core.android_service import _check_authorization
+        import bright_android.core.android_service as svc
         bus_mock = mock.MagicMock()
-        bus_mock.get_unix_process_id.return_value = -1
-        ok, _ = _check_polkit(":1.0", "org.bright_os.BrightAndroid.init", bus=bus_mock)
-        self.assertFalse(ok)
+        bus_mock.get_connection_unix_process_id.side_effect = Exception("no such sender")
+        with mock.patch.object(svc, "HAS_DBUS", True), \
+             mock.patch.object(svc, "HAS_POLKIT", False):
+            ok, reason = _check_authorization(
+                ":1.0", "org.bright_os.BrightAndroid.init", bus=bus_mock
+            )
+        self.assertFalse(ok, f"Expected denial on credential failure, got: {reason}")
 
     def test_polkit_check_allows_root(self):
-        from bright_android.core.android_service import _check_polkit
+        from bright_android.core.android_service import _check_authorization
+        import bright_android.core.android_service as svc
         bus_mock = mock.MagicMock()
-        # Configure bus mock to return concrete ints (dbus-python returns ints)
-        bus_mock.get_unix_process_id = mock.MagicMock(return_value=100)
-        bus_mock.get_unix_user_id = mock.MagicMock(return_value=0)
-        ok, reason = _check_polkit(":1.0", "org.bright_os.BrightAndroid.init", bus=bus_mock)
+        bus_mock.get_connection_unix_process_id.return_value = 100
+        bus_mock.get_connection_unix_user.return_value = 0  # root
+        with mock.patch.object(svc, "HAS_DBUS", True), \
+             mock.patch.object(svc, "HAS_POLKIT", False):
+            ok, reason = _check_authorization(
+                ":1.0", "org.bright_os.BrightAndroid.init", bus=bus_mock
+            )
         self.assertTrue(ok, f"Expected root to be allowed, got: {reason}")
         self.assertIn("root", reason)
 
@@ -730,8 +741,14 @@ class SystemdServiceTests(unittest.TestCase):
         self.assertNotIn("ExecStart=/usr/bin/bright-android --service\n", self.unit)
 
     def test_service_does_not_block_pkexec(self):
-        """NoNewPrivileges must NOT be set (would block pkexec setuid)."""
-        self.assertNotIn("NoNewPrivileges=yes", self.unit)
+        """NoNewPrivileges=yes must NOT be an active directive
+        (would block pkexec setuid). Comments mentioning the setting are fine."""
+        active = [l for l in self.unit.splitlines()
+                  if l.strip() and not l.strip().startswith('#')]
+        self.assertFalse(
+            any(l.strip() == "NoNewPrivileges=yes" for l in active),
+            "NoNewPrivileges=yes must not be active (blocks pkexec setuid)"
+        )
 
     def test_readwrite_paths_for_waydroid(self):
         """Must allow writes to /var/lib/waydroid and /etc/waydroid."""

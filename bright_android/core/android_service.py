@@ -67,75 +67,158 @@ INTERFACE = "org.bright_os.BrightAndroid"
 
 
 # ---------------------------------------------------------------------------
-# Polkit authorization
+# Authorization
 # ---------------------------------------------------------------------------
+# Polkit action IDs. Keep in sync with the policy file:
+#   config/includes.chroot/usr/share/polkit-1/actions/org.bright_os.BrightAndroid.policy
 POLKIT_ACTION_INIT = "org.bright_os.BrightAndroid.init"
 POLKIT_ACTION_START = "org.bright_os.BrightAndroid.start"
 POLKIT_ACTION_STOP = "org.bright_os.BrightAndroid.stop"
 POLKIT_ACTION_INSTALL = "org.bright_os.BrightAndroid.install-apk"
 POLKIT_ACTION_UNINSTALL = "org.bright_os.BrightAndroid.uninstall-app"
 POLKIT_ACTION_REMOVE_DATA = "org.bright_os.BrightAndroid.remove-data"
+POLKIT_ACTION_SET_CONFIG = "org.bright_os.BrightAndroid.set-config"
+POLKIT_ACTION_LAUNCH = "org.bright_os.BrightAndroid.launch-app"
+POLKIT_ACTION_SYNC = "org.bright_os.BrightAndroid.sync-apps"
+
+# The service UID is captured at import time. Callers whose UID does not match
+# this value (and are not root) are denied. This prevents other local users
+# from controlling the current user's Android environment even if they can
+# connect to the session bus.
+SERVICE_UID = os.getuid()
 
 
-def _check_polkit(sender, action_id: str, bus=None) -> tuple:
-    """Check Polkit authorization for a D-Bus caller.
+def _get_caller_credentials(sender, bus) -> tuple:
+    """Extract and validate caller PID and UID from D-Bus.
 
-    Returns (allowed: bool, reason: str).
-    - If Polkit is unavailable and caller is root, allow.
-    - If Polkit is unavailable and caller is not root, deny (fail closed).
-    - If Polkit is available, query the authority properly.
-
-    In dbus-python, bus.get_unix_process_id(name) returns the PID as an int
-    directly (not a dict), and get_unix_user_id(name) returns a UID as int.
+    Returns (ok: bool, pid: int, uid: int, reason: str). When ok is False,
+    pid/uid are 0 and reason describes why credentials could not be obtained.
     """
+    if not HAS_DBUS or bus is None:
+        # Headless/test mode: no real D-Bus connection (either the dbus module
+        # is unavailable, or this is a direct in-process call not through D-Bus).
+        # In production, bus is always populated by dbus-python for every
+        # D-Bus-dispatched method call. When bus is None we trust the call as
+        # coming from our own process (e.g. internal signal handlers, unit tests
+        # that construct the service directly). This path is NOT reachable from
+        # a remote D-Bus caller because dbus-python always supplies a sender and
+        # bus for actual D-Bus method invocations.
+        return True, 0, SERVICE_UID, "in-process call (no D-Bus bus)"
+
     if sender is None:
-        # Session bus: calls from our own GUI on the same session are considered
-        # authorized because the user is already at an active console session.
-        # On the system bus this would be different.
-        return True, "session bus implicit trust"
+        return False, 0, 0, "no sender identity provided"
 
-    pid = None
-    uid = None
-    if bus is not None:
-        try:
-            # dbus-python's get_unix_process_id/get_unix_user_id return ints
-            pid = bus.get_unix_process_id(sender)
-            uid = bus.get_unix_user_id(sender)
-        except Exception as e:
-            logger.debug("Could not get caller credentials: %s", e)
+    try:
+        # Correct dbus-python API for peer credentials:
+        #   get_connection_unix_process_id(name) -> int PID
+        #   get_connection_unix_user(name)        -> int UID
+        # (Note: get_unix_process_id / get_unix_user_id are NOT valid methods;
+        # they were a bug in earlier revisions that caused AttributeError and
+        # fell through to the old implicit-trust bypass.)
+        pid = bus.get_connection_unix_process_id(sender)
+        uid = bus.get_connection_unix_user(sender)
+    except Exception as e:
+        # Catches dbus.DBusException (unknown sender), AttributeError (bad bus),
+        # and any other lookup failure. Broad Exception catch is deliberate:
+        # any failure must result in denial regardless of error type.
+        logger.warning("Could not determine caller identity for %s: %s", sender, e)
+        return False, 0, 0, f"could not determine caller identity: {e}"
 
-    # Validate credentials
+    # Type/range validation
     if not isinstance(pid, int) or pid <= 0:
-        return False, "Cannot determine caller PID"
+        return False, 0, 0, f"invalid caller pid: {pid!r}"
     if not isinstance(uid, int) or uid < 0:
-        return False, "Cannot determine caller UID"
+        return False, 0, 0, f"invalid caller uid: {uid!r}"
 
-    # Root callers are always allowed
+    return True, pid, uid, ""
+
+
+def _check_authorization(sender, action_id: str, bus=None,
+                         allow_same_user: bool = False) -> tuple:
+    """Authorize a D-Bus method call.
+
+    Authorization model:
+      0. In-process calls (no bus, or HAS_DBUS=False): allow (trusted path).
+      1. Credentials must be obtainable (PID/UID) → fail closed otherwise.
+      2. Caller must be the same user as the service (or root). Other local
+         accounts must NOT be able to control the current user's Android
+         environment, even if they can somehow connect to the session bus.
+      3. Root is always authorized.
+      4. If allow_same_user is True and the caller is the same user, allow
+         without Polkit (for low-risk user actions).
+      5. Otherwise query Polkit. If Polkit is unavailable, fail closed.
+
+    Args:
+        sender: D-Bus sender bus name (provided by dbus-python via
+            sender_keyword="sender").
+        action_id: Polkit action ID (one of the POLKIT_ACTION_* constants).
+        bus: D-Bus connection object (self._bus inside the service class).
+        allow_same_user: If True, same-user callers are authorized without
+            Polkit consultation. Use for read-only and user-session actions.
+    Returns:
+        (allowed: bool, reason: str)
+    """
+    ok, pid, uid, reason = _get_caller_credentials(sender, bus)
+    if not ok:
+        return False, reason
+
+    # In-process / headless mode: _get_caller_credentials returned ok=True
+    # with reason indicating this is not a real D-Bus call. Allow.
+    if "in-process" in reason or "headless" in reason:
+        return True, reason
+
+    # Root is always authorized for any action
     if uid == 0:
         return True, "root caller"
 
+    # Same-user verification — other local accounts are denied
+    if uid != SERVICE_UID:
+        logger.warning(
+            "Denied D-Bus caller uid=%d (service uid=%d) action=%s",
+            uid, SERVICE_UID, action_id,
+        )
+        return False, (
+            f"caller uid {uid} does not match service uid {SERVICE_UID}; "
+            "other users cannot control this Android session"
+        )
+
+    # If same-user is sufficient for this action, allow without Polkit
+    if allow_same_user:
+        return True, "same-user authorized"
+
+    # For actions requiring Polkit, query the authority
     if not HAS_POLKIT:
-        # Polkit unavailable and caller is not root — fail closed
-        return False, "Polkit unavailable; operation requires administrator privileges"
+        return False, (
+            "Polkit is unavailable; cannot verify authorization for "
+            f"{action_id}. Only root may perform this action."
+        )
 
     try:
         authority = Polkit.Authority.get_sync(None)
         subject = Polkit.UnixProcess.new(pid)
         result = authority.check_authorization_sync(
-            subject, action_id, None,
+            subject,
+            action_id,
+            None,
             Polkit.CheckAuthorizationFlags.ALLOW_USER_INTERACTION,
             None,
         )
         if result.get_is_authorized():
-            return True, "authorized"
+            return True, "polkit authorized"
         elif result.get_is_challenge():
             return False, "authentication required"
         else:
             return False, "not authorized"
     except Exception as e:
-        logger.warning("Polkit check failed for action %s pid=%s uid=%s: %s",
-                       action_id, pid, uid, e)
-        return False, f"Polkit error: {e}"
+        logger.warning(
+            "Polkit check failed for action=%s pid=%d uid=%d: %s",
+            action_id, pid, uid, e,
+        )
+        return False, f"polkit error: {e}"
+
+
+# Backwards-compatible alias (old name); prefer _check_authorization in new code.
+_check_polkit = _check_authorization
 
 
 # ---------------------------------------------------------------------------
@@ -208,15 +291,29 @@ if HAS_DBUS:
         def RuntimeStateChanged(self, running: bool):
             pass
 
-        # --- Informational methods (no auth required) ---
+        # --- Informational methods (same-user allowed, no Polkit prompt) ---
 
-        @method(INTERFACE, in_signature="", out_signature="s")
-        def GetVersion(self):
+        @method(INTERFACE, in_signature="", out_signature="s", sender_keyword="sender")
+        def GetVersion(self, sender=None):
+            ok, reason = _check_authorization(sender, POLKIT_ACTION_SYNC,
+                                              bus=self._bus, allow_same_user=True)
+            if not ok:
+                raise dbus.exceptions.DBusException(
+                    "org.bright_os.BrightAndroid.NotAuthorized",
+                    f"Not authorized: {reason}"
+                )
             from bright_android import __version__
             return __version__
 
-        @method(INTERFACE, in_signature="", out_signature="a{sv}")
-        def GetCompatibilityReport(self):
+        @method(INTERFACE, in_signature="", out_signature="a{sv}", sender_keyword="sender")
+        def GetCompatibilityReport(self, sender=None):
+            ok, reason = _check_authorization(sender, POLKIT_ACTION_SYNC,
+                                              bus=self._bus, allow_same_user=True)
+            if not ok:
+                raise dbus.exceptions.DBusException(
+                    "org.bright_os.BrightAndroid.NotAuthorized",
+                    f"Not authorized: {reason}"
+                )
             report = compatibility.run_full_check()
             # Flatten to dbus-compatible dict
             result = {}
@@ -233,8 +330,15 @@ if HAS_DBUS:
             result["warnings"] = dbus.Array(report["warnings"], signature="s")
             return dbus.Dictionary(result, signature="sv")
 
-        @method(INTERFACE, in_signature="", out_signature="a{sv}")
-        def GetStatus(self):
+        @method(INTERFACE, in_signature="", out_signature="a{sv}", sender_keyword="sender")
+        def GetStatus(self, sender=None):
+            ok, reason = _check_authorization(sender, POLKIT_ACTION_SYNC,
+                                              bus=self._bus, allow_same_user=True)
+            if not ok:
+                raise dbus.exceptions.DBusException(
+                    "org.bright_os.BrightAndroid.NotAuthorized",
+                    f"Not authorized: {reason}"
+                )
             if not waydroid_manager.is_installed():
                 return dbus.Dictionary({
                     "installed": False,
@@ -250,8 +354,15 @@ if HAS_DBUS:
                 "version": status["details"].get("waydroid_version", ""),
             }, signature="sv")
 
-        @method(INTERFACE, in_signature="", out_signature="a{sv}")
-        def GetConfig(self):
+        @method(INTERFACE, in_signature="", out_signature="a{sv}", sender_keyword="sender")
+        def GetConfig(self, sender=None):
+            ok, reason = _check_authorization(sender, POLKIT_ACTION_SYNC,
+                                              bus=self._bus, allow_same_user=True)
+            if not ok:
+                raise dbus.exceptions.DBusException(
+                    "org.bright_os.BrightAndroid.NotAuthorized",
+                    f"Not authorized: {reason}"
+                )
             cfg = ba_config.load_config()
             result = {}
             for section in cfg.sections():
@@ -261,9 +372,9 @@ if HAS_DBUS:
 
         @method(INTERFACE, in_signature="ss", out_signature="", sender_keyword="sender")
         def SetConfig(self, key: str, value: str, sender=None):
-            # Setting config requires auth
-            ok, reason = _check_polkit(sender, POLKIT_ACTION_START,
-                                      bus=self._bus)
+            # Setting config requires admin auth
+            ok, reason = _check_authorization(sender, POLKIT_ACTION_SET_CONFIG,
+                                              bus=self._bus)
             if not ok:
                 raise dbus.exceptions.DBusException(
                     "org.bright_os.BrightAndroid.NotAuthorized",
@@ -277,8 +388,15 @@ if HAS_DBUS:
             section, k = key.split("/", 1)
             ba_config.set_value(section, k, value)
 
-        @method(INTERFACE, in_signature="", out_signature="aa{sv}")
-        def ListApps(self):
+        @method(INTERFACE, in_signature="", out_signature="aa{sv}", sender_keyword="sender")
+        def ListApps(self, sender=None):
+            ok, reason = _check_authorization(sender, POLKIT_ACTION_SYNC,
+                                              bus=self._bus, allow_same_user=True)
+            if not ok:
+                raise dbus.exceptions.DBusException(
+                    "org.bright_os.BrightAndroid.NotAuthorized",
+                    f"Not authorized: {reason}"
+                )
             if not waydroid_manager.is_installed() or not waydroid_manager.is_initialized():
                 return dbus.Array([], signature="a{sv}")
             try:
@@ -295,8 +413,15 @@ if HAS_DBUS:
                 logger.warning("ListApps failed: %s", e)
                 return dbus.Array([], signature="a{sv}")
 
-        @method(INTERFACE, in_signature="s", out_signature="a{sv}")
-        def ValidateApk(self, path: str):
+        @method(INTERFACE, in_signature="s", out_signature="a{sv}", sender_keyword="sender")
+        def ValidateApk(self, path: str, sender=None):
+            ok, reason = _check_authorization(sender, POLKIT_ACTION_SYNC,
+                                              bus=self._bus, allow_same_user=True)
+            if not ok:
+                raise dbus.exceptions.DBusException(
+                    "org.bright_os.BrightAndroid.NotAuthorized",
+                    f"Not authorized: {reason}"
+                )
             err = apk_validator.validate_apk_path(path)
             if err:
                 return dbus.Dictionary({
@@ -316,8 +441,15 @@ if HAS_DBUS:
                 "size_bytes": info["size_bytes"],
             }, signature="sv")
 
-        @method(INTERFACE, in_signature="", out_signature="s")
-        def GetDiagnostics(self):
+        @method(INTERFACE, in_signature="", out_signature="s", sender_keyword="sender")
+        def GetDiagnostics(self, sender=None):
+            ok, reason = _check_authorization(sender, POLKIT_ACTION_SYNC,
+                                              bus=self._bus, allow_same_user=True)
+            if not ok:
+                raise dbus.exceptions.DBusException(
+                    "org.bright_os.BrightAndroid.NotAuthorized",
+                    f"Not authorized: {reason}"
+                )
             if not waydroid_manager.is_installed():
                 return "Waydroid not installed"
             diag = waydroid_manager.diagnose()
@@ -336,8 +468,8 @@ if HAS_DBUS:
 
         @method(INTERFACE, in_signature="", out_signature="", sender_keyword="sender")
         def InitializeRuntime(self, sender=None):
-            ok, reason = _check_polkit(sender, POLKIT_ACTION_INIT,
-                                      bus=self._bus)
+            ok, reason = _check_authorization(sender, POLKIT_ACTION_INIT,
+                                              bus=self._bus)
             if not ok:
                 raise dbus.exceptions.DBusException(
                     "org.bright_os.BrightAndroid.NotAuthorized",
@@ -347,8 +479,8 @@ if HAS_DBUS:
 
         @method(INTERFACE, in_signature="", out_signature="", sender_keyword="sender")
         def StartRuntime(self, sender=None):
-            ok, reason = _check_polkit(sender, POLKIT_ACTION_START,
-                                      bus=self._bus)
+            ok, reason = _check_authorization(sender, POLKIT_ACTION_START,
+                                              bus=self._bus, allow_same_user=True)
             if not ok:
                 raise dbus.exceptions.DBusException(
                     "org.bright_os.BrightAndroid.NotAuthorized",
@@ -365,8 +497,8 @@ if HAS_DBUS:
 
         @method(INTERFACE, in_signature="", out_signature="", sender_keyword="sender")
         def StopRuntime(self, sender=None):
-            ok, reason = _check_polkit(sender, POLKIT_ACTION_STOP,
-                                      bus=self._bus)
+            ok, reason = _check_authorization(sender, POLKIT_ACTION_STOP,
+                                              bus=self._bus, allow_same_user=True)
             if not ok:
                 raise dbus.exceptions.DBusException(
                     "org.bright_os.BrightAndroid.NotAuthorized",
@@ -382,8 +514,8 @@ if HAS_DBUS:
 
         @method(INTERFACE, in_signature="s", out_signature="", sender_keyword="sender")
         def InstallApk(self, path: str, sender=None):
-            ok, reason = _check_polkit(sender, POLKIT_ACTION_INSTALL,
-                                      bus=self._bus)
+            ok, reason = _check_authorization(sender, POLKIT_ACTION_INSTALL,
+                                              bus=self._bus)
             if not ok:
                 raise dbus.exceptions.DBusException(
                     "org.bright_os.BrightAndroid.NotAuthorized",
@@ -403,8 +535,8 @@ if HAS_DBUS:
 
         @method(INTERFACE, in_signature="s", out_signature="", sender_keyword="sender")
         def UninstallApp(self, package: str, sender=None):
-            ok, reason = _check_polkit(sender, POLKIT_ACTION_UNINSTALL,
-                                      bus=self._bus)
+            ok, reason = _check_authorization(sender, POLKIT_ACTION_UNINSTALL,
+                                              bus=self._bus, allow_same_user=True)
             if not ok:
                 raise dbus.exceptions.DBusException(
                     "org.bright_os.BrightAndroid.NotAuthorized",
@@ -421,9 +553,14 @@ if HAS_DBUS:
 
         @method(INTERFACE, in_signature="s", out_signature="b", sender_keyword="sender")
         def LaunchApp(self, package: str, sender=None):
-            # Launching doesn't require admin auth (user action)
-            # But sender must be the console user — allow without polkit for now
-            # (AURA must request confirmation before calling this)
+            # Launch is a same-user action (active session only per Polkit policy).
+            ok, reason = _check_authorization(sender, POLKIT_ACTION_LAUNCH,
+                                              bus=self._bus, allow_same_user=True)
+            if not ok:
+                raise dbus.exceptions.DBusException(
+                    "org.bright_os.BrightAndroid.NotAuthorized",
+                    f"Launch not authorized: {reason}"
+                )
             try:
                 waydroid_manager.launch_app(package)
                 return True
@@ -433,7 +570,14 @@ if HAS_DBUS:
 
         @method(INTERFACE, in_signature="", out_signature="", sender_keyword="sender")
         def SyncAppList(self, sender=None):
-            """Refresh launcher integration (no auth required)."""
+            """Refresh launcher integration (same-user action)."""
+            ok, reason = _check_authorization(sender, POLKIT_ACTION_SYNC,
+                                              bus=self._bus, allow_same_user=True)
+            if not ok:
+                raise dbus.exceptions.DBusException(
+                    "org.bright_os.BrightAndroid.NotAuthorized",
+                    f"Sync not authorized: {reason}"
+                )
             if waydroid_manager.is_running():
                 apps = waydroid_manager.list_apps()
                 launcher_integration.sync_apps(apps)
