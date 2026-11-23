@@ -8,6 +8,22 @@
   <vendor_url>https://github.com/nozaqk/Bright-OS</vendor_url>
   <icon_name>bright-android</icon_name>
 
+  <!--
+    Authorization model (Phase 2.1):
+      - Admin actions (init, install-apk, set-config): auth_admin_keep
+        (admin password required; credential cached briefly).
+      - Destructive admin action (remove-data): auth_admin
+        (password required every time; no caching for data destruction).
+      - User session actions (start, stop, uninstall, launch, sync): allow_active=yes
+        (only the locally active console user; subject to same-UID check in
+         the service; Polkit allow_active is the belt-and-suspenders check
+         against sessions without an active console).
+      - Read-only methods (GetVersion, GetStatus, ListApps, etc.) enforce
+        same-UID in the service and do not consult Polkit (no action ID needed).
+      - NO action uses allow_any=yes (remote/non-local callers cannot authorize
+        without admin authentication).
+  -->
+
   <action id="org.bright_os.BrightAndroid.init">
     <description>Initialize Android runtime</description>
     <message>Authentication is required to download and set up the Android system image</message>
@@ -15,6 +31,36 @@
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
       <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.bright_os.BrightAndroid.install-apk">
+    <description>Install Android application</description>
+    <message>Authentication is required to install an APK</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.bright_os.BrightAndroid.set-config">
+    <description>Change Bright Android configuration</description>
+    <message>Authentication is required to change Android configuration</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin_keep</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.bright_os.BrightAndroid.remove-data">
+    <description>Remove all Android data</description>
+    <message>Authentication is required to delete all Android data (this is irreversible)</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>auth_admin</allow_active>
     </defaults>
   </action>
 
@@ -38,16 +84,6 @@
     </defaults>
   </action>
 
-  <action id="org.bright_os.BrightAndroid.install-apk">
-    <description>Install Android application</description>
-    <message>Authentication is required to install an APK</message>
-    <defaults>
-      <allow_any>auth_admin</allow_any>
-      <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin_keep</allow_active>
-    </defaults>
-  </action>
-
   <action id="org.bright_os.BrightAndroid.uninstall-app">
     <description>Uninstall Android application</description>
     <message>Authentication is required to uninstall an Android application</message>
@@ -58,13 +94,23 @@
     </defaults>
   </action>
 
-  <action id="org.bright_os.BrightAndroid.remove-data">
-    <description>Remove all Android data</description>
-    <message>Authentication is required to delete all Android data (this is irreversible)</message>
+  <action id="org.bright_os.BrightAndroid.launch-app">
+    <description>Launch Android application</description>
+    <message>Authentication is required to launch an Android application</message>
     <defaults>
       <allow_any>auth_admin</allow_any>
       <allow_inactive>auth_admin</allow_inactive>
-      <allow_active>auth_admin</allow_active>
+      <allow_active>yes</allow_active>
+    </defaults>
+  </action>
+
+  <action id="org.bright_os.BrightAndroid.sync-apps">
+    <description>Synchronize Android application launcher entries</description>
+    <message>Authentication is required to synchronize Android launcher entries</message>
+    <defaults>
+      <allow_any>auth_admin</allow_any>
+      <allow_inactive>auth_admin</allow_inactive>
+      <allow_active>yes</allow_active>
     </defaults>
   </action>
 

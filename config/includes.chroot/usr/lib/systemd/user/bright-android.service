@@ -14,11 +14,37 @@ RestartSec=5
 TimeoutStopSec=15
 Slice=app.slice
 
+# ---------------------------------------------------------------------------
 # Security hardening
-# NOTE: NoNewPrivileges is NOT set because this service legitimately
-# needs to call pkexec (setuid root) for privileged Waydroid operations.
-# Authorization is enforced by Polkit policies which require admin
-# authentication for destructive actions (init, install-apk, remove-data).
+# ---------------------------------------------------------------------------
+# NOTE: NoNewPrivileges is intentionally NOT set.
+#
+# The bright-android service needs to call pkexec (a setuid-root binary) to
+# perform privileged Waydroid operations (init, container setup, APK install).
+# Turning on NoNewPrivileges would block all setuid execution from within the
+# service process, which prevents pkexec from elevating privileges and
+# breaks all privileged operations.
+#
+# Security trade-off:
+#   - Authorization is enforced by Polkit policies (admin password required
+#     for init/install-apk/remove-data/set-config; allow_active=yes for
+#     start/stop/launch/sync/uninstall which only active console users can
+#     invoke).
+#   - All D-Bus methods validate caller UID against the service UID via
+#     get_connection_unix_process_id/get_connection_unix_user; other local
+#     users cannot call into this service even if they obtain a session-bus
+#     connection.
+#   - Other sandboxing directives below are retained to limit damage from
+#     a compromise (read-only /usr and /home, private /tmp, no kernel
+#     modification, no new namespaces, locked personality, native syscalls
+#     only).
+#   - RestrictSUIDSGID is explicitly set to no so pkexec can execute.
+#
+# Future improvement: move privileged waydroid operations into a dedicated
+# pkexec helper (/usr/lib/bright-android/bright-android-pkexec) with a narrow
+# Polkit action, at which point NoNewPrivileges can be turned back on. This
+# is tracked as a follow-up hardening task.
+# ---------------------------------------------------------------------------
 ProtectSystem=strict
 ProtectHome=read-only
 PrivateTmp=yes
@@ -26,13 +52,19 @@ ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectControlGroups=yes
 RestrictSUIDSGID=no
-# Allow access to paths waydroid needs (service + pkexec'd children share
-# the mount namespace, so these must be writable):
-#   - /etc/waydroid     : waydroid.cfg written by `waydroid init`
-#   - /var/lib/waydroid : Android images and data
-#   - ~/.config/...     : user config
-#   - ~/.local/...      : .desktop launcher entries
-#   - ~/.cache/...      : icon cache
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=no
+SystemCallArchitectures=native
+
+# Writable paths needed by the service and its pkexec'd children
+# (which share the mount namespace due to not being a separate exec-domain):
+#   - /etc/waydroid        : waydroid.cfg written by `waydroid init`
+#   - /var/lib/waydroid    : Android images and data
+#   - ~/.config/...        : user config
+#   - ~/.local/...         : .desktop launcher entries
+#   - ~/.cache/...         : icon cache
 ReadWritePaths=/etc/waydroid /var/lib/waydroid
 ReadWritePaths=%h/.config/bright-android %h/.local/share/applications %h/.cache/bright-android
 

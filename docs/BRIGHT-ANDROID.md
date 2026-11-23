@@ -168,9 +168,54 @@ Some applications require full-screen mode (games, video players) and will use t
 
 - Android runs inside an LXC container managed by Waydroid
 - Android applications do NOT run as root on the host
-- Privileged operations (initialization, APK installation, data removal) use Polkit for authorization
+- **D-Bus authorization (fail-closed, Phase 2.1):**
+  - The service no longer trusts session-bus callers implicitly. Every D-Bus
+    method obtains the caller's PID and UID via the correct dbus-python API
+    (`get_connection_unix_process_id` / `get_connection_unix_user`) and
+    validates them.
+  - If sender identity cannot be determined, the call is denied (fail closed).
+  - Callers must be the same UID as the service user, or root. Other local
+    user accounts cannot control the current user's Android environment even
+    if they connect to the session bus.
+  - Root callers are always authorized.
+  - Same-user callers are authorized for read-only and user-session actions
+    (status, list apps, launch, sync, start, stop, uninstall) without Polkit
+    prompts.
+  - Privileged actions (Initialize, InstallApk, RemoveData, SetConfig) require
+    Polkit authorization. If Polkit is unavailable and the caller is not root,
+    the call fails closed.
+- **Polkit action matrix:**
+  | Action | Auth required | Active session user |
+  |---|---|---|
+  | `org.bright_os.BrightAndroid.init` | admin (auth_admin_keep) | — |
+  | `org.bright_os.BrightAndroid.install-apk` | admin (auth_admin_keep) | — |
+  | `org.bright_os.BrightAndroid.remove-data` | admin (auth_admin) | — |
+  | `org.bright_os.BrightAndroid.set-config` | admin (auth_admin_keep) | — |
+  | `org.bright_os.BrightAndroid.start` | — | yes |
+  | `org.bright_os.BrightAndroid.stop` | — | yes |
+  | `org.bright_os.BrightAndroid.uninstall-app` | — | yes |
+  | `org.bright_os.BrightAndroid.launch-app` | — | yes |
+  | `org.bright_os.BrightAndroid.sync-apps` | — | yes |
+  - No action grants `allow_any=yes` (remote unauthenticated callers are never
+    authorized); read-only methods enforce same-UID only.
+- **Authentication is independent of confirmation:** AURA may additionally
+  ask the user to confirm destructive actions (init, install, remove-data).
+  The service enforces Polkit authorization regardless of whether the caller
+  is AURA, the GUI, or another D-Bus client; there is no bypass.
+- **systemd service hardening:** The user service runs with
+  `ProtectSystem=strict`, `ProtectHome=read-only`, `PrivateTmp=yes`,
+  `ProtectKernelTunables=yes`, `ProtectKernelModules=yes`,
+  `ProtectControlGroups=yes`, `RestrictNamespaces=yes`,
+  `RestrictRealtime=yes`, `LockPersonality=yes`,
+  `SystemCallArchitectures=native`, and restricted `ReadWritePaths`.
+  `NoNewPrivileges` is intentionally NOT enabled because `pkexec` (a
+  setuid-root binary) must be callable; this trade-off is documented in the
+  unit file and a future narrow pkexec helper is planned so
+  `NoNewPrivileges` can be re-enabled. `RestrictSUIDSGID=no` is set to
+  allow pkexec.
 - APK path validation prevents path traversal
-- Subprocess calls use argument lists (no shell string construction)
+- Subprocess calls use argument lists (no shell string construction);
+  `shell=True` is never used
 - Credentials are not stored; Google account integration is not pre-configured
 - Shared folders are opt-in (Downloads by default; others must be explicitly enabled)
 
