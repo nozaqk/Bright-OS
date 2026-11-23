@@ -137,16 +137,33 @@ def _check_authorization(sender, action_id: str, bus=None,
                          allow_same_user: bool = False) -> tuple:
     """Authorize a D-Bus method call.
 
-    Authorization model:
+    Authorization model (Phase 2.2):
       0. In-process calls (no bus, or HAS_DBUS=False): allow (trusted path).
+         Not reachable from a remote D-Bus peer.
       1. Credentials must be obtainable (PID/UID) → fail closed otherwise.
-      2. Caller must be the same user as the service (or root). Other local
-         accounts must NOT be able to control the current user's Android
-         environment, even if they can somehow connect to the session bus.
-      3. Root is always authorized.
-      4. If allow_same_user is True and the caller is the same user, allow
-         without Polkit (for low-risk user actions).
-      5. Otherwise query Polkit. If Polkit is unavailable, fail closed.
+      2. Root is always authorized.
+      3. Same-UID check: caller UID must match service UID. Other local
+         accounts cannot control this user's Android environment even if
+         they can reach the session bus.
+      4. For read-only methods (allow_same_user=True, no action_id needed):
+         allow the same user without consulting Polkit.
+      5. For state-changing methods (allow_same_user=False, the default):
+         - Consult Polkit. For actions with allow_active=yes (start/stop/
+           launch/sync/uninstall), Polkit automatically authorizes callers
+           in the active local console session without prompting, but
+           denies or challenges callers from inactive sessions (e.g. SSH).
+           For admin actions (init/install-apk/remove-data/set-config),
+           Polkit requires admin authentication.
+         - If Polkit is unavailable (polkitd unreachable, no agent):
+             * PRIVILEGED admin actions: FAIL CLOSED. These are destructive
+               (init, install-apk, remove-data, set-config) and must not run
+               without verified authorization.
+             * USER session actions (start/stop/uninstall/launch/sync):
+               allow the same user. These are user-scoped actions that
+               control the caller's own session; a broken Polkit must not
+               lock the user out of their own Android environment. This
+               fallback only applies when uid == SERVICE_UID; other UIDs
+               are already denied at step 3.
 
     Args:
         sender: D-Bus sender bus name (provided by dbus-python via
@@ -154,7 +171,9 @@ def _check_authorization(sender, action_id: str, bus=None,
         action_id: Polkit action ID (one of the POLKIT_ACTION_* constants).
         bus: D-Bus connection object (self._bus inside the service class).
         allow_same_user: If True, same-user callers are authorized without
-            Polkit consultation. Use for read-only and user-session actions.
+            Polkit consultation. Use ONLY for read-only methods that do
+            not change any state. State-changing methods must pass False
+            so Polkit can verify active-session status.
     Returns:
         (allowed: bool, reason: str)
     """
@@ -182,16 +201,39 @@ def _check_authorization(sender, action_id: str, bus=None,
             "other users cannot control this Android session"
         )
 
-    # If same-user is sufficient for this action, allow without Polkit
+    # Read-only methods: same-user is sufficient. Do not consult Polkit
+    # (no state change; no active-session concern).
     if allow_same_user:
         return True, "same-user authorized"
 
-    # For actions requiring Polkit, query the authority
+    # Determine whether this is a privileged (admin) action or a user-session
+    # action. Admin actions always require Polkit and fail closed when Polkit
+    # is unavailable. User-session actions fall back to same-user allow when
+    # Polkit is unreachable (don't brick the user's own session).
+    admin_actions = {
+        POLKIT_ACTION_INIT,
+        POLKIT_ACTION_INSTALL,
+        POLKIT_ACTION_REMOVE_DATA,
+        POLKIT_ACTION_SET_CONFIG,
+    }
+    is_admin_action = action_id in admin_actions
+
+    # For state-changing actions, query Polkit
     if not HAS_POLKIT:
-        return False, (
-            "Polkit is unavailable; cannot verify authorization for "
-            f"{action_id}. Only root may perform this action."
-        )
+        if is_admin_action:
+            return False, (
+                "Polkit is unavailable; cannot verify authorization for "
+                f"{action_id}. Only root may perform this action."
+            )
+        else:
+            # User-session action: same-user fallback. Log a warning so the
+            # administrator can notice the Polkit outage.
+            logger.warning(
+                "Polkit unavailable; allowing same-user session action %s "
+                "(uid=%d) because this is a non-destructive user-session action.",
+                action_id, uid,
+            )
+            return True, "same-user authorized (Polkit unavailable, user session action)"
 
     try:
         authority = Polkit.Authority.get_sync(None)
@@ -214,7 +256,15 @@ def _check_authorization(sender, action_id: str, bus=None,
             "Polkit check failed for action=%s pid=%d uid=%d: %s",
             action_id, pid, uid, e,
         )
-        return False, f"polkit error: {e}"
+        if is_admin_action:
+            return False, f"polkit error: {e}"
+        else:
+            # Same fallback as Polkit-unavailable for user-session actions.
+            logger.warning(
+                "Polkit error; allowing same-user session action %s.",
+                action_id,
+            )
+            return True, "same-user authorized (Polkit error, user session action)"
 
 
 # Backwards-compatible alias (old name); prefer _check_authorization in new code.
@@ -479,8 +529,10 @@ if HAS_DBUS:
 
         @method(INTERFACE, in_signature="", out_signature="", sender_keyword="sender")
         def StartRuntime(self, sender=None):
+            # Session action: Polkit enforces active-session (allow_active=yes
+            # auto-allows local console; SSH/inactive sessions are challenged).
             ok, reason = _check_authorization(sender, POLKIT_ACTION_START,
-                                              bus=self._bus, allow_same_user=True)
+                                              bus=self._bus)
             if not ok:
                 raise dbus.exceptions.DBusException(
                     "org.bright_os.BrightAndroid.NotAuthorized",
@@ -497,8 +549,9 @@ if HAS_DBUS:
 
         @method(INTERFACE, in_signature="", out_signature="", sender_keyword="sender")
         def StopRuntime(self, sender=None):
+            # Session action: consult Polkit for active-session verification.
             ok, reason = _check_authorization(sender, POLKIT_ACTION_STOP,
-                                              bus=self._bus, allow_same_user=True)
+                                              bus=self._bus)
             if not ok:
                 raise dbus.exceptions.DBusException(
                     "org.bright_os.BrightAndroid.NotAuthorized",
@@ -535,8 +588,9 @@ if HAS_DBUS:
 
         @method(INTERFACE, in_signature="s", out_signature="", sender_keyword="sender")
         def UninstallApp(self, package: str, sender=None):
+            # Session action: consult Polkit for active-session verification.
             ok, reason = _check_authorization(sender, POLKIT_ACTION_UNINSTALL,
-                                              bus=self._bus, allow_same_user=True)
+                                              bus=self._bus)
             if not ok:
                 raise dbus.exceptions.DBusException(
                     "org.bright_os.BrightAndroid.NotAuthorized",
@@ -553,9 +607,10 @@ if HAS_DBUS:
 
         @method(INTERFACE, in_signature="s", out_signature="b", sender_keyword="sender")
         def LaunchApp(self, package: str, sender=None):
-            # Launch is a same-user action (active session only per Polkit policy).
+            # Session action: Polkit's allow_active=yes auto-authorizes active
+            # console sessions without prompting.
             ok, reason = _check_authorization(sender, POLKIT_ACTION_LAUNCH,
-                                              bus=self._bus, allow_same_user=True)
+                                              bus=self._bus)
             if not ok:
                 raise dbus.exceptions.DBusException(
                     "org.bright_os.BrightAndroid.NotAuthorized",
@@ -570,9 +625,9 @@ if HAS_DBUS:
 
         @method(INTERFACE, in_signature="", out_signature="", sender_keyword="sender")
         def SyncAppList(self, sender=None):
-            """Refresh launcher integration (same-user action)."""
+            """Refresh launcher integration (session action; Polkit verifies active)."""
             ok, reason = _check_authorization(sender, POLKIT_ACTION_SYNC,
-                                              bus=self._bus, allow_same_user=True)
+                                              bus=self._bus)
             if not ok:
                 raise dbus.exceptions.DBusException(
                     "org.bright_os.BrightAndroid.NotAuthorized",

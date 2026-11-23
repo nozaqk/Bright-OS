@@ -168,8 +168,8 @@ Some applications require full-screen mode (games, video players) and will use t
 
 - Android runs inside an LXC container managed by Waydroid
 - Android applications do NOT run as root on the host
-- **D-Bus authorization (fail-closed, Phase 2.1):**
-  - The service no longer trusts session-bus callers implicitly. Every D-Bus
+- **D-Bus authorization (fail-closed, Phase 2.2):**
+  - The service never trusts session-bus callers implicitly. Every D-Bus
     method obtains the caller's PID and UID via the correct dbus-python API
     (`get_connection_unix_process_id` / `get_connection_unix_user`) and
     validates them.
@@ -178,41 +178,59 @@ Some applications require full-screen mode (games, video players) and will use t
     user accounts cannot control the current user's Android environment even
     if they connect to the session bus.
   - Root callers are always authorized.
-  - Same-user callers are authorized for read-only and user-session actions
-    (status, list apps, launch, sync, start, stop, uninstall) without Polkit
-    prompts.
-  - Privileged actions (Initialize, InstallApk, RemoveData, SetConfig) require
-    Polkit authorization. If Polkit is unavailable and the caller is not root,
-    the call fails closed.
+  - **Three authorization tiers:**
+    - **Read-only** (GetVersion, GetStatus, GetConfig, ListApps, ValidateApk,
+      GetDiagnostics, GetCompatibilityReport): same-UID only, no Polkit
+      consultation (no state is changed).
+    - **User session actions** (Start, Stop, Uninstall, Launch, Sync): Polkit
+      IS consulted. The Polkit policy's `allow_active=yes` automatically
+      authorizes callers in the active local console session WITHOUT
+      prompting, but callers from inactive sessions (e.g. SSH connections
+      with a leaked DBUS_SESSION_BUS_ADDRESS) are challenged or denied. If
+      Polkit is unreachable, same-user session actions fall back to allow
+      (broken Polkit must not lock the user out of their own session); other
+      UIDs are already denied by the same-UID check.
+    - **Privileged admin actions** (Initialize, InstallApk, RemoveData,
+      SetConfig): Polkit is always consulted. `auth_admin_keep` for
+      init/install/set-config; `auth_admin` for remove-data (no credential
+      caching for destructive data wipe). If Polkit is unavailable these
+      FAIL CLOSED even for the same user.
 - **Polkit action matrix:**
-  | Action | Auth required | Active session user |
-  |---|---|---|
-  | `org.bright_os.BrightAndroid.init` | admin (auth_admin_keep) | — |
-  | `org.bright_os.BrightAndroid.install-apk` | admin (auth_admin_keep) | — |
-  | `org.bright_os.BrightAndroid.remove-data` | admin (auth_admin) | — |
-  | `org.bright_os.BrightAndroid.set-config` | admin (auth_admin_keep) | — |
-  | `org.bright_os.BrightAndroid.start` | — | yes |
-  | `org.bright_os.BrightAndroid.stop` | — | yes |
-  | `org.bright_os.BrightAndroid.uninstall-app` | — | yes |
-  | `org.bright_os.BrightAndroid.launch-app` | — | yes |
-  | `org.bright_os.BrightAndroid.sync-apps` | — | yes |
+  | Action | Tier | Active session | Inactive/remote | Polkit unavailable |
+  |---|---|---|---|---|
+  | `init` | admin | auth_admin_keep | auth_admin | deny |
+  | `install-apk` | admin | auth_admin_keep | auth_admin | deny |
+  | `remove-data` | admin | auth_admin | auth_admin | deny |
+  | `set-config` | admin | auth_admin_keep | auth_admin | deny |
+  | `start` | session | yes (auto) | auth_admin | allow same-user |
+  | `stop` | session | yes (auto) | auth_admin | allow same-user |
+  | `uninstall-app` | session | yes (auto) | auth_admin | allow same-user |
+  | `launch-app` | session | yes (auto) | auth_admin | allow same-user |
+  | `sync-apps` | session | yes (auto) | auth_admin | allow same-user |
   - No action grants `allow_any=yes` (remote unauthenticated callers are never
-    authorized); read-only methods enforce same-UID only.
+    authorized without admin auth).
 - **Authentication is independent of confirmation:** AURA may additionally
   ask the user to confirm destructive actions (init, install, remove-data).
   The service enforces Polkit authorization regardless of whether the caller
   is AURA, the GUI, or another D-Bus client; there is no bypass.
-- **systemd service hardening:** The user service runs with
-  `ProtectSystem=strict`, `ProtectHome=read-only`, `PrivateTmp=yes`,
-  `ProtectKernelTunables=yes`, `ProtectKernelModules=yes`,
-  `ProtectControlGroups=yes`, `RestrictNamespaces=yes`,
-  `RestrictRealtime=yes`, `LockPersonality=yes`,
-  `SystemCallArchitectures=native`, and restricted `ReadWritePaths`.
-  `NoNewPrivileges` is intentionally NOT enabled because `pkexec` (a
-  setuid-root binary) must be callable; this trade-off is documented in the
-  unit file and a future narrow pkexec helper is planned so
-  `NoNewPrivileges` can be re-enabled. `RestrictSUIDSGID=no` is set to
-  allow pkexec.
+- **systemd service hardening (Phase 2.2, LXC-compatible):**
+  - **Retained (compatible with Waydroid/LXC):** `ProtectSystem=strict`,
+    `ProtectHome=read-only`, `PrivateTmp=yes`, `ProtectKernelModules=yes`,
+    `RestrictRealtime=yes`, `LockPersonality=yes`,
+    `SystemCallArchitectures=native`, `MemoryDenyWriteExecute=no`, with
+    explicit `ReadWritePaths` for /var/lib/waydroid, /etc/waydroid, /var/log,
+    /run/waydroid, and per-user config/cache/data/launcher dirs.
+  - **Removed (would block LXC):** `RestrictNamespaces=yes` (LXC needs to
+    create mount/PID/UTS/IPC/net/cgroup namespaces); `ProtectControlGroups=yes`
+    (LXC writes cgroup files); `ProtectKernelTunables=yes` (LXC may set
+    container networking sysctls). Each removal is documented in the unit
+    file with rationale and future re-enablement plan.
+  - `RestrictSUIDSGID=no` is required for pkexec (setuid).
+  - `NoNewPrivileges` is intentionally NOT set because pkexec (a
+    setuid-root binary) must be callable; this trade-off is documented in the
+    unit file and a future narrow pkexec helper is planned so
+    `NoNewPrivileges` and the namespace/cgroup/tunables restrictions can be
+    re-enabled.
 - APK path validation prevents path traversal
 - Subprocess calls use argument lists (no shell string construction);
   `shell=True` is never used

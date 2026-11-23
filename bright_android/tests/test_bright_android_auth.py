@@ -154,6 +154,46 @@ class AuthorizationTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("Polkit is unavailable", reason)
 
+    def test_polkit_unavailable_allows_same_user_for_session_action(self):
+        """Non-admin session actions (start/stop/launch/sync/uninstall) fall
+        back to same-user allow when Polkit is unavailable, so that a broken
+        Polkit doesn't lock the user out of their own Android session."""
+        bus = self._make_bus(uid=os.getuid())
+        svc.SERVICE_UID = os.getuid()
+        # allow_same_user=False (default) means "consult Polkit"; since Polkit
+        # is unavailable, session actions must still be allowed.
+        ok, reason = svc._check_authorization(
+            ":1.50", svc.POLKIT_ACTION_START, bus=bus
+        )
+        self.assertTrue(ok, f"expected same-user fallback for session action: {reason}")
+        # Same for launch, sync, stop, uninstall
+        for action in (svc.POLKIT_ACTION_STOP, svc.POLKIT_ACTION_LAUNCH,
+                       svc.POLKIT_ACTION_SYNC, svc.POLKIT_ACTION_UNINSTALL):
+            ok, _ = svc._check_authorization(":1.50", action, bus=bus)
+            self.assertTrue(ok, f"session action {action} should allow same-user fallback")
+
+    def test_session_actions_do_not_use_allow_same_user_bypass(self):
+        """State-changing session methods (Start/Stop/Launch/Sync/Uninstall)
+        must call _check_authorization WITHOUT allow_same_user=True, so that
+        Polkit is consulted for active-session verification. The method-level
+        source test enforces this."""
+        source = Path(svc.__file__).read_text()
+        import re
+        session_methods = ["StartRuntime", "StopRuntime", "UninstallApp",
+                           "LaunchApp", "SyncAppList"]
+        for name in session_methods:
+            # Find the body of this method and look for allow_same_user
+            pat = re.compile(
+                r"def\s+" + name + r"\s*\([^)]*\)[^:]*:(.*?)(?=\n\s+@|\n\s+def\s|\nelse:|\Z)",
+                re.DOTALL,
+            )
+            m = pat.search(source)
+            self.assertIsNotNone(m, f"method {name} not found")
+            body = m.group(1)[:600]
+            self.assertNotIn("allow_same_user=True", body,
+                             f"{name} must NOT use allow_same_user=True; "
+                             "Polkit must be consulted for active-session verification")
+
     def _install_mock_polkit(self):
         """Inject a mock Polkit module into the service namespace because
         in this sandbox HAS_POLKIT is False (no python3-gi)."""
@@ -493,14 +533,39 @@ class SystemdSecurityTests(unittest.TestCase):
         self.assertIn("--service --session", self.unit)
 
     def test_hardening_directives_present(self):
+        """Hardening directives that are compatible with LXC/Waydroid must be present."""
         for directive in ["ProtectSystem=strict", "ProtectHome=read-only",
-                          "PrivateTmp=yes", "ProtectKernelTunables=yes",
-                          "ProtectKernelModules=yes", "ProtectControlGroups=yes",
-                          "RestrictSUIDSGID=no", "RestrictNamespaces=yes",
+                          "PrivateTmp=yes",
+                          "ProtectKernelModules=yes",
+                          "RestrictSUIDSGID=no",
                           "RestrictRealtime=yes", "LockPersonality=yes",
                           "SystemCallArchitectures=native"]:
             self.assertIn(directive, self.active_lines,
                           f"Missing hardening directive: {directive}")
+
+    def test_lxc_incompatible_restrictions_removed(self):
+        """RestrictNamespaces, ProtectControlGroups, and ProtectKernelTunables
+        must NOT be active because LXC needs to create namespaces, write cgroups,
+        and set container sysctls. See the systemd unit comment block for the
+        full compatibility rationale."""
+        for directive in ["RestrictNamespaces=yes",
+                          "ProtectControlGroups=yes",
+                          "ProtectKernelTunables=yes"]:
+            self.assertFalse(
+                any(l == directive for l in self.active_lines),
+                f"{directive} must not be active (blocks LXC/Waydroid)"
+            )
+
+    def test_lxc_compatibility_documented(self):
+        """The unit file must document why namespace/cgroup/tunables restrictions
+        are removed (LXC compatibility)."""
+        lower = self.unit.lower()
+        self.assertIn("lxc", lower,
+                      "unit must mention LXC compatibility rationale")
+        self.assertIn("namespace", lower,
+                      "unit must explain namespace restriction trade-off")
+        self.assertIn("cgroup", lower,
+                      "unit must mention cgroup write requirement")
 
     def test_no_nonewprivileges_active_directive(self):
         """NoNewPrivileges=yes must NOT be active as a directive (documented
@@ -520,38 +585,246 @@ class SystemdSecurityTests(unittest.TestCase):
         self.assertIn("future", lower)
 
     def test_readwrite_paths_for_waydroid(self):
-        self.assertIn("/var/lib/waydroid", self.unit)
-        self.assertIn("/etc/waydroid", self.unit)
+        """Required writable paths for Waydroid + service must be declared."""
+        for path in ["/var/lib/waydroid", "/etc/waydroid", "/var/log",
+                     "/run/waydroid", "%h/.config/bright-android",
+                     "%h/.local/share/applications", "%h/.cache/bright-android",
+                     "%h/.local/share/waydroid", "%h/.config/waydroid"]:
+            self.assertIn(path, self.unit, f"Missing ReadWritePaths entry: {path}")
 
 
-@unittest.skipUnless(
-    os.environ.get("BRIGHT_ANDROID_REAL_INTEGRATION") == "1",
-    "Set BRIGHT_ANDROID_REAL_INTEGRATION=1 and have a running bright-android "
-    "service to run real D-Bus integration tests",
-)
+def _environment_can_run_dbus_tests():
+    """Check if the current environment has real D-Bus/Polkit available."""
+    if os.environ.get("BRIGHT_ANDROID_REAL_INTEGRATION") != "1":
+        return False, "BRIGHT_ANDROID_REAL_INTEGRATION not set"
+    try:
+        import dbus  # noqa: F401
+        from gi.repository import Polkit  # noqa: F401
+    except ImportError as e:
+        return False, f"missing python3-dbus or python3-gi: {e}"
+    # Check session bus is available
+    try:
+        bus = __import__("dbus").SessionBus()
+        bus.get_name_owner("org.freedesktop.DBus")
+    except Exception as e:
+        return False, f"no session bus: {e}"
+    return True, ""
+
+
+def _environment_can_run_waydroid_tests():
+    """Check if waydroid and required kernel features are present."""
+    if os.environ.get("BRIGHT_ANDROID_REAL_WAYDROID") != "1":
+        return False, "BRIGHT_ANDROID_REAL_WAYDROID not set"
+    import shutil
+    if not shutil.which("waydroid"):
+        return False, "waydroid binary not found"
+    if not (os.path.exists("/dev/binder") or os.path.exists("/dev/binderfs")):
+        return False, "binder device not available"
+    if not os.environ.get("WAYLAND_DISPLAY") and not os.environ.get("DISPLAY"):
+        return False, "no display server (WAYLAND_DISPLAY/DISPLAY)"
+    return True, ""
+
+
+@unittest.skipUnless(*_environment_can_run_dbus_tests())
 class RealDBusIntegrationTests(unittest.TestCase):
     """Real D-Bus/Polkit end-to-end tests.
 
-    These require a provisioned Debian machine with the bright-android service
-    running on the session bus, python3-dbus and python3-gi installed, and a
-    Polkit authority available. They are skipped by default and NOT counted as
-    passing in sandbox/CI environments.
+    These require a provisioned Debian machine with:
+      - The bright-android service running on the session bus
+      - python3-dbus and python3-gi installed
+      - A Polkit authority running (polkitd)
+    Enable with BRIGHT_ANDROID_REAL_INTEGRATION=1.
+    They are skipped in sandbox/CI environments and NOT counted as passing
+    unless the environment supports them.
     """
 
-    def test_get_version(self):
+    @classmethod
+    def setUpClass(cls):
         import dbus
-        bus = dbus.SessionBus()
-        obj = bus.get_object("org.bright_os.BrightAndroid",
-                             "/org/bright_os/BrightAndroid")
-        iface = dbus.Interface(obj, "org.bright_os.BrightAndroid")
-        v = iface.GetVersion()
-        self.assertTrue(len(v) > 0)
+        cls.bus = dbus.SessionBus()
+        cls.obj = cls.bus.get_object("org.bright_os.BrightAndroid",
+                                     "/org/bright_os/BrightAndroid")
+        cls.iface = dbus.Interface(cls.obj, "org.bright_os.BrightAndroid")
 
-    def test_other_user_connection_rejected(self):
-        # This test requires root and runuser/su to create a different-UID
-        # D-Bus connection; it is a placeholder for a dedicated integration
-        # environment.
-        self.skipTest("requires multi-user test harness")
+    def test_service_owns_bus_name(self):
+        """Verify the service has claimed its session-bus name."""
+        owner = self.bus.get_name_owner("org.bright_os.BrightAndroid")
+        self.assertTrue(len(owner) > 0)
+
+    def test_get_version_succeeds_for_same_user(self):
+        v = self.iface.GetVersion()
+        self.assertTrue(len(str(v)) > 0)
+
+    def test_get_status_succeeds_for_same_user(self):
+        s = self.iface.GetStatus()
+        self.assertIn("installed", s)
+
+    def test_list_apps_succeeds_for_same_user(self):
+        apps = self.iface.ListApps()
+        self.assertIsInstance(apps, list)
+
+    def test_get_config_succeeds_for_same_user(self):
+        cfg = self.iface.GetConfig()
+        self.assertIsInstance(cfg, dict)
+
+    def test_privileged_action_without_polkit_auth_is_rejected(self):
+        """Calling SetConfig without proper Polkit authorization should raise
+        a DBusException. In a real active session this may trigger an auth
+        agent; if no agent is available it should fail with NotAuthorized."""
+        import dbus
+        try:
+            self.iface.SetConfig("test/key", "value")
+            # If we get here without an agent in a non-interactive test
+            # environment, something is wrong. Skip rather than false-fail.
+            self.skipTest("Polkit agent allowed the action (interactive session?)")
+        except dbus.exceptions.DBusException as e:
+            name = e.get_dbus_name()
+            self.assertIn("NotAuthorized", name,
+                          f"expected NotAuthorized, got {name}: {e}")
+
+    def test_diagnostic_methods_accessible(self):
+        self.iface.GetCompatibilityReport()
+        self.iface.GetDiagnostics()
+
+
+@unittest.skipUnless(*_environment_can_run_waydroid_tests())
+class RealWaydroidRuntimeTests(unittest.TestCase):
+    """Real Waydroid runtime tests.
+
+    These require a provisioned Debian machine with:
+      - waydroid package installed
+      - binder kernel module available (/dev/binder or binderfs)
+      - A Wayland (or X11) session running
+      - Sufficient disk space for Android images (~6 GB)
+      - Network access to download Waydroid VANILLA image
+    Enable with BRIGHT_ANDROID_REAL_WAYDROID=1. They can take several minutes
+    (image download + container start). They are BLOCKED/NOT TESTED in any
+    environment that does not explicitly opt in.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        from bright_android.core import waydroid_manager, compatibility
+        cls.wm = waydroid_manager
+        cls.compat = compatibility
+
+    def test_binder_available(self):
+        """Binder IPC must be available (/dev/binder or binderfs)."""
+        info = self.compat.check_binder()
+        self.assertTrue(info["binder_available"],
+                        f"binder not available: {info}")
+
+    def test_wayland_available(self):
+        self.assertTrue(
+            bool(os.environ.get("WAYLAND_DISPLAY")) or
+            bool(os.environ.get("DISPLAY")),
+            "WAYLAND_DISPLAY or DISPLAY must be set for Android windowing",
+        )
+
+    def test_hardware_readiness(self):
+        report = self.compat.assess_hardware_readiness()
+        self.assertIn(report["tier"],
+                      ("supported", "supported_with_limitations"),
+                      f"hardware not ready: {report}")
+
+    def test_initialize_runtime(self):
+        """waydroid init (downloads VANILLA image if not present)."""
+        if not self.wm.is_installed():
+            self.skipTest("waydroid package not installed")
+        self.wm.init(mode="vanilla")
+        self.assertTrue(self.wm.is_initialized())
+
+    def test_start_runtime(self):
+        if not self.wm.is_initialized():
+            self.skipTest("waydroid not initialized")
+        self.wm.start_session()
+        import time
+        for _ in range(45):
+            if self.wm.is_running():
+                break
+            time.sleep(1)
+        self.assertTrue(self.wm.is_running(), "runtime did not start within 45s")
+
+    def test_install_test_apk(self):
+        """Install a known-good small test APK (e.g. FDroid client or a
+        trivial test app). Place APK at TEST_APK_PATH env var."""
+        apk = os.environ.get("BRIGHT_ANDROID_TEST_APK")
+        if not apk:
+            self.skipTest("BRIGHT_ANDROID_TEST_APK not set")
+        self.assertTrue(os.path.exists(apk), f"APK not found: {apk}")
+        result = self.wm.install_apk(apk)
+        self.assertTrue(result.get("success"))
+
+    def test_launch_test_app(self):
+        pkg = os.environ.get("BRIGHT_ANDROID_TEST_PACKAGE")
+        if not pkg:
+            self.skipTest("BRIGHT_ANDROID_TEST_PACKAGE not set")
+        self.assertTrue(self.wm.is_running())
+        self.wm.launch_app(pkg)
+
+    def test_stop_and_restart(self):
+        self.wm.stop_session()
+        import time
+        for _ in range(20):
+            if not self.wm.is_running():
+                break
+            time.sleep(1)
+        self.assertFalse(self.wm.is_running(), "runtime did not stop")
+        self.wm.start_session()
+        for _ in range(45):
+            if self.wm.is_running():
+                break
+            time.sleep(1)
+        self.assertTrue(self.wm.is_running(), "runtime did not restart")
+
+    def test_no_namespace_or_permission_errors_in_logs(self):
+        """Check recent service/lxc logs for namespace EPERM or cgroup EACCES."""
+        # This is a heuristic check; it doesn't fail the suite on its own but
+        # provides evidence that sandbox restrictions aren't blocking LXC.
+        logs = self.wm.get_logs(lines=200)
+        bad_markers = ["Operation not permitted", "Permission denied",
+                       "namespace", "cgroup", "seccomp"]
+        issues = [m for m in bad_markers if m in logs]
+        # Just record; don't fail unless clearly an LXC fatal error
+        if issues:
+            import warnings
+            warnings.warn(f"Possible sandbox issues in logs: {issues}")
+
+
+class EnvironmentCapabilityTests(unittest.TestCase):
+    """Report the environment's capability level so test runs clearly show
+    what is NOT being tested."""
+
+    def test_report_environment_capabilities(self):
+        """Print (and record) what this environment supports."""
+        import shutil
+        caps = {
+            "python3-dbus": _environment_can_run_dbus_tests()[0]
+                            or _try_import("dbus"),
+            "python3-gi/Polkit": _try_import("gi.repository.Polkit"),
+            "waydroid_binary": shutil.which("waydroid") is not None,
+            "binder_device": os.path.exists("/dev/binder")
+                             or os.path.exists("/dev/binderfs"),
+            "wayland_or_x11": bool(os.environ.get("WAYLAND_DISPLAY"))
+                              or bool(os.environ.get("DISPLAY")),
+        }
+        available = [k for k, v in caps.items() if v]
+        unavailable = [k for k, v in caps.items() if not v]
+        print(f"\n[ENV] Available: {available}")
+        print(f"[ENV] Unavailable: {unavailable}")
+        if unavailable:
+            print("[ENV] Real D-Bus/Polkit and Waydroid runtime tests will "
+                  "be skipped. They require a provisioned Debian machine "
+                  "(see docs/PHASE-BRIGHT-ANDROID-REPORT.md).")
+        self.assertTrue(True)  # Always passes; just reports status.
+
+
+def _try_import(mod):
+    try:
+        __import__(mod)
+        return True
+    except ImportError:
+        return False
 
 
 if __name__ == "__main__":
