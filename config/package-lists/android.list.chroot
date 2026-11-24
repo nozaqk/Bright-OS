@@ -24,4 +24,4 @@ wl-clipboard
 desktop-file-utils
 
 # --- Image download and TLS ---
-ca-certificates
+# ca-certificates comes from core.list.chroot
