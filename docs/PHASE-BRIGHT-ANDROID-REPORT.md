@@ -1,8 +1,8 @@
-# Phase Bright Android — Implementation Report (Updated: Phase 2.2 Runtime Compatibility)
+# Phase Bright Android — Implementation Report (Updated: Phase 2.3 Fail-Closed Hardening)
 
-**Branch:** `arena/d6b955d1-bright-os` (Phase 2.2)
-**Original PR:** #35 (Phase 1 merged), #36 (Phase 2 merged), #37 (Phase 2.1 merged)
-**Date:** 2026-11-20 (Phase 2.2 update: 2026-11-23)
+**Branch:** `arena/phase23-failclosed` (Phase 2.3)
+**Original PR:** #35 (Phase 1), #36 (Phase 2), #37 (Phase 2.1), #38 (Phase 2.2)
+**Date:** 2026-11-20 (Phase 2.3 update: 2026-11-23)
 **Status:** Code complete; real-hardware validation pending
 
 ## Phase 2 Summary
@@ -433,3 +433,113 @@ BRIGHT_ANDROID_REAL_WAYDROID=1 \
   python3 -m unittest bright_android.tests.test_bright_android_auth \
                        bright_android.tests.test_bright_android -v
 ```
+
+---
+
+## Phase 2.3: Authorization Fail-Closed Hardening
+
+Phase 2.3 closes the Polkit exception-handling weakness identified in Phase 2.2
+review: a Polkit outage or exception must never be converted into a successful
+authorization for a state-changing action. It also hardens the in-process /
+headless code path against accidental bypass and adds comprehensive tests.
+
+### Changes
+
+**1. Polkit failure handling — uniform fail-closed for ALL state changes**
+
+Phase 2.2 had a "same-user fallback" that returned True for session actions
+(start/stop/uninstall/launch/sync) when Polkit was unreachable or raised an
+exception. This was intended to avoid locking the user out of their own session
+if Polkit broke, but it violated the "fail closed" security principle: any
+unexpected Polkit failure became a silent authorization bypass.
+
+Phase 2.3 removes this fallback entirely. The new logic is:
+
+| Scenario | Admin actions | Session actions | Read-only |
+|---|---|---|---|
+| Polkit returns is_authorized | allow | allow | (not consulted) |
+| Polkit returns is_challenge | deny ("authentication required") | deny ("authentication required") | (not consulted) |
+| Polkit returns not-authorized | deny ("not authorized") | deny ("not authorized") | (not consulted) |
+| Polkit module unavailable (HAS_POLKIT=False) | deny | deny | same-user allow |
+| Polkit.Authority.get_sync raises | deny ("Polkit authority unavailable: ...") | deny | same-user allow |
+| check_authorization_sync raises | deny ("Polkit authorization check failed: ...") | deny | same-user allow |
+
+Error messages clearly identify which failure mode occurred to aid debugging.
+
+**2. In-process / headless path hardened**
+
+Phase 2.2 allowed calls whenever `bus is None` OR `not HAS_DBUS`. The new code:
+- When `HAS_DBUS=False` (dbus-python not importable — headless/test mode):
+  in-process allow is still granted. The HAS_DBUS=False stub
+  `BrightAndroidService` class exposes no state-changing methods, so there is
+  no attack surface.
+- When `HAS_DBUS=True` (production) but `bus is None` (caller error or
+  accidental direct invocation): DENY with a warning message. This prevents
+  an accidental in-process bypass if code is refactored to forget passing
+  `self._bus`.
+
+In production dbus-python always supplies `bus=self._bus` and a non-None sender
+for every dispatched method, so this denial does not affect legitimate calls.
+
+**3. Regression tests added (10 new)**
+
+- `test_no_bus_denied_when_has_dbus_true` — bus=None denied in production
+- `test_inprocess_allowed_when_has_dbus_false` — headless mode works
+- `test_polkit_unavailable_denies_admin_action` — init/install/remove/setconfig denied
+- `test_polkit_unavailable_denies_session_action` — start/stop/launch/sync/uninstall denied
+- `test_polkit_authority_init_error_denied` — get_sync exception → deny
+- `test_polkit_check_error_denied` — check_authorization_sync exception → deny
+- `test_polkit_explicit_denial_has_clear_message` — explicit denial produces "not authorized"
+- `test_polkit_challenge_has_clear_message` — challenge produces "authentication required"
+- `test_authorized_active_session_allows_session_actions` — Polkit-authorized calls allowed
+- `test_cross_uid_denied_for_session_actions` — cross-UID denied before Polkit consulted
+- Source-level guards: no fallback strings in code; headless stub exposes no methods;
+  bus=None denial exists
+
+**4. Systemd security review**
+
+No further changes to the systemd unit. The Phase 2.2 LXC-compatible set of
+retained/removed directives is correct; a future narrow privileged helper is
+still planned (tracked in the unit comment block) to allow re-enabling
+RestrictNamespaces/ProtectControlGroups/ProtectKernelTunables/NoNewPrivileges
+on the user service.
+
+**5. Backward compatibility**
+
+The `_check_polkit` alias is retained for any external consumers; the function
+signature is unchanged. Existing callers that expect denial on failure get
+stricter denial (no more accidental allow on session actions). AURA and the
+GUI call methods through the normal D-Bus path and will receive clear
+NotAuthorized errors if Polkit is broken rather than silent success.
+
+### Files Modified
+
+| Path | Change |
+|------|--------|
+| `bright_android/core/android_service.py` | Removed same-user fallback for Polkit outage/errors; distinguish three Polkit failure modes (unavailable, authority-init error, check error); tightened bus=None denial when HAS_DBUS=True; updated docstring |
+| `bright_android/tests/test_bright_android_auth.py` | Updated tests for fail-closed model; added 10 new tests for all Polkit failure modes, cross-UID denial, headless-mode safety, and source-level guards against reintroducing the bypass |
+| `docs/BRIGHT-ANDROID.md` | Updated authorization model and Polkit action matrix (all state-changing actions fail closed on Polkit outage) |
+
+### Test Results (Phase 2.3 final)
+
+| Category | Passed | Failed | Skipped/BLOCKED |
+|---|---|---|---|
+| AURA | 233 | 0 | 0 |
+| Bright Android unit + mocked tests | 124 | 0 | 0 |
+| Real D-Bus/Polkit integration | 0 | 0 | 7 BLOCKED (no python3-dbus/polkit) |
+| Real Waydroid runtime | 0 | 0 | 9 BLOCKED (no waydroid/binder/display) |
+| Legacy Waydroid integration | 0 | 0 | 2 BLOCKED (WAYDROID_INTEGRATION=1 not set) |
+| Installer shell (pyyaml) | 227 | 0 | 0 |
+| **Total** | **584** | **0** | **18** |
+
+(The environment capability reporter test is counted in the Bright Android total.)
+
+### Not validated (unchanged from Phase 2.2, still BLOCKED)
+
+- ❌ Waydroid init/image download, container start, APK install, app launch
+- ❌ Real Polkit authorization dialogs
+- ❌ Cross-UID D-Bus rejection with real multi-user harness
+- ❌ systemd-analyze security / effective property verification
+
+All require a provisioned Debian Trixie machine with Wayland, binder_linux,
+waydroid package, and network.
