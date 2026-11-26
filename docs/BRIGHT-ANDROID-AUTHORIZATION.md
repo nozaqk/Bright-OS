@@ -45,7 +45,16 @@ credential validation.**
 The five signals (`OperationProgress`, `OperationComplete`, `AppInstalled`,
 `AppRemoved`, `RuntimeStateChanged`) have no caller and are not gated.
 
-## 3. What root can do
+## 3. Root policy (decided)
+
+Root keeps its bypass of Polkit. Root is trusted for administrative operations,
+and the bypass is a deliberate, reviewed decision. It is not a gap.
+
+Root still passes every other check: D-Bus sender identity (steps 2–3), PID/UID
+credential validation (step 4), method-level input validation (including the
+SetConfig allowlist), and the audit log for state changes.
+
+## 3a. What root can do
 
 Root is authorized for **all 15 gated methods above** (7 read-only and 8 that
 change state). Concretely, root can:
@@ -68,7 +77,8 @@ path that root cannot use over D-Bus.
   missing sender, or invalid PID,
 - `dbus-python` availability (step 1),
 - method-level input validation performed in the method body or in
-  `waydroid_manager` (see section 5),
+  `waydroid_manager` (see section 5). This includes the SetConfig allowlist
+  (`core/config_policy.py`), so root cannot write protected or unknown settings,
 - the audit log: root state changes are logged at INFO with the action name.
 
 ## 4. Non-D-Bus callers
@@ -100,9 +110,6 @@ path that root cannot use over D-Bus.
 
 ## 6. Known gaps (not closed by this change)
 
-- **SetConfig accepts any `section/key`.** No allowlist exists. Any caller that
-  passes authorization (including root) can write any key in the Bright Android
-  config file. Needs an allowlist of settable keys.
 - **Polkit call uses the deprecated `Polkit.Authority.get()`** in AURA
   (`aura/core/aura_core_service.py`). It works, but the replacement is
   `get_sync`. Migration is a low-priority cleanup.

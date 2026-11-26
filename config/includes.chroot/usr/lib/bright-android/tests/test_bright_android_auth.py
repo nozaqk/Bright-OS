@@ -1545,5 +1545,50 @@ class PolkitResourceTests(unittest.TestCase):
                 self.assertIn("busy", reason)  # denied only because the pool was full
 
 
+class RootPolicyTests(unittest.TestCase):
+    """Decision 1: root keeps its Polkit bypass but still passes every other check."""
+
+    def setUp(self):
+        self._saved = {k: getattr(svc, k) for k in ("HAS_DBUS", "HAS_POLKIT", "SERVICE_UID")}
+        svc.HAS_DBUS = True
+        svc.HAS_POLKIT = False  # root must still pass without Polkit
+        svc.SERVICE_UID = TEST_SERVICE_UID
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            setattr(svc, k, v)
+
+    def _bus(self, uid=0, pid=4242):
+        bus = mock.MagicMock()
+        bus.get_connection_unix_process_id.return_value = pid
+        bus.get_connection_unix_user.return_value = uid
+        return bus
+
+    def test_root_bypasses_polkit_for_state_change(self):
+        ok, reason = svc._check_authorization(":1.1", svc.POLKIT_ACTION_START, bus=self._bus())
+        self.assertTrue(ok)
+        self.assertEqual(reason, "root caller")
+
+    def test_root_still_needs_sender_identity(self):
+        ok, _ = svc._check_authorization(None, svc.POLKIT_ACTION_START, bus=self._bus())
+        self.assertFalse(ok)
+
+    def test_root_still_needs_valid_pid(self):
+        ok, _ = svc._check_authorization(":1.1", svc.POLKIT_ACTION_START, bus=self._bus(pid=0))
+        self.assertFalse(ok)
+
+    def test_root_still_needs_a_bus(self):
+        ok, _ = svc._check_authorization(":1.1", svc.POLKIT_ACTION_START, bus=None)
+        self.assertFalse(ok)
+
+    def test_root_authorization_does_not_skip_config_allowlist(self):
+        # Root is authorized to call SetConfig, but the allowlist still applies.
+        from bright_android.core import config_policy
+        ok, _ = svc._check_authorization(":1.1", svc.POLKIT_ACTION_SET_CONFIG, bus=self._bus())
+        self.assertTrue(ok)
+        with self.assertRaises(config_policy.ConfigPolicyError):
+            config_policy.validate_setting("storage/data_path", "/tmp/evil")
+
+
 if __name__ == "__main__":
     unittest.main()
