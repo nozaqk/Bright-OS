@@ -141,19 +141,31 @@ else
     fail "rc.xml structure issue: $(cat /tmp/err)"
 fi
 
-# --- bright.desktop (labwc default) content ----------------------------
+# --- bright.desktop (default) content ----------------------------------
+# bright.desktop points to the dispatcher wrapper /usr/bin/bright-desktop-shell
+# which execs labwc when available and XDG_SESSION_TYPE=wayland (the default
+# under greetd). The wrapper handles fallback to KWin/X11/openbox.
 echo ""
-echo "--- Default labwc session .desktop file validation ---"
+echo "--- Default bright.desktop session file validation ---"
 DESKTOP="$PKG_SESSIONS_DIR/bright.desktop"
-for key in "Name=Bright Desktop" "TryExec=labwc" \
-           "Exec=/usr/share/bright-os/bright-desktop-session-labwc.sh" \
+for key in "Name=Bright Desktop" "TryExec=/usr/bin/bright-desktop-shell" \
+           "Exec=/usr/bin/bright-desktop-shell" \
            "Type=Application" "DesktopNames=Bright"; do
     if grep -qF "$key" "$DESKTOP"; then
-        pass "bright.desktop (labwc) contains: $key"
+        pass "bright.desktop contains: $key"
     else
-        fail "bright.desktop (labwc) missing key: $key"
+        fail "bright.desktop missing key: $key"
     fi
 done
+# The dispatcher wrapper must reference labwc (default) and have fallback
+# paths for kwin_wayland and X11.
+WRAPPER="config/includes.chroot/usr/bin/bright-desktop-shell"
+if grep -q "bright-desktop-session-labwc.sh" "$WRAPPER" \
+   && grep -q "kwin_wayland" "$WRAPPER"; then
+    pass "/usr/bin/bright-desktop-shell wrapper dispatches to labwc (default) and kwin_wayland (fallback)"
+else
+    fail "/usr/bin/bright-desktop-shell wrapper missing labwc or kwin dispatch"
+fi
 
 # --- KWin recovery session is NOT present by default (hook writes it if kwin exists) ---
 echo ""

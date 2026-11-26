@@ -21,7 +21,7 @@ if [ -x /usr/bin/kwin_wayland ]; then
 [Desktop Entry]
 Name=Bright Desktop (KWin recovery)
 Comment=Bright OS fallback using KWin Wayland
-Exec=/usr/bin/bright-desktop-shell
+Exec=env BRIGHT_COMPOSITOR=kwin /usr/bin/bright-desktop-shell
 TryExec=kwin_wayland
 Type=Application
 DesktopNames=Bright

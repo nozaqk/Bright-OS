@@ -591,14 +591,17 @@ else
     fail "greetd config.toml cage command incorrect"
 fi
 
-# bright.desktop (default labwc session) must exist and point at labwc
+# bright.desktop (default) must exist and point at the dispatcher wrapper,
+# which execs labwc when XDG_SESSION_TYPE=wayland (default) and labwc is available.
 BRIGHT_DESKTOP="config/includes.chroot/usr/share/wayland-sessions/bright.desktop"
+BRIGHT_WRAPPER="config/includes.chroot/usr/bin/bright-desktop-shell"
 if [ -f "$BRIGHT_DESKTOP" ] \
-   && grep -q 'TryExec=labwc' "$BRIGHT_DESKTOP" \
-   && grep -q 'bright-desktop-session-labwc' "$BRIGHT_DESKTOP"; then
-    pass "bright.desktop (default) points to labwc session"
+   && grep -q 'Exec=/usr/bin/bright-desktop-shell' "$BRIGHT_DESKTOP" \
+   && grep -q 'bright-desktop-session-labwc.sh' "$BRIGHT_WRAPPER" \
+   && grep -q 'command -v labwc' "$BRIGHT_WRAPPER"; then
+    pass "bright.desktop uses dispatcher wrapper; wrapper prefers labwc on Wayland"
 else
-    fail "bright.desktop missing or not pointing at labwc"
+    fail "bright.desktop missing or wrapper does not dispatch to labwc"
 fi
 
 # bright-kwin.desktop must NOT be pre-installed; 00-sessions hook generates it
