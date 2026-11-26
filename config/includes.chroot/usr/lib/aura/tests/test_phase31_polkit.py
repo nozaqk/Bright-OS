@@ -23,6 +23,23 @@ os.environ["DBUS_SYSTEM_BUS_ADDRESS"] = ""
 import aura.core.aura_core_service as svc_mod
 
 
+class _FakeDaemon:
+    """Fake org.freedesktop.DBus proxy that answers credential queries."""
+
+    def __init__(self, bus):
+        self._bus = bus
+
+    def GetConnectionUnixProcessID(self, sender, dbus_interface=None):
+        if self._bus._raise_on_pid is not None:
+            raise self._bus._raise_on_pid
+        return self._bus._pid
+
+    def GetConnectionUnixUser(self, sender, dbus_interface=None):
+        if self._bus._raise_on_uid is not None:
+            raise self._bus._raise_on_uid
+        return self._bus._uid
+
+
 class FakeBus:
     """Minimal stand-in for dbus.SystemBus() that returns configured PID/UID."""
 
@@ -32,15 +49,9 @@ class FakeBus:
         self._raise_on_pid = raise_on_pid
         self._raise_on_uid = raise_on_uid
 
-    def get_connection_unix_process_id(self, sender):
-        if self._raise_on_pid is not None:
-            raise self._raise_on_pid
-        return self._pid
-
-    def get_unix_user(self, sender):
-        if self._raise_on_uid is not None:
-            raise self._raise_on_uid
-        return self._uid
+    def get_object(self, bus_name, path):
+        # The bus daemon's proxy. Credential queries go through it.
+        return _FakeDaemon(self)
 
 
 class FakeDBusException(Exception):

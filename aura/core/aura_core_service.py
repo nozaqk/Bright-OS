@@ -51,6 +51,24 @@ except ImportError:
     logger.info("Polkit gir bindings unavailable; privileged methods require root")
 
 
+_DBUS_ERROR_CLASSES = {}
+
+
+def _dbus_error(name: str, message: str):
+    """Build a D-Bus error that clients receive under error name `name`.
+
+    dbus-python takes the error name from the exception class. A plain
+    DBusException(name, message) reaches clients wrapped, so clients cannot
+    map it. This makes one subclass per error name.
+    """
+    cls = _DBUS_ERROR_CLASSES.get(name)
+    if cls is None:
+        cls = type("AuraDBusError", (dbus.exceptions.DBusException,),
+                   {"_dbus_error_name": name})
+        _DBUS_ERROR_CLASSES[name] = cls
+    return cls(message)
+
+
 def _check_polkit(sender, action_id, bus=None):
     """Check whether `sender` is authorized for `action_id`.
 
@@ -65,8 +83,10 @@ def _check_polkit(sender, action_id, bus=None):
     if sender is None:
         return False, "no sender identity"
     try:
-        pid = bus.get_connection_unix_process_id(sender)
-        uid = bus.get_unix_user(sender)
+        # The bus daemon answers credential queries for a unique name.
+        daemon = bus.get_object("org.freedesktop.DBus", "/org/freedesktop/DBus")
+        pid = daemon.GetConnectionUnixProcessID(sender, dbus_interface="org.freedesktop.DBus")
+        uid = daemon.GetConnectionUnixUser(sender, dbus_interface="org.freedesktop.DBus")
     except (dbus.DBusException, AttributeError) as e:
         logger.warning("Polkit: could not determine caller identity: %s", e)
         return False, f"could not determine caller identity: {e}"
@@ -245,7 +265,7 @@ if HAS_DBUS:
                 bus=self._bus if hasattr(self, "_bus") else None)
             if not ok:
                 logger.warning("Shutdown denied for %s: %s", sender, reason)
-                raise dbus.exceptions.DBusException(
+                raise _dbus_error(
                     "org.bright_os.AURA.NotAuthorized",
                     f"Shutdown not authorized: {reason}")
             logger.info("Shutdown requested via D-Bus by %s", sender)
@@ -375,7 +395,7 @@ if HAS_DBUS:
                 if not ok:
                     logger.warning("GrantCloudConsent denied for %s: %s",
                                    sender, reason)
-                    raise dbus.exceptions.DBusException(
+                    raise _dbus_error(
                         "org.bright_os.AURA.NotAuthorized",
                         f"Cloud consent not authorized: {reason}")
             eng = self._engine()
