@@ -69,62 +69,147 @@ def _dbus_error(name: str, message: str):
     return cls(message)
 
 
-def _check_polkit(sender, action_id, bus=None):
-    """Check whether `sender` is authorized for `action_id`.
+def _get_caller_credentials(sender, bus):
+    """Extract and validate caller PID and UID from D-Bus.
 
-    Returns (allowed, reason). If Polkit is unavailable, falls back to
-    root-only (UID 0 on the bus). Fail closed if caller identity cannot
-    be obtained or verified.
+    Returns (ok, pid, uid, reason). When ok is False, pid/uid are 0 and
+    reason describes the failure.
+
+    Production invariant: when HAS_DBUS is True and the call was dispatched
+    by dbus-python, `bus` is always the service's Connection object and
+    `sender` is always a non-None unique bus name.
+
+    Uses the bus-daemon object (org.freedesktop.DBus) directly via
+    GetConnectionUnixProcessID / GetConnectionUnixUser — this is the
+    canonical dbus-python API for peer credential lookup.
     """
-    if not HAS_DBUS or bus is None:
-        # Headless/test mode with no D-Bus — only local code can call us,
-        # so allow. In any real service path bus is always set.
-        return True, ""
+    if not HAS_DBUS:
+        # dbus-python not importable: headless/test mode only. There is no
+        # D-Bus attack surface in this mode.
+        return True, 0, 0, "in-process call (no D-Bus bus)"
+
+    # When HAS_DBUS is True but bus is None, this is a programming error in
+    # the caller (e.g. a method was invoked directly without passing
+    # self._bus). We must DENY here to prevent an accidental in-process
+    # bypass. Production dbus-python dispatch always passes bus=self._bus.
+    if bus is None:
+        logger.warning(
+            "Authorization called without bus while HAS_DBUS=True; "
+            "denying to prevent in-process bypass"
+        )
+        return False, 0, 0, "no bus provided (in-process call denied when D-Bus is available)"
+
     if sender is None:
-        return False, "no sender identity"
+        return False, 0, 0, "no sender identity provided"
+
     try:
         # The bus daemon answers credential queries for a unique name.
         daemon = bus.get_object("org.freedesktop.DBus", "/org/freedesktop/DBus")
-        pid = daemon.GetConnectionUnixProcessID(sender, dbus_interface="org.freedesktop.DBus")
-        uid = daemon.GetConnectionUnixUser(sender, dbus_interface="org.freedesktop.DBus")
-    except (dbus.DBusException, AttributeError) as e:
-        logger.warning("Polkit: could not determine caller identity: %s", e)
-        return False, f"could not determine caller identity: {e}"
+        pid = daemon.GetConnectionUnixProcessID(
+            sender, dbus_interface="org.freedesktop.DBus")
+        uid = daemon.GetConnectionUnixUser(
+            sender, dbus_interface="org.freedesktop.DBus")
+    except Exception as e:
+        # Catches dbus.DBusException (unknown sender), AttributeError (bad
+        # bus), and any other lookup failure. Broad Exception catch is
+        # deliberate: any credential failure must result in denial.
+        logger.warning("Could not determine caller identity for %s: %s", sender, e)
+        return False, 0, 0, f"could not determine caller identity: {e}"
 
-    # Validate PID/UID before using them.
+    # Type/range validation
     if not isinstance(pid, int) or pid <= 0:
-        return False, "invalid caller pid"
+        return False, 0, 0, f"invalid caller pid: {pid!r}"
     if not isinstance(uid, int) or uid < 0:
-        return False, "invalid caller uid"
+        return False, 0, 0, f"invalid caller uid: {uid!r}"
 
-    # Root (UID 0) is always authorized for any action.
+    return True, pid, uid, ""
+
+
+def _check_polkit(sender, action_id, bus=None):
+    """Check whether `sender` is authorized for `action_id`.
+
+    Returns (allowed: bool, reason: str).
+
+    Authorization model (Phase 5 hardening):
+      0. In-process calls (HAS_DBUS=False): allow (no D-Bus attack surface).
+      1. If HAS_DBUS=True and bus is None (caller error): DENY. This prevents
+         a method invoked without self._bus from being silently treated as
+         trusted.
+      2. Credentials must be obtainable (PID/UID via the bus daemon API) →
+         fail closed on any error.
+      3. PID/UID must be positive ints.
+      4. Root (UID 0) is always authorized.
+      5. Polkit is consulted for all other callers.
+         - Polkit unavailable (HAS_POLKIT=False): DENY with clear message.
+         - Polkit authority initialization raises: DENY.
+         - Polkit check_authorization_sync raises: DENY.
+         - is_authorized=True → allow
+         - is_challenge=True → deny ("authentication required")
+         - otherwise → deny ("not authorized")
+      6. There is NO same-user or "Polkit unavailable → allow" fallback for
+         non-root callers. AURA is a system-bus service mediating privileged
+         operations; Polkit is the sole authority for non-root callers.
+    """
+    ok, pid, uid, reason = _get_caller_credentials(sender, bus)
+    if not ok:
+        return False, reason
+
+    # In-process / headless mode (HAS_DBUS=False)
+    if "in-process" in reason:
+        return True, reason
+
+    # Root is always authorized for any action
     if uid == 0:
-        return True, ""
+        return True, "root caller"
 
+    # Polkit is REQUIRED for non-root authorization. No fallback.
     if not HAS_POLKIT:
-        return False, "polkit unavailable; only root may perform this action"
+        logger.warning(
+            "Denied action=%s caller uid=%d: Polkit is unavailable; "
+            "only root may perform privileged operations.",
+            action_id, uid,
+        )
+        return False, (
+            f"Polkit is unavailable; cannot verify authorization for {action_id}. "
+            "Only root may perform this action."
+        )
 
+    # Obtain Polkit authority. If this fails, fail closed — we cannot verify
+    # authorization without an authority.
     try:
-        # get_sync replaces the deprecated get(); a failure raises and is
-        # handled below (fail closed).
         authority = Polkit.Authority.get_sync(None)
-        # Polkit.UnixProcess.new(pid) takes a single int PID. Polkit
-        # internally reads /proc/<pid>/status to verify the UID, so a
-        # stale/reused PID would not be confused with another user's
-        # process (the UID mismatch causes authorization to fail).
+    except Exception as e:
+        logger.warning(
+            "Failed to obtain Polkit authority for action=%s pid=%d uid=%d: %s",
+            action_id, pid, uid, e,
+        )
+        return False, f"Polkit authority unavailable: {e}"
+
+    # Run the authorization check. If Polkit raises (timeout, DBus disconnect,
+    # etc.), we MUST NOT treat that as authorization. The Polkit C API accepts
+    # a GCancellable for timeout; we pass None (no explicit timeout) but
+    # exceptions from check_authorization_sync are always fail-closed.
+    try:
         subject = Polkit.UnixProcess.new(pid)
         result = authority.check_authorization_sync(
-            subject, action_id, None,
-            Polkit.CheckAuthorizationFlags.ALLOW_USER_INTERACTION, None)
-        if result.get_is_authorized():
-            return True, ""
-        if result.get_is_challenge():
-            return False, "authentication required"
-        return False, "not authorized"
+            subject,
+            action_id,
+            None,
+            Polkit.CheckAuthorizationFlags.ALLOW_USER_INTERACTION,
+            None,
+        )
     except Exception as e:
-        logger.warning("Polkit check failed for %s pid=%d uid=%d: %s",
-                       action_id, pid, uid, e)
-        return False, f"polkit error: {e}"
+        logger.warning(
+            "Polkit check_authorization_sync raised for action=%s pid=%d uid=%d: %s",
+            action_id, pid, uid, e,
+        )
+        return False, f"Polkit authorization check failed: {e}"
+
+    if result.get_is_authorized():
+        return True, "polkit authorized"
+    if result.get_is_challenge():
+        return False, "authentication required"
+    return False, "not authorized"
 
 
 class AuraStarterComponent(Component):

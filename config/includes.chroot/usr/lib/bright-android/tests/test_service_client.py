@@ -158,10 +158,18 @@ class TimeoutTests(unittest.TestCase):
         self.assertEqual(self._timeout_for(lambda c: c.stop_runtime())[2]["timeout"], sc.TIMEOUT_DEFAULT)
 
     def test_install_uses_install_timeout(self):
-        name, args, kw = self._timeout_for(lambda c: c.install_apk("/tmp/a.apk"))
+        # InstallApk is now async (Phase 5): the D-Bus kick-off call uses
+        # TIMEOUT_DEFAULT; the waiter uses TIMEOUT_INSTALL for completion.
+        iface = FakeIface()
+        waiter = FakeWaiter(outcome=(True, ""))
+        client_with(iface, waiter).install_apk("/tmp/a.apk")
+        self.assertEqual(len(iface.calls), 1)
+        name, args, kw = iface.calls[0]
         self.assertEqual(name, "InstallApk")
         self.assertEqual(args, ("/tmp/a.apk",))
-        self.assertEqual(kw["timeout"], sc.TIMEOUT_INSTALL)
+        self.assertEqual(kw["timeout"], sc.TIMEOUT_DEFAULT)
+        # Waiter is given the full install timeout.
+        self.assertEqual(waiter.waited_with[0], sc.TIMEOUT_INSTALL)
 
     def test_set_config_uses_admin_timeout(self):
         self.assertEqual(self._timeout_for(lambda c: c.set_config("runtime/auto_start", True))[2]["timeout"],
@@ -278,7 +286,7 @@ class ClientIsolationTests(unittest.TestCase):
 
 
 class AsyncOperationTests(unittest.TestCase):
-    """StartRuntime, StopRuntime and InitializeRuntime wait for OperationComplete."""
+    """StartRuntime, StopRuntime, InitializeRuntime, and InstallApk wait for OperationComplete."""
 
     def _client(self, iface, waiter):
         names = []
@@ -344,6 +352,26 @@ class AsyncOperationTests(unittest.TestCase):
         with self.assertRaises(sc.OperationFailed):
             client.stop_runtime()
         self.assertTrue(waiter.closed)
+
+    def test_install_apk_uses_install_apk_operation_and_passes_path(self):
+        """Phase 5: install_apk is async, uses the waiter for 'install-apk'
+        and forwards the path argument to the D-Bus method."""
+        iface = FakeIface()
+        waiter = FakeWaiter(outcome=(True, ""))
+        client, names = self._client(iface, waiter)
+        client.install_apk("/tmp/a.apk")
+        self.assertEqual(names, ["install-apk"])
+        self.assertEqual(iface.calls[0][0], "InstallApk")
+        self.assertEqual(iface.calls[0][1], ("/tmp/a.apk",))
+        self.assertEqual(waiter.waited_with[0], sc.TIMEOUT_INSTALL)
+        self.assertTrue(waiter.closed)
+
+    def test_install_apk_failed_completion_raises(self):
+        waiter = FakeWaiter(outcome=(False, "INSTALL_FAILED_ABORTED"))
+        client, _ = self._client(FakeIface(), waiter)
+        with self.assertRaises(sc.OperationFailed) as ctx:
+            client.install_apk("/tmp/a.apk")
+        self.assertIn("INSTALL_FAILED_ABORTED", str(ctx.exception))
 
 
 class BatchSettingsClientTests(unittest.TestCase):

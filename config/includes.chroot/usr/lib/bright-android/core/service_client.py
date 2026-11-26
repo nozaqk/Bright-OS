@@ -239,12 +239,13 @@ class BrightAndroidClient:
             self._bus = None
             raise _from_exception(exc) from exc
 
-    def _run_operation(self, method: str, op_name: str, progress_cb, wait_timeout: float):
+    def _run_operation(self, method: str, op_name: str, progress_cb, wait_timeout: float,
+                       *method_args):
         """Start an asynchronous service operation and wait for its completion signal."""
         self._interface()
         waiter = self._waiter_factory(self._bus, op_name)
         try:
-            self._call(method, timeout=TIMEOUT_DEFAULT)
+            self._call(method, *method_args, timeout=TIMEOUT_DEFAULT)
             success, message = waiter.wait(wait_timeout, progress_cb)
         finally:
             waiter.close()
@@ -261,7 +262,16 @@ class BrightAndroidClient:
         self._run_operation("InitializeRuntime", "init", progress_cb, TIMEOUT_INIT)
 
     def install_apk(self, path: str, progress_cb=None) -> None:
-        self._call("InstallApk", path, timeout=TIMEOUT_INSTALL)
+        """Install an APK asynchronously.
+
+        The InstallApk service method queues the install on the service's
+        background worker and returns immediately; this client waits for
+        OperationComplete("install-apk", ...). Pre-flight failures (auth,
+        invalid path, runtime not running, busy) raise synchronously from
+        the D-Bus call itself.
+        """
+        self._run_operation("InstallApk", "install-apk", progress_cb, TIMEOUT_INSTALL,
+                            path)
 
     def uninstall_app(self, package: str, progress_cb=None) -> None:
         self._call("UninstallApp", package, timeout=TIMEOUT_DEFAULT)

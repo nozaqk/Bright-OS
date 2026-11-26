@@ -774,9 +774,9 @@ if HAS_DBUS:
                 )
             self._begin_operation("stop", self._job_stop)
 
-        def _begin_operation(self, op_name: str, job):
+        def _begin_operation(self, op_name: str, job, *args, **kwargs):
             try:
-                self._worker.start(job, op_name)
+                self._worker.start(job, op_name, *args, **kwargs)
             except OperationBusy as e:
                 raise _dbus_error(
                     "org.bright_os.BrightAndroid.Busy", str(e)
@@ -797,8 +797,37 @@ if HAS_DBUS:
             waydroid_manager.stop_session(progress_cb=progress_cb)
             _on_main_loop(self.RuntimeStateChanged, False)
 
+        def _job_install_apk(self, apk_path, progress_cb=None):
+            """Worker job: install an APK and notify on success.
+
+            Runs on the worker thread. AppInstalled is scheduled on the main
+            loop because D-Bus signal emission must happen there. Failures
+            propagate to BackgroundWorker._run which emits
+            OperationComplete("install-apk", error, False).
+            """
+            result = waydroid_manager.install_apk(apk_path, progress_cb=progress_cb)
+            launcher_integration.sync_apps(waydroid_manager.list_apps())
+            _on_main_loop(
+                self.AppInstalled,
+                result["package"],
+                dbus.Dictionary({
+                    "label": result.get("label", ""),
+                    "path": result.get("path", ""),
+                }, signature="sv"),
+            )
+
         @method(INTERFACE, in_signature="s", out_signature="", sender_keyword="sender")
         def InstallApk(self, path: str, sender=None):
+            """Install an APK asynchronously.
+
+            Returns as soon as authorization, path validation and the runtime
+            check pass. Progress arrives as
+            OperationProgress("install-apk", ...); completion as
+            OperationComplete("install-apk", message, success). On success,
+            AppInstalled is also emitted on the main loop. Status queries
+            remain responsive because the install runs on the worker.
+            Refused with Busy if another long-running operation is in progress.
+            """
             ok, reason = _check_authorization(sender, POLKIT_ACTION_INSTALL,
                                               bus=self._bus)
             if not ok:
@@ -806,17 +835,26 @@ if HAS_DBUS:
                     "org.bright_os.BrightAndroid.NotAuthorized",
                     f"APK install requires auth: {reason}"
                 )
-            try:
-                result = waydroid_manager.install_apk(path)
-                launcher_integration.sync_apps(waydroid_manager.list_apps())
-                self.AppInstalled(result["package"], dbus.Dictionary({
-                    "label": result.get("label", ""),
-                    "path": result.get("path", ""),
-                }, signature="sv"))
-            except Exception as e:
+
+            # Synchronous pre-flight (fail fast).
+            from .apk_validator import validate_apk_path
+            err = validate_apk_path(path)
+            if err:
                 raise _dbus_error(
-                    "org.bright_os.BrightAndroid.InstallFailed", str(e)
+                    "org.bright_os.BrightAndroid.InvalidArgument",
+                    f"Invalid APK path: {err}"
                 )
+
+            if not waydroid_manager.is_running():
+                raise _dbus_error(
+                    "org.bright_os.BrightAndroid.NotRunning",
+                    "Android runtime is not running. Start it before installing apps."
+                )
+
+            # Launch the worker. The worker's _run catches exceptions and
+            # reports them via OperationComplete — we never raise
+            # InstallFailed synchronously from this method.
+            self._begin_operation("install-apk", self._job_install_apk, path)
 
         @method(INTERFACE, in_signature="s", out_signature="", sender_keyword="sender")
         def UninstallApp(self, package: str, sender=None):

@@ -194,8 +194,8 @@ assert_contains "desktop/shell/bright-desktop-shell.py" 'QSG_RENDER_LOOP.*basic'
 assert_contains "desktop/shell/bright-desktop-shell.py" 'qterminal' "Lite falls back to qterminal"
 assert_contains "desktop/shell/bright-desktop-shell.py" 'pcmanfm-qt' "Lite falls back to pcmanfm-qt"
 
-# Python syntax
-if python3 -c "import py_compile; py_compile.compile('desktop/shell/bright-desktop-shell.py', doraise=True)" 2>/dev/null; then
+# Python syntax (compile to temp; works as non-root without writing __pycache__)
+if python3 tests/support/py_syntax_check.py desktop/shell/bright-desktop-shell.py 2>/dev/null; then
     pass "Python backend syntax valid"
 else
     fail "Python backend syntax error"
@@ -282,7 +282,7 @@ assert_contains "applications/bright-about/bright-about" "EDITION_NAMES" "About 
 assert_contains "applications/bright-about/bright-about" "#3b82f6" "About dialog uses brand blue"
 assert_contains "applications/bright-about/bright-about" "EDITION_TAGLINES" "About dialog shows edition taglines"
 
-if python3 -c "import py_compile; py_compile.compile('applications/bright-about/bright-about', doraise=True)" 2>/dev/null; then
+if python3 tests/support/py_syntax_check.py applications/bright-about/bright-about 2>/dev/null; then
     pass "bright-about Python syntax valid"
 else
     fail "bright-about Python syntax error"
