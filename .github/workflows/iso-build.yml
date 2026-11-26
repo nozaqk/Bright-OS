@@ -1,0 +1,336 @@
+# =============================================================================
+# Bright OS — ISO Build & Validation
+#
+# Builds a bootable Bright OS ISO using Debian live-build on a GitHub-hosted
+# Ubuntu runner, validates the image (ISO9660, MBR/UEFI boot signatures,
+# kernel/initrd/squashfs contents, Calamares, key desktop packages), records
+# measurements, and optionally attempts a short QEMU TCG boot smoke test.
+#
+# Triggers:
+#   - push to branches matching arena/phase6-2-iso-build (this branch)
+#   - pull_request targeting main
+#   - workflow_dispatch (with edition/version/distro/run_qemu inputs)
+#
+# Artifacts (30-day retention):
+#   - bright-os-<version>-<edition>-amd64/ — the ISO + SHA-256
+#   - build-logs-* — build.log, validation.log, measurement JSON, manifest
+# =============================================================================
+name: ISO Build
+
+on:
+  push:
+    branches:
+      - 'arena/phase6-2-iso-build'
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      edition:
+        description: 'Edition (home, developer, lite)'
+        required: false
+        default: 'home'
+        type: choice
+        options: [home, developer, lite]
+      version:
+        description: 'Version string (e.g. 0.1.0-alpha1)'
+        required: false
+        default: '0.1.0-alpha'
+        type: string
+      distro:
+        description: 'Debian codename'
+        required: false
+        default: 'trixie'
+        type: choice
+        options: [trixie, bookworm]
+      run_qemu:
+        description: 'Attempt QEMU TCG boot smoke test (+~10 min)'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  BRIGHT_EDITION: home
+  BRIGHT_VERSION: 0.1.0-alpha
+  BRIGHT_DEBIAN_CODENAME: trixie
+  BRIGHT_QEMU_SMOKE: '0'
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  build-iso:
+    name: Build ISO (${{ inputs.edition || 'home' }} / ${{ inputs.distro || 'trixie' }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    outputs:
+      iso_name: ${{ steps.build.outputs.iso_name }}
+      iso_size: ${{ steps.build.outputs.iso_size }}
+      iso_size_human: ${{ steps.build.outputs.iso_size_human }}
+      iso_sha256: ${{ steps.build.outputs.iso_sha256 }}
+      iso_dir: ${{ steps.build.outputs.iso_dir }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Apply workflow_dispatch inputs
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          echo "BRIGHT_EDITION=${{ inputs.edition }}"   >> "$GITHUB_ENV"
+          echo "BRIGHT_VERSION=${{ inputs.version }}"   >> "$GITHUB_ENV"
+          echo "BRIGHT_DEBIAN_CODENAME=${{ inputs.distro }}" >> "$GITHUB_ENV"
+          if [ "${{ inputs.run_qemu }}" = "true" ]; then
+            echo "BRIGHT_QEMU_SMOKE=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: Record runner environment
+        run: |
+          echo "Runner:      $(uname -a)"
+          echo "Distro:      $(. /etc/os-release && echo "$PRETTY_NAME")"
+          echo "Free disk:   $(df -h / | tail -1 | awk '{print $4}')"
+          echo "RAM:         $(free -h | awk '/Mem:/ {print $2}')"
+          echo "CPU cores:   $(nproc)"
+          echo "KVM present: $([ -e /dev/kvm ] && echo yes || echo no)"
+
+      - name: Free disk space
+        run: |
+          set -eu
+          echo "Before: $(df -h / | tail -1 | awk '{print $4}')"
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache \
+                    /usr/local/share/boost /usr/lib/jvm /usr/local/.ghcup 2>/dev/null || true
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          echo "After:  $(df -h / | tail -1 | awk '{print $4}')"
+
+      - name: Install live-build and build dependencies
+        run: |
+          set -eux
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            live-build debootstrap debian-archive-keyring squashfs-tools xorriso \
+            isolinux syslinux-common syslinux-efi mtools dosfstools genisoimage \
+            grub-pc-bin grub-efi-amd64-bin grub-efi-amd64-signed shim-signed grub-common \
+            file coreutils cpio qemu-utils qemu-system-x86 ovmf
+          lb --version
+          for t in lb debootstrap mksquashfs xorriso isoinfo file grub-mkstandalone unsquashfs; do
+            command -v "$t" >/dev/null || { echo "::error::missing tool: $t"; exit 1; }
+          done
+
+      - name: Sanity-check live-build capabilities
+        run: |
+          set -eu
+          LB_HELP="$(lb config --help 2>&1 || true)"
+          for opt in --mode '--architecture|--architectures' '--bootloader|--bootloaders'; do
+            echo "$LB_HELP" | grep -qE -- "$opt" \
+              && echo "OK: $opt supported" \
+              || { echo "::error::live-build missing $opt"; exit 1; }
+          done
+
+      - name: Build ISO
+        id: build
+        run: |
+          set -eu -o pipefail
+          export BRIGHT_EDITION BRIGHT_VERSION BRIGHT_DEBIAN_CODENAME
+          ISO_DIR="${GITHUB_WORKSPACE}/build/output/${BRIGHT_EDITION}"
+          mkdir -p "$ISO_DIR"
+          echo "Running as: $(id)"
+          echo "Free disk in project root: $(df -h "${GITHUB_WORKSPACE}" | tail -1)"
+          echo "lb version: $(lb --version 2>&1 | head -1)"
+          echo "debootstrap version: $(debootstrap --version 2>&1 | head -1)"
+          echo "Key package versions:"
+          dpkg-query -W -f='${Package}=${Version}\n' live-build debian-archive-keyring \
+            grub-pc-bin grub-efi-amd64-bin isolinux syslinux-common syslinux-efi shim-signed 2>&1 || true
+          # lb build needs root for chroot/mount operations; runner has
+          # passwordless sudo. Use -E to preserve BRIGHT_* env vars.
+          # Run with bash -x for verbose trace so failures are visible in CI log.
+          sudo -E bash -x build/scripts/build.sh \
+            --version "$BRIGHT_VERSION" \
+            --distro "$BRIGHT_DEBIAN_CODENAME" \
+            "$BRIGHT_EDITION" 2>&1 | tee "$ISO_DIR/build.log"
+          # Fix ownership of build artifacts so subsequent steps (running as
+          # runner user) can read them.
+          sudo chown -R "$(id -u):$(id -g)" "${GITHUB_WORKSPACE}/build"
+          ISO_NAME="bright-os-${BRIGHT_VERSION}-${BRIGHT_EDITION}-amd64.iso"
+          ISO_PATH="$ISO_DIR/$ISO_NAME"
+          test -s "$ISO_PATH" || { echo "::error::ISO not produced at $ISO_PATH"; ls -la "$ISO_DIR"; exit 1; }
+          ISO_SIZE=$(stat -c%s "$ISO_PATH")
+          ISO_SHA=$(cut -d' ' -f1 "${ISO_PATH}.sha256")
+          ISO_SIZE_HUMAN=$(numfmt --to=iec-i --suffix=B "$ISO_SIZE")
+          echo "iso_name=$ISO_NAME"           >> "$GITHUB_OUTPUT"
+          echo "iso_dir=$ISO_DIR"             >> "$GITHUB_OUTPUT"
+          echo "iso_path=$ISO_PATH"           >> "$GITHUB_OUTPUT"
+          echo "iso_size=$ISO_SIZE"           >> "$GITHUB_OUTPUT"
+          echo "iso_size_human=$ISO_SIZE_HUMAN" >> "$GITHUB_OUTPUT"
+          echo "iso_sha256=$ISO_SHA"          >> "$GITHUB_OUTPUT"
+          echo "Built: $ISO_PATH ($ISO_SIZE_HUMAN)"
+          echo "SHA256: $ISO_SHA"
+
+      - name: Dump tail of build log (for debugging)
+        if: always()
+        run: |
+          LOG="build/output/${BRIGHT_EDITION}/build.log"
+          # Fix ownership in case build failed mid-way (sudo leaves files as root)
+          sudo chown -R "$(id -u):$(id -g)" "${GITHUB_WORKSPACE}/build" 2>/dev/null || true
+          echo "=== Build log size: $(wc -c < "$LOG" 2>/dev/null || echo 0) bytes ==="
+          if [ -f "$LOG" ]; then
+            echo "--- Last 150 lines of build.log ---"
+            tail -150 "$LOG"
+            echo "--- End of build.log ---"
+            # Also search for explicit errors
+            echo "--- Lines containing E: or ERROR or FAIL ---"
+            grep -E "E: |ERROR|FAIL|error:|failed" "$LOG" | tail -50 || echo "(no error lines found)"
+          else
+            echo "(no build.log found)"
+            echo "Contents of build dir:"
+            ls -la "build/output/${BRIGHT_EDITION}/" 2>/dev/null || echo "(build dir does not exist)"
+          fi
+
+      - name: Run extended ISO validation
+        run: |
+          set -eu
+          cd "${{ steps.build.outputs.iso_dir }}"
+          bash "${GITHUB_WORKSPACE}/build/scripts/validate-iso.sh" \
+            "${{ steps.build.outputs.iso_name }}" 2>&1 | tee validation.log
+          echo ""
+          echo "=== Content checks (extended) ==="
+          LISTING=$(mktemp)
+          isoinfo -i "${{ steps.build.outputs.iso_name }}" -lR > "$LISTING"
+          failures=0
+          check() {
+            local pat="$1" desc="$2" req="${3:-1}"
+            if grep -qE "$pat" "$LISTING"; then
+              echo "  [PASS] $desc"
+            else
+              if [ "$req" = "1" ]; then
+                echo "  [FAIL] $desc"; failures=$((failures+1))
+              else
+                echo "  [WARN] $desc (optional, not found)"
+              fi
+            fi
+          }
+          check '/live/vmlinuz'                'Linux kernel'
+          check '/live/initrd'                'initrd'
+          check '/live/filesystem\.squashfs'  'Root filesystem (squashfs)'
+          check 'boot/grub/'                  'GRUB bootloader'
+          check 'EFI/boot/bootx64\.efi|efi\.img' 'UEFI boot binary'
+          check 'isolinux/'                   'ISOLINUX (BIOS)' 0
+          check 'calamares'                   'Calamares installer files'
+          check 'branding/bright-os'          'Bright OS installer branding'
+          check 'bin/kwin_wayland'            'kwin_wayland compositor (default)'
+          check 'bright-desktop-shell'        'Bright shell launcher'
+          check 'wayland-sessions/bright\.desktop' 'Bright wayland-session'
+          check 'plasma'                      'KDE Plasma desktop' 0
+          check 'lib/aura'                    'AURA service'
+          check 'lib/bright-android|waydroid' 'Bright Android / Waydroid' 0
+          check 'polkit-1/actions/org\.bright_os' 'Bright OS Polkit policy'
+          check 'dbus-1/system\.d/org\.bright_os' 'Bright OS D-Bus policy'
+          if [ "$failures" -gt 0 ]; then
+            echo "::error::$failures extended content check(s) failed."
+            exit 1
+          fi
+          rm -f "$LISTING"
+          echo "Extended content checks passed."
+
+      - name: Extract package manifest from squashfs
+        run: |
+          set -eu
+          cd "${{ steps.build.outputs.iso_dir }}"
+          mkdir -p manifest
+          xorriso -osirrox on -indev "${{ steps.build.outputs.iso_name }}" \
+            -extract /live/filesystem.squashfs ./filesystem.squashfs 2>&1 | tail -3
+          if [ ! -s ./filesystem.squashfs ]; then
+            echo "::warning::filesystem.squashfs could not be extracted; skipping manifest."
+            exit 0
+          fi
+          unsquashfs -d ./squashfs-root -e /var/lib/dpkg/status ./filesystem.squashfs \
+            >/dev/null 2>&1 || true
+          STATUS_FILE=./squashfs-root/var/lib/dpkg/status
+          if [ -f "$STATUS_FILE" ]; then
+            python3 "${GITHUB_WORKSPACE}/tools/ci/extract_manifest.py" \
+              "$STATUS_FILE" ./manifest
+          else
+            echo "::warning::dpkg/status not found in squashfs; skipping manifest."
+          fi
+
+      - name: Record build measurement JSON
+        run: |
+          set -eu
+          cd "${{ steps.build.outputs.iso_dir }}"
+          python3 "${GITHUB_WORKSPACE}/tools/ci/record_build_measurement.py" \
+            "${{ steps.build.outputs.iso_path }}" \
+            "${{ steps.build.outputs.iso_sha256 }}" \
+            "./build-measurement.json" \
+            --version "$BRIGHT_VERSION" \
+            --edition "$BRIGHT_EDITION" \
+            --codename "$BRIGHT_DEBIAN_CODENAME" \
+            --event    "$GITHUB_EVENT_NAME" \
+            --run-id   "$GITHUB_RUN_ID" \
+            --workflow "$GITHUB_WORKFLOW"
+          cp ./build-measurement.json "${GITHUB_WORKSPACE}/build/measurements/ci-build.json" 2>/dev/null || true
+
+      - name: QEMU TCG boot smoke test (optional)
+        if: env.BRIGHT_QEMU_SMOKE == '1'
+        run: |
+          set -eu
+          cd "${{ steps.build.outputs.iso_dir }}"
+          echo "=== QEMU TCG (no KVM) boot smoke test ==="
+          OVMF=""
+          for p in /usr/share/OVMF/OVMF_CODE.fd /usr/share/OVMF/OVMF_CODE_4M.fd /usr/share/edk2/x64/OVMF_CODE.fd; do
+            [ -f "$p" ] && OVMF="$p" && break
+          done
+          [ -n "$OVMF" ] && echo "UEFI (OVMF): $OVMF" || echo "SeaBIOS (no OVMF found)"
+          QARGS=(-m 2G -smp 2 -cdrom "${{ steps.build.outputs.iso_name }}"
+                 -nographic -serial file:qemu-serial.log -monitor none -no-reboot)
+          [ -n "$OVMF" ] && QARGS+=(-bios "$OVMF")
+          timeout 360 qemu-system-x86_64 "${QARGS[@]}" >/dev/null 2>&1 &
+          QPID=$!
+          RESULT=inconclusive
+          for i in $(seq 1 72); do
+            sleep 5
+            [ -f qemu-serial.log ] || continue
+            if grep -qa "Kernel panic\|---\[ end Kernel panic" qemu-serial.log; then
+              echo "::error::Kernel panic detected — ISO failed to boot."
+              tail -40 qemu-serial.log
+              kill "$QPID" 2>/dev/null || true
+              wait "$QPID" 2>/dev/null || true
+              exit 1
+            fi
+            if grep -qaE "bright-os login|debian login|Reached target .*Graphical|sddm.*started|Started.*SDDM" qemu-serial.log; then
+              echo "PASS: ISO reached a boot-complete marker."
+              RESULT=passed
+              kill "$QPID" 2>/dev/null || true
+              wait "$QPID" 2>/dev/null || true
+              break
+            fi
+          done
+          wait "$QPID" 2>/dev/null || true
+          echo "--- Last 60 lines of serial log ---"
+          [ -f qemu-serial.log ] && tail -60 qemu-serial.log || echo "(no log)"
+          echo "QEMU smoke test result: $RESULT"
+
+      - name: Upload ISO artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bright-os-${{ env.BRIGHT_VERSION }}-${{ env.BRIGHT_EDITION }}-amd64
+          path: |
+            ${{ steps.build.outputs.iso_dir }}/${{ steps.build.outputs.iso_name }}
+            ${{ steps.build.outputs.iso_dir }}/${{ steps.build.outputs.iso_name }}.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build logs and measurement
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ env.BRIGHT_EDITION }}-${{ github.run_id }}
+          path: |
+            build/output/${{ env.BRIGHT_EDITION }}/build.log
+            build/output/${{ env.BRIGHT_EDITION }}/validation.log
+            build/output/${{ env.BRIGHT_EDITION }}/build-measurement.json
+            build/output/${{ env.BRIGHT_EDITION }}/release-measurement.json
+            build/output/${{ env.BRIGHT_EDITION }}/manifest/packages.txt
+            build/output/${{ env.BRIGHT_EDITION }}/qemu-serial.log
+          if-no-files-found: warn
+          retention-days: 30

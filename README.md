@@ -2,18 +2,18 @@
 
 **An independent, Linux-based hybrid desktop operating system** for developers, programmers, electronics engineers, and technical professionals — built on Debian Linux with an original desktop environment called Bright Desktop.
 
-> **Status: Alpha 0.1 "Dawn"** — Early development release. The build system and
-> installer are fully configured (**916 automated tests pass, 0 failures across
-> 13 test suites**). Package architecture is cleanly separated into Core, Desktop-Plasma,
-> and Desktop-Lite.
+> **Status: Alpha 0.1 "Dawn"** — Early development release. The build system,
+> installer, and automated ISO build pipeline are configured (**642 Python
+> tests pass + 17 shell test suites** with 0 failures). GitHub Actions now builds
+> bootable ISO images automatically on every push and pull request.
 >
-> **Build tools are ready** — use `./build/scripts/bright-build-doctor.sh` to check your
-> system and `./build/scripts/build-first-iso.sh` to build the first Lite ISO.
-> 
-> **No genuine ISO has been boot-tested yet** — see [docs/BUILDING.md](docs/BUILDING.md) for
-> complete build instructions. ISOs must be built locally on a Debian 12/13 machine with
-> network access to Debian package repositories (deb.debian.org).
-> Boot testing in QEMU (BIOS + UEFI) and on real hardware is the next milestone.
+> See **[docs/ISO-BUILD.md](docs/ISO-BUILD.md)** for how to trigger a build,
+> download artifacts, verify checksums, boot in VirtualBox, write to USB, and
+> cut an experimental release.
+>
+> Boot testing (QEMU BIOS + UEFI, real hardware) and installation testing
+> remain pending for Alpha 0.1; see the status table in
+> [docs/BUILDING.md](docs/BUILDING.md).
 
 ## Download
 

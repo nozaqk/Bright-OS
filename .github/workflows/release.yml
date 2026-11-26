@@ -1,0 +1,242 @@
+# =============================================================================
+# Bright OS — GitHub Release workflow
+#
+# Builds the ISO on an explicit version tag (vX.Y.Z-*), validates it, runs a
+# QEMU TCG boot smoke test, then creates a DRAFT GitHub Release with the ISO,
+# SHA-256 checksum, build log, validation log, and measurement JSON as assets.
+#
+# - Triggers ONLY on pushed tags matching v[0-9]* or workflow_dispatch.
+# - Does NOT trigger on branch pushes or pull requests.
+# - Does NOT create tags itself.
+# - Releases are created as DRAFT + prerelease (for alpha/beta/rc tags) so a
+#   human must inspect and click "Publish release" explicitly.
+# - A failed build or validation aborts before any release is created.
+#
+# To cut a release:
+#   1. Ensure main contains the code you want to release.
+#   2. git tag -a v0.1.0-alpha1 -m "Bright OS 0.1.0-alpha1"
+#   3. git push origin v0.1.0-alpha1
+#   4. Wait for this workflow; it produces a draft release.
+#   5. Open the draft on GitHub, verify SHA-256, then Publish.
+# =============================================================================
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g. v0.1.0-alpha1)'
+        required: true
+        type: string
+
+permissions:
+  contents: write   # Required to create releases and upload release assets.
+
+env:
+  BRIGHT_DEBIAN_CODENAME: trixie
+  BRIGHT_EDITION: home
+  BRIGHT_QEMU_SMOKE: '1'
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  build-and-release:
+    name: Build and draft release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Determine tag, version, prerelease
+        id: meta
+        run: |
+          set -eu
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          VERSION="${TAG#v}"
+          case "$TAG" in
+            *alpha*|*beta*|*rc*|*pre*|*dev*) PRERELEASE=true ;;
+            *)                                 PRERELEASE=false ;;
+          esac
+          echo "tag=$TAG"               >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION"       >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "BRIGHT_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "Tag: $TAG  Version: $VERSION  Prerelease: $PRERELEASE"
+
+      - name: Free disk space
+        run: |
+          set -eu
+          echo "Before: $(df -h / | tail -1 | awk '{print $4}')"
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache \
+                    /usr/local/share/boost /usr/lib/jvm /usr/local/.ghcup 2>/dev/null || true
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          echo "After:  $(df -h / | tail -1 | awk '{print $4}')"
+
+      - name: Install build dependencies
+        run: |
+          set -eux
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            live-build debootstrap debian-archive-keyring squashfs-tools xorriso \
+            isolinux syslinux-common syslinux-efi mtools dosfstools genisoimage \
+            grub-pc-bin grub-efi-amd64-bin grub-efi-amd64-signed shim-signed grub-common \
+            file coreutils cpio qemu-utils qemu-system-x86 ovmf
+          lb --version
+
+      - name: Build ISO
+        id: build
+        run: |
+          set -eu -o pipefail
+          export BRIGHT_EDITION BRIGHT_VERSION BRIGHT_DEBIAN_CODENAME
+          ISO_DIR="${GITHUB_WORKSPACE}/build/output/${BRIGHT_EDITION}"
+          mkdir -p "$ISO_DIR"
+          echo "Running as: $(id)"
+          sudo -E bash build/scripts/build.sh \
+            --version "$BRIGHT_VERSION" \
+            --distro "$BRIGHT_DEBIAN_CODENAME" \
+            "$BRIGHT_EDITION" 2>&1 | tee "$ISO_DIR/build.log"
+          sudo chown -R "$(id -u):$(id -g)" "${GITHUB_WORKSPACE}/build"
+          ISO_NAME="bright-os-${BRIGHT_VERSION}-${BRIGHT_EDITION}-amd64.iso"
+          ISO_PATH="$ISO_DIR/$ISO_NAME"
+          test -s "$ISO_PATH" || { echo "::error::ISO not produced"; ls -la "$ISO_DIR"; exit 1; }
+          ISO_SIZE=$(stat -c%s "$ISO_PATH")
+          ISO_SHA=$(cut -d' ' -f1 "${ISO_PATH}.sha256")
+          echo "iso_name=$ISO_NAME"            >> "$GITHUB_OUTPUT"
+          echo "iso_dir=$ISO_DIR"              >> "$GITHUB_OUTPUT"
+          echo "iso_path=$ISO_PATH"            >> "$GITHUB_OUTPUT"
+          echo "iso_size=$ISO_SIZE"            >> "$GITHUB_OUTPUT"
+          echo "iso_size_human=$(numfmt --to=iec-i --suffix=B $ISO_SIZE)" >> "$GITHUB_OUTPUT"
+          echo "iso_sha256=$ISO_SHA"           >> "$GITHUB_OUTPUT"
+
+      - name: Validate ISO
+        run: |
+          set -eu
+          cd "${{ steps.build.outputs.iso_dir }}"
+          bash "${GITHUB_WORKSPACE}/build/scripts/validate-iso.sh" \
+            "${{ steps.build.outputs.iso_name }}" 2>&1 | tee validation.log
+
+      - name: Extract package manifest
+        run: |
+          set -eu
+          cd "${{ steps.build.outputs.iso_dir }}"
+          mkdir -p manifest
+          xorriso -osirrox on -indev "${{ steps.build.outputs.iso_name }}" \
+            -extract /live/filesystem.squashfs ./filesystem.squashfs 2>&1 | tail -3
+          if [ -s ./filesystem.squashfs ]; then
+            unsquashfs -d ./squashfs-root -e /var/lib/dpkg/status ./filesystem.squashfs \
+              >/dev/null 2>&1 || true
+            if [ -f ./squashfs-root/var/lib/dpkg/status ]; then
+              python3 "${GITHUB_WORKSPACE}/tools/ci/extract_manifest.py" \
+                ./squashfs-root/var/lib/dpkg/status ./manifest
+            fi
+          fi
+
+      - name: Record release measurement
+        run: |
+          set -eu
+          cd "${{ steps.build.outputs.iso_dir }}"
+          python3 "${GITHUB_WORKSPACE}/tools/ci/record_release_measurement.py" \
+            "${{ steps.build.outputs.iso_path }}" \
+            "${{ steps.build.outputs.iso_sha256 }}" \
+            ./release-measurement.json \
+            --tag      "${{ steps.meta.outputs.tag }}" \
+            --version  "${{ steps.meta.outputs.version }}" \
+            --edition  "${{ env.BRIGHT_EDITION }}" \
+            --codename "${{ env.BRIGHT_DEBIAN_CODENAME }}"
+
+      - name: Generate SHA256SUMS
+        run: |
+          cd "${{ steps.build.outputs.iso_dir }}"
+          sha256sum "${{ steps.build.outputs.iso_name }}" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: QEMU TCG boot smoke test
+        run: |
+          set -eu
+          cd "${{ steps.build.outputs.iso_dir }}"
+          OVMF=""
+          for p in /usr/share/OVMF/OVMF_CODE.fd /usr/share/OVMF/OVMF_CODE_4M.fd; do
+            [ -f "$p" ] && OVMF="$p" && break
+          done
+          QARGS=(-m 2G -smp 2 -cdrom "${{ steps.build.outputs.iso_name }}"
+                 -nographic -serial file:qemu-serial.log -monitor none -no-reboot)
+          [ -n "$OVMF" ] && QARGS+=(-bios "$OVMF")
+          timeout 360 qemu-system-x86_64 "${QARGS[@]}" >/dev/null 2>&1 &
+          QPID=$!
+          for i in $(seq 1 72); do
+            sleep 5
+            [ -f qemu-serial.log ] || continue
+            if grep -qa "Kernel panic\|---\[ end Kernel panic" qemu-serial.log; then
+              echo "::error::Kernel panic during QEMU smoke test."
+              tail -40 qemu-serial.log
+              kill "$QPID" 2>/dev/null || true
+              exit 1
+            fi
+            if grep -qaE "bright-os login|debian login|Reached target .*Graphical|sddm.*started|Started.*SDDM" qemu-serial.log; then
+              echo "QEMU smoke test: reached boot target."
+              kill "$QPID" 2>/dev/null || true
+              break
+            fi
+          done
+          wait "$QPID" 2>/dev/null || true
+          tail -40 qemu-serial.log 2>/dev/null || true
+
+      - name: Create draft GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: Bright OS ${{ steps.meta.outputs.version }}
+          draft: true
+          prerelease: ${{ steps.meta.outputs.prerelease }}
+          generate_release_notes: true
+          body: |
+            ## Bright OS ${{ steps.meta.outputs.version }} (home edition, amd64)
+
+            This is an automated **draft release** built from tag `${{ steps.meta.outputs.tag }}`.
+            Review and click **Publish release** when you are ready.
+
+            ### Build
+            - Edition: **home** (KWin/Plasma default; labwc is optional/experimental)
+            - Debian base: `${{ env.BRIGHT_DEBIAN_CODENAME }}`
+            - Architecture: `amd64`
+            - ISO size: **${{ steps.build.outputs.iso_size_human }}**
+            - Installed packages: see `release-measurement.json`
+
+            ### SHA-256
+            ```
+            ${{ steps.build.outputs.iso_sha256 }}  ${{ steps.build.outputs.iso_name }}
+            ```
+            Verify with:
+            ```bash
+            sha256sum -c SHA256SUMS
+            ```
+
+            ### Caveats (alpha)
+            - Experimental build — expect bugs. Not for production use.
+            - labwc session is a proof of concept with known limitations (see `docs/labwc-poc-notes.md`).
+            - Idle-RAM, boot time, and real-hardware boot/install have not been validated in CI.
+            - Always test in a VM before writing to a USB stick or installing on real hardware.
+
+            ### Assets
+            - `${{ steps.build.outputs.iso_name }}` — bootable live+install ISO
+            - `SHA256SUMS` — ISO checksum
+            - `build.log` — full live-build log
+            - `validation.log` — structural validation output
+            - `release-measurement.json` — machine-readable metadata
+            - `qemu-serial.log` — QEMU TCG boot serial log
+          files: |
+            ${{ steps.build.outputs.iso_dir }}/${{ steps.build.outputs.iso_name }}
+            ${{ steps.build.outputs.iso_dir }}/SHA256SUMS
+            ${{ steps.build.outputs.iso_dir }}/build.log
+            ${{ steps.build.outputs.iso_dir }}/validation.log
+            ${{ steps.build.outputs.iso_dir }}/release-measurement.json
+            ${{ steps.build.outputs.iso_dir }}/qemu-serial.log
