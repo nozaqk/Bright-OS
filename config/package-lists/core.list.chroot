@@ -60,6 +60,7 @@ console-setup-linux
 sudo
 policykit-1
 policykit-1-gnome
+polkit-kde-agent-1
 pciutils
 usbutils
 kmod
@@ -72,6 +73,8 @@ man-db
 network-manager
 wireless-tools
 wpasupplicant
+wl-clipboard
+jq
 iwd
 iproute2
 iputils-ping

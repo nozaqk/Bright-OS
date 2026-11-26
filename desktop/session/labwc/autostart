@@ -44,9 +44,11 @@ elif command -v /usr/lib/xdg-desktop-portal-gtk >/dev/null 2>&1; then
     /usr/lib/xdg-desktop-portal-gtk &
 fi
 
-# Polkit authentication agent (exactly one) - prefer policykit-1-gnome
-# (GTK3, Wayland-compatible). Fall back to lxpolkit/lxqt-policykit.
-if command -v polkit-gnome-authentication-agent-1 >/dev/null 2>&1; then
+# Polkit authentication agent (exactly one) - prefer polkit-kde-agent-1
+# (native Qt/Wayland), then policykit-1-gnome, then lx* fallbacks.
+if command -v polkit-kde-authentication-agent-1 >/dev/null 2>&1; then
+    polkit-kde-authentication-agent-1 &
+elif command -v polkit-gnome-authentication-agent-1 >/dev/null 2>&1; then
     polkit-gnome-authentication-agent-1 &
 elif command -v lxpolkit >/dev/null 2>&1; then
     lxpolkit &

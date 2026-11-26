@@ -1,8 +1,0 @@
-[Desktop Entry]
-Name=Bright Desktop (labwc experimental)
-Comment=Bright OS Desktop Environment using the labwc wlroots compositor (Phase 6 experimental proof-of-concept)
-Exec=/usr/share/bright-os/bright-desktop-session-labwc.sh
-TryExec=labwc
-Type=Application
-DesktopNames=Bright
-# Sorts after the default 'Bright Desktop' entry in SDDM.

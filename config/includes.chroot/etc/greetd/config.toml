@@ -1,20 +1,30 @@
 # =============================================================================
-# greetd configuration for Bright OS (Phase 6.3 lightweight)
+# greetd configuration for Bright OS (Phase 6.3)
 #
 # Greeter: gtkgreet, hosted inside cage (a minimal kiosk Wayland compositor).
-# The greeter runs as user 'greeter' (created by the bright-greeter sysusers
-# snippet). Users can pick between installed wayland-sessions at login:
-#   - Bright Desktop (labwc)   ← default
-#   - Bright Desktop (KWin)    ← only present when optional-recovery-kwin
-#                                profile is installed
+# The greeter runs as user 'greeter' (created by bright-greeter sysusers.d).
 #
-# Recovery text consoles remain on tty2..tty6 (Alt+F2...F6).
+# - cage -s    allows switching VTs (Alt+F1..F6) without cage dying, so
+#              recovery text consoles are reachable.
+# - gtkgreet -s /usr/share/wayland-sessions
+#              points gtkgreet explicitly at the sessions directory.
+# - gtkgreet uses the default gtk-layer-shell; on successful auth it
+#   instructs greetd to replace the current process with the user's
+#   selected session (Exec= from the .desktop file).
+#
+# Available sessions (default):
+#   - bright.desktop       → Bright Desktop (labwc)
+#   - bright-kwin.desktop  → KWin recovery (only if KWin installed)
+#
+# The live-boot hook 05-bright-os overwrites this file to enable live-user
+# autologin; installed systems use this default config.
 # =============================================================================
 
 [terminal]
+# greetd starts on vt1. systemd-logind's autovt spawns getty on tty2..tty6
+# so Alt+F2..F6 give recovery text consoles.
 vt = 1
 
 [default_session]
-# cage -s allows switching VTs without cage dying.
-command = "cage -s -- gtkgreet --sessions"
+command = "cage -s -- gtkgreet -s /usr/share/wayland-sessions"
 user = "greeter"

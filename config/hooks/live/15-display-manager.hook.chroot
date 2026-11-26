@@ -1,46 +1,63 @@
-#!/bin/sh
+#!/bin/bash
 # =============================================================================
-# Display manager setup hook (Phase 6.3)
+# Display manager setup hook (Phase 6.3 corrective)
 #
 # Sets greetd as the default display manager. If SDDM is present (from
-# optional-recovery-kwin), disable it (greetd handles session switching).
-# If greetd is not present (unusual, fallback), fall back to SDDM if available.
+# optional-recovery-kwin), it is left installed but disabled so greetd is
+# the default. If greetd is absent, fall back to SDDM.
+#
+# Also ensures the 'greeter' user + runtime directory exist (sysusers.d/
+# tmpfiles.d should handle this, but during lb chroot builds the sysusers
+# service isn't running so we do it explicitly here).
 # =============================================================================
 set -e
 
 echo "I: Configuring display manager (greetd preferred)..."
 
-# Ensure the greeter user + runtime dir exist (sysusers/tmpfiles should have
-# done this; if running outside of a package-managed install, create them).
+# --- Ensure the greeter system user exists --------------------------------
 if ! id greeter >/dev/null 2>&1; then
-    useradd --system --home-dir /var/lib/greeter --shell /usr/sbin/nologin \
+    useradd --system --home-dir /var/lib/greeter --shell /bin/bash \
             --user-group greeter 2>/dev/null || true
-    for grp in video input render; do
-        getent group "$grp" >/dev/null 2>&1 && adduser greeter "$grp" >/dev/null 2>&1 || true
-    done
 fi
+for grp in video input render; do
+    getent group "$grp" >/dev/null 2>&1 && adduser greeter "$grp" >/dev/null 2>&1 || true
+done
 mkdir -p /var/lib/greeter
 chown greeter:greeter /var/lib/greeter
 chmod 0700 /var/lib/greeter
 
-# Default DM = greetd if available.
+# Ensure the XDG runtime dir for the greeter will exist at boot (pam_systemd
+# creates this for logged-in users; greetd drops privileges before starting
+# cage so /run/user/<greeter-uid> must exist).
+GREETER_UID=$(id -u greeter 2>/dev/null || echo "")
+if [ -n "$GREETER_UID" ]; then
+    mkdir -p /run/user/${GREETER_UID} 2>/dev/null || true
+    chown greeter:greeter /run/user/${GREETER_UID} 2>/dev/null || true
+    chmod 0700 /run/user/${GREETER_UID} 2>/dev/null || true
+fi
+
+# --- Default DM = greetd if available ------------------------------------
 if [ -x /usr/sbin/greetd ]; then
-    # systemd unit is 'greetd.service' (provided by Debian's greetd package).
-    if [ -d /etc/systemd/system/display-manager.service ]; then
+    # Remove any stale display-manager.service symlink and point it at greetd.
+    if [ -d /etc/systemd/system/display-manager.service ] \
+       || [ -L /etc/systemd/system/display-manager.service ] \
+       || [ -f /etc/systemd/system/display-manager.service ]; then
         rm -f /etc/systemd/system/display-manager.service
     fi
     ln -sf /lib/systemd/system/greetd.service \
            /etc/systemd/system/display-manager.service
     echo "I: greetd enabled as default display manager."
 
-    # Disable SDDM if present (we'll manage it through display-manager.service).
+    # Disable SDDM if present (we manage it through display-manager.service).
     if [ -x /usr/sbin/sddm ]; then
         systemctl disable sddm.service >/dev/null 2>&1 || true
         echo "I: SDDM present but disabled (greetd is default)."
     fi
 elif [ -x /usr/sbin/sddm ]; then
     # Fallback: greetd missing, SDDM present.
-    if [ -d /etc/systemd/system/display-manager.service ]; then
+    if [ -d /etc/systemd/system/display-manager.service ] \
+       || [ -L /etc/systemd/system/display-manager.service ] \
+       || [ -f /etc/systemd/system/display-manager.service ]; then
         rm -f /etc/systemd/system/display-manager.service
     fi
     ln -sf /lib/systemd/system/sddm.service \

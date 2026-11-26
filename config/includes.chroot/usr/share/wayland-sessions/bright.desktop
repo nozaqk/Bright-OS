@@ -1,7 +1,7 @@
 [Desktop Entry]
 Name=Bright Desktop
-Comment=Bright OS Desktop Environment
-Exec=/usr/bin/bright-desktop-shell
-TryExec=/usr/bin/bright-desktop-shell
+Comment=Bright OS Desktop Environment (labwc)
+Exec=/usr/share/bright-os/bright-desktop-session-labwc.sh
+TryExec=labwc
 Type=Application
 DesktopNames=Bright
