@@ -145,6 +145,77 @@ def _get_caller_credentials(sender, bus) -> tuple:
     return True, pid, uid, ""
 
 
+# Maximum time to wait for a Polkit decision. ALLOW_USER_INTERACTION may show
+# an authentication prompt, so this must be generous; it bounds a hung
+# authority so the D-Bus service cannot stall indefinitely.
+POLKIT_CHECK_TIMEOUT_SECONDS = 60
+
+
+def _polkit_consult(action_id: str, pid: int, uid: int,
+                    timeout: float = None) -> tuple:
+    """Ask Polkit whether process `pid` may perform `action_id`.
+
+    Returns (allowed: bool, reason: str). Fails closed: a missing authority,
+    an exception, a timeout, or a response that is not exactly True/False
+    is a denial. Only an explicit is_authorized() == True allows.
+
+    The blocking Polkit calls run in a worker thread so a hung authority
+    cannot block the service beyond `timeout`. A thread that outlives its
+    timeout is abandoned; its result is ignored.
+    """
+    if timeout is None:
+        timeout = POLKIT_CHECK_TIMEOUT_SECONDS
+    outcome = {}
+
+    def _worker():
+        try:
+            authority = Polkit.Authority.get_sync(None)
+        except Exception as e:
+            outcome["stage"] = "authority"
+            outcome["error"] = e
+            return
+        try:
+            subject = Polkit.UnixProcess.new(pid)
+            outcome["result"] = authority.check_authorization_sync(
+                subject,
+                action_id,
+                None,
+                Polkit.CheckAuthorizationFlags.ALLOW_USER_INTERACTION,
+                None,
+            )
+        except Exception as e:
+            outcome["stage"] = "check"
+            outcome["error"] = e
+
+    worker = threading.Thread(target=_worker, name="polkit-check", daemon=True)
+    worker.start()
+    worker.join(timeout)
+
+    if worker.is_alive():
+        return False, (
+            f"Polkit check timed out after {timeout}s for {action_id}; denied"
+        )
+    if "error" in outcome:
+        if outcome.get("stage") == "authority":
+            return False, f"Polkit authority unavailable: {outcome['error']}"
+        return False, f"Polkit authorization check failed: {outcome['error']}"
+
+    result = outcome.get("result")
+    try:
+        authorized = result.get_is_authorized()
+        challenge = result.get_is_challenge()
+    except Exception as e:
+        return False, f"Polkit returned an invalid response: {e}"
+
+    if authorized is True:
+        return True, "polkit authorized"
+    if challenge is True:
+        return False, "authentication required"
+    if authorized is False:
+        return False, "not authorized"
+    return False, f"Polkit returned an invalid response: {authorized!r}"
+
+
 def _check_authorization(sender, action_id: str, bus=None,
                          allow_same_user: bool = False) -> tuple:
     """Authorize a D-Bus method call.
@@ -247,37 +318,10 @@ def _check_authorization(sender, action_id: str, bus=None,
             "State-changing operations require Polkit."
         )
 
-    try:
-        authority = Polkit.Authority.get_sync(None)
-    except Exception as e:
-        logger.warning(
-            "Failed to obtain Polkit authority for action=%s pid=%d uid=%d: %s",
-            action_id, pid, uid, e,
-        )
-        return False, f"Polkit authority unavailable: {e}"
-
-    try:
-        subject = Polkit.UnixProcess.new(pid)
-        result = authority.check_authorization_sync(
-            subject,
-            action_id,
-            None,
-            Polkit.CheckAuthorizationFlags.ALLOW_USER_INTERACTION,
-            None,
-        )
-    except Exception as e:
-        logger.warning(
-            "Polkit check_authorization_sync raised for action=%s pid=%d uid=%d: %s",
-            action_id, pid, uid, e,
-        )
-        return False, f"Polkit authorization check failed: {e}"
-
-    if result.get_is_authorized():
-        return True, "polkit authorized"
-    elif result.get_is_challenge():
-        return False, "authentication required"
-    else:
-        return False, "not authorized"
+    allowed, reason = _polkit_consult(action_id, pid, uid)
+    if not allowed:
+        logger.warning("Denied action=%s caller uid=%d: %s", action_id, uid, reason)
+    return allowed, reason
 
 
 # Backwards-compatible alias (old name); prefer _check_authorization in new code.
