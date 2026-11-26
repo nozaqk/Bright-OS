@@ -62,10 +62,7 @@ env:
 jobs:
   build-iso:
     name: Build ISO (${{ inputs.edition || 'home' }} / ${{ inputs.distro || 'trixie' }})
-    runs-on: ubuntu-latest
-    container:
-      image: debian:trixie
-      options: --privileged   # live-build needs chroot/mount; runner containers support --privileged
+    runs-on: ubuntu-24.04
     timeout-minutes: 360
     outputs:
       iso_name: ${{ steps.build.outputs.iso_name }}
@@ -101,38 +98,25 @@ jobs:
         run: |
           set -eu
           echo "Before: $(df -h / | tail -1 | awk '{print $4}')"
-          apt-get clean
-          rm -rf /var/cache/apt/archives/*.deb 2>/dev/null || true
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache \
+                    /usr/local/share/boost /usr/lib/jvm /usr/local/.ghcup 2>/dev/null || true
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
           echo "After:  $(df -h / | tail -1 | awk '{print $4}')"
 
       - name: Install live-build and build dependencies
         run: |
-          set -ux
-          export DEBIAN_FRONTEND=noninteractive
-          echo "--- Sources list ---"
-          cat /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null || true
-          echo "--- apt-get update ---"
-          apt-get update
-          echo "--- Installing core build dependencies ---"
-          # Required live-build and ISO creation tools (tested on Debian Trixie).
-          apt-get install -y --no-install-recommends \
+          set -eux
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
             live-build debootstrap debian-archive-keyring squashfs-tools xorriso \
-            isolinux syslinux-common mtools dosfstools \
-            grub-pc-bin grub-efi-amd64-bin grub-common \
-            file coreutils cpio procps gdisk kmod debian-keyring \
-            python3 python3-pip ca-certificates wget curl git sudo \
-            numfmt util-linux
-          echo "--- Optional: Secure Boot shim ---"
-          apt-get install -y --no-install-recommends shim-signed grub-efi-amd64-signed \
-            || echo "(shim-signed / signed GRUB unavailable; continuing without Secure Boot)"
-          echo "--- Optional: QEMU for smoke test ---"
-          apt-get install -y --no-install-recommends qemu-utils qemu-system-x86 ovmf \
-            || echo "(QEMU unavailable; smoke test will be skipped)"
-          echo "--- Verify required tools ---"
+            isolinux syslinux-common syslinux-efi mtools dosfstools genisoimage \
+            grub-pc-bin grub-efi-amd64-bin grub-efi-amd64-signed shim-signed grub-common \
+            file coreutils cpio qemu-utils qemu-system-x86 ovmf \
+            python3 python3-pip ca-certificates
           lb --version
           for t in lb debootstrap mksquashfs xorriso isoinfo file grub-mkstandalone unsquashfs; do
             command -v "$t" >/dev/null || { echo "::error::missing tool: $t"; exit 1; }
-            echo "  found: $t"
           done
 
       - name: Sanity-check live-build capabilities
@@ -166,6 +150,38 @@ jobs:
           export BRIGHT_EDITION BRIGHT_VERSION BRIGHT_DEBIAN_CODENAME
           ISO_DIR="${GITHUB_WORKSPACE}/build/output/${BRIGHT_EDITION}"
           mkdir -p "$ISO_DIR"
+          LOG="$ISO_DIR/build.log"
+          on_error() {
+            local ec=$?
+            echo ""
+            echo "=============================================="
+            echo "BUILD FAILED (exit $ec); tail of build.log:"
+            echo "=============================================="
+            sudo chown -R "$(id -u):$(id -g)" "${GITHUB_WORKSPACE}/build" 2>/dev/null || true
+            if [ -f "$LOG" ]; then
+              echo "--- Last 200 lines of build.log ---"
+              tail -200 "$LOG"
+              echo ""
+              echo "--- All E: / ERROR / FAIL lines ---"
+              grep -nE "E: |ERROR|FAIL|error:|failed" "$LOG" | tail -80 || echo "(none found)"
+              echo ""
+              echo "--- Last 80 lines around first E: error ---"
+              FIRST_ERR=$(grep -nE "^E: |^  E: |ERROR: |lb_config" "$LOG" | head -1 | cut -d: -f1)
+              if [ -n "$FIRST_ERR" ]; then
+                START=$((FIRST_ERR - 20)); [ "$START" -lt 1 ] && START=1
+                END=$((FIRST_ERR + 20))
+                sed -n "${START},${END}p" "$LOG"
+              fi
+            else
+              echo "(no build.log file found at $LOG)"
+              ls -la "$ISO_DIR/" || echo "(ISO dir empty/missing)"
+            fi
+            echo "=============================================="
+            echo "END OF ERROR DUMP"
+            echo "=============================================="
+            exit 1
+          }
+          trap on_error ERR
           echo "Running as: $(id)"
           echo "Free disk in project root: $(df -h "${GITHUB_WORKSPACE}" | tail -1)"
           echo "lb version: $(lb --version 2>&1 | head -1)"
@@ -173,12 +189,15 @@ jobs:
           echo "Key package versions:"
           dpkg-query -W -f='${Package}=${Version}\n' live-build debian-archive-keyring \
             grub-pc-bin grub-efi-amd64-bin isolinux syslinux-common syslinux-efi shim-signed 2>&1 || true
-          # Running as root in Debian container; chroot/mount operations work directly.
-          # Run with bash -x for verbose trace so failures are visible in CI log.
-          bash -x build/scripts/build.sh \
+          echo ""
+          echo "=== Starting live-build ==="
+          # lb build needs root for chroot/mount; use -E to preserve env. bash -x for trace.
+          sudo -E bash -x build/scripts/build.sh \
             --version "$BRIGHT_VERSION" \
             --distro "$BRIGHT_DEBIAN_CODENAME" \
-            "$BRIGHT_EDITION" 2>&1 | tee "$ISO_DIR/build.log"
+            "$BRIGHT_EDITION" 2>&1 | tee "$LOG"
+          # Fix ownership so later steps (runner user) can read build artifacts.
+          sudo chown -R "$(id -u):$(id -g)" "${GITHUB_WORKSPACE}/build"
           ISO_NAME="bright-os-${BRIGHT_VERSION}-${BRIGHT_EDITION}-amd64.iso"
           ISO_PATH="$ISO_DIR/$ISO_NAME"
           test -s "$ISO_PATH" || { echo "::error::ISO not produced at $ISO_PATH"; ls -la "$ISO_DIR"; exit 1; }
@@ -198,6 +217,7 @@ jobs:
         if: always()
         run: |
           LOG="build/output/${BRIGHT_EDITION}/build.log"
+          sudo chown -R "$(id -u):$(id -g)" "${GITHUB_WORKSPACE}/build" 2>/dev/null || true
           echo "=== Build log size: $(wc -c < "$LOG" 2>/dev/null || echo 0) bytes ==="
           if [ -f "$LOG" ]; then
             echo "--- Last 150 lines of build.log ---"
