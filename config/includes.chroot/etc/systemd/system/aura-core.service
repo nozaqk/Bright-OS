@@ -52,5 +52,8 @@ WorkingDirectory=/var/lib/aura
 ExecStartPre=+/bin/systemd-tmpfiles --create /usr/lib/tmpfiles.d/aura.conf
 
 [Install]
-WantedBy=multi-user.target
+# AURA is NOT started at boot. It has no WantedBy= target, so enabling it does
+# not pull it in at boot. It starts on demand: a D-Bus client calling
+# org.bright_os.AURA triggers activation via org.bright_os.AURA.service, or an
+# administrator runs `systemctl start aura-core.service`.
 Alias=aura.service
