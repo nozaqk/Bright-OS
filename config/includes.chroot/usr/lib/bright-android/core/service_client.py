@@ -136,8 +136,9 @@ class _CompletionWaiter:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise OperationFailed(
-                    "The Bright Android service did not report that initialization "
-                    "finished. Check the logs before retrying.")
+                    f"The Bright Android service did not report that "
+                    f"'{self._op}' finished within {timeout:.0f}s. "
+                    f"Check the logs before retrying.")
             if not self._bus.read_write_dispatch(int(min(remaining, 1.0) * 1000)):
                 raise ServiceUnavailable("Lost the D-Bus connection while waiting.")
         return self._result
@@ -196,7 +197,23 @@ class BrightAndroidClient:
         self._call("StopRuntime", timeout=TIMEOUT_START)
 
     def install_apk(self, path: str, progress_cb=None) -> None:
-        self._call("InstallApk", path, timeout=TIMEOUT_INSTALL)
+        """Install an APK asynchronously; blocks the caller until the
+        OperationComplete("install-apk", ...) signal arrives.
+
+        Pre-flight failures (auth, invalid path, runtime not running) raise
+        synchronously from the D-Bus call itself.
+        """
+        self._interface()
+        waiter = self._waiter_factory(self._bus, "install-apk")
+        try:
+            self._call("InstallApk", path, timeout=TIMEOUT_DEFAULT)
+            success, message = waiter.wait(TIMEOUT_INSTALL, progress_cb)
+        finally:
+            waiter.close()
+        if not success:
+            raise OperationFailed(
+                message or "APK installation failed. See the logs for details."
+            )
 
     def uninstall_app(self, package: str, progress_cb=None) -> None:
         self._call("UninstallApp", package, timeout=TIMEOUT_DEFAULT)

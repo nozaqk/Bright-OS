@@ -672,6 +672,10 @@ if HAS_DBUS:
 
         @method(INTERFACE, in_signature="s", out_signature="", sender_keyword="sender")
         def InstallApk(self, path: str, sender=None):
+            """Install APK async; returns immediately. Emits
+            OperationProgress/OperationComplete on "install-apk" and AppInstalled
+            on success. Status queries remain responsive during install."""
+            # Synchronous pre-flight (fail fast).
             ok, reason = _check_authorization(sender, POLKIT_ACTION_INSTALL,
                                               bus=self._bus)
             if not ok:
@@ -679,16 +683,46 @@ if HAS_DBUS:
                     "org.bright_os.BrightAndroid.NotAuthorized",
                     f"APK install requires auth: {reason}"
                 )
-            try:
-                result = waydroid_manager.install_apk(path)
+
+            # Validate APK path synchronously before spawning worker. This
+            # rejects obvious garbage (non-existent file, wrong extension,
+            # directory traversal) before we've committed to the operation.
+            from .apk_validator import validate_apk_path
+            err = validate_apk_path(path)
+            if err:
+                raise dbus.exceptions.DBusException(
+                    "org.bright_os.BrightAndroid.InvalidArgument",
+                    f"Invalid APK path: {err}"
+                )
+
+            if not waydroid_manager.is_running():
+                raise dbus.exceptions.DBusException(
+                    "org.bright_os.BrightAndroid.NotRunning",
+                    "Android runtime is not running. Start it before installing apps."
+                )
+
+            # ---- Launch async install ----
+            def _do_install(apk_path, progress_cb=None):
+                # progress_cb is injected by BackgroundWorker._run to emit
+                # OperationProgress signals.
+                result = waydroid_manager.install_apk(apk_path, progress_cb=progress_cb)
+                # Sync launcher integration and emit AppInstalled from the
+                # worker thread (dbus-python signal emission is thread-safe
+                # for signals originating from the service object).
                 launcher_integration.sync_apps(waydroid_manager.list_apps())
                 self.AppInstalled(result["package"], dbus.Dictionary({
                     "label": result.get("label", ""),
                     "path": result.get("path", ""),
                 }, signature="sv"))
-            except Exception as e:
+
+            try:
+                self._worker.start(_do_install, "install-apk", path)
+            except RuntimeError as e:
+                # Another state-changing operation is running — reject so the
+                # caller knows to retry later rather than blocking.
                 raise dbus.exceptions.DBusException(
-                    "org.bright_os.BrightAndroid.InstallFailed", str(e)
+                    "org.bright_os.BrightAndroid.Busy",
+                    f"Another operation is in progress: {e}"
                 )
 
         @method(INTERFACE, in_signature="s", out_signature="", sender_keyword="sender")

@@ -148,10 +148,19 @@ class TimeoutTests(unittest.TestCase):
         self.assertEqual(self._timeout_for(lambda c: c.stop_runtime())[2]["timeout"], sc.TIMEOUT_START)
 
     def test_install_uses_install_timeout(self):
-        name, args, kw = self._timeout_for(lambda c: c.install_apk("/tmp/a.apk"))
+        # install_apk is now async: it makes a short (TIMEOUT_DEFAULT) D-Bus
+        # call to kick off the worker, then waits for OperationComplete via
+        # the waiter using TIMEOUT_INSTALL.
+        iface = FakeIface()
+        waiter = FakeWaiter(outcome=(True, ""))
+        client_with(iface, waiter).install_apk("/tmp/a.apk")
+        self.assertEqual(len(iface.calls), 1)
+        name, args, kw = iface.calls[0]
         self.assertEqual(name, "InstallApk")
         self.assertEqual(args, ("/tmp/a.apk",))
-        self.assertEqual(kw["timeout"], sc.TIMEOUT_INSTALL)
+        self.assertEqual(kw["timeout"], sc.TIMEOUT_DEFAULT)
+        # Waiter is given the full install timeout.
+        self.assertEqual(waiter.waited_with[0], sc.TIMEOUT_INSTALL)
 
     def test_set_config_uses_admin_timeout(self):
         self.assertEqual(self._timeout_for(lambda c: c.set_config("runtime/auto_start", True))[2]["timeout"],
