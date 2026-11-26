@@ -35,3 +35,6 @@ Thumbs.db
 *.tmp
 *.bak
 *.orig
+
+# Phase 6 measurement runtime artifacts (reference baselines live in docs/baseline/)
+build/measurements/

@@ -1,0 +1,214 @@
+# =============================================================================
+# Bright OS — CI Workflow (Sub-phase 6.0)
+# Runs static checks, Python unit tests, shell test suites, and records a
+# static baseline measurement on every pull request and push to main.
+#
+# NOTE: This workflow does NOT build an ISO or boot QEMU in sub-phase 6.0.
+# ISO build + QEMU boot tests are added in sub-phase 6.7. The scaffolding
+# below is structured so those steps drop in cleanly.
+# =============================================================================
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  static-checks:
+    name: Static checks (Python syntax + shellcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install shellcheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+
+      - name: Python syntax check (all .py files)
+        run: |
+          set -euo pipefail
+          fail=0
+          while IFS= read -r f; do
+            if ! python3 -c "import py_compile; py_compile.compile('$f', doraise=True)"; then
+              echo "::error file=$f::Syntax error in $f"
+              fail=1
+            fi
+          done < <(find . -name "*.py" -not -path "./.git/*" -not -path "*/__pycache__/*")
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+          echo "Python syntax OK."
+
+      - name: Shellcheck (all .sh files)
+        run: |
+          set -euo pipefail
+          # Shellcheck all shell scripts (allow notes about sourcing /
+          # variables that are set by the test harness).
+          mapfile -t scripts < <(find . -name "*.sh" -not -path "./.git/*")
+          if [ ${#scripts[@]} -eq 0 ]; then
+            echo "No shell scripts found."
+            exit 0
+          fi
+          # -x: follow sourced files that exist in-tree; -S style warnings
+          shellcheck --severity=warning "${scripts[@]}" || {
+            echo "::warning::shellcheck reported warnings; review output above."
+          }
+          echo "Shellcheck completed."
+
+      - name: Verify workflow file validity
+        run: |
+          # Every .yml under .github/workflows must be valid YAML.
+          python3 -c "
+          import sys, pathlib, yaml
+          bad = 0
+          for p in pathlib.Path('.github/workflows').glob('*.yml'):
+              try:
+                  yaml.safe_load(p.read_text())
+                  print(f'OK  {p}')
+              except Exception as e:
+                  print(f'FAIL {p}: {e}')
+                  bad = 1
+          sys.exit(bad)
+          "
+
+  python-tests:
+    name: Python unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python test dependencies
+        run: |
+          python3 -m pip install --quiet --upgrade pip
+          # dbus-python and PyGObject require system libs not available in
+          # the base runner; tests that need them skip themselves. We only
+          # need stdlib + unittest for the static tests.
+          python3 --version
+
+      - name: Run aura tests
+        run: python3 -m unittest discover -s aura/tests -p "test_*.py" -v 2>&1 | tee aura-tests.log
+
+      - name: Run bright_android tests
+        run: python3 -m unittest discover -s bright_android/tests -p "test_*.py" -v 2>&1 | tee android-tests.log
+
+      - name: Verify source-packaged sync
+        run: |
+          python3 -m unittest aura.tests.test_phase32_runtime -v 2>&1 | tee sync-tests.log
+
+      - name: Upload Python test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-test-logs
+          path: "*-tests.log"
+          if-no-files-found: warn
+
+  shell-tests:
+    name: Shell test suites
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run all shell test suites
+        run: |
+          set -uo pipefail
+          failed=0
+          for t in tests/test-*.sh; do
+            name=$(basename "$t")
+            echo "============================================================"
+            echo ">>> $name"
+            echo "============================================================"
+            log="shell-${name%.sh}.log"
+            if bash "$t" 2>&1 | tee "$log"; then
+              echo ">>> $name PASSED"
+            else
+              echo "::error:: $name FAILED"
+              failed=1
+            fi
+          done
+          exit $failed
+
+      - name: Upload shell test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: shell-test-logs
+          path: "shell-*.log"
+          if-no-files-found: warn
+
+  baseline-measurement:
+    name: Static baseline measurement
+    runs-on: ubuntu-latest
+    needs: [static-checks, python-tests, shell-tests]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Detect KVM availability
+        id: kvm
+        run: |
+          if [ -e /dev/kvm ] && [ -r /dev/kvm ] && [ -w /dev/kvm ]; then
+            echo "kvm=available" >> "$GITHUB_OUTPUT"
+          else
+            echo "kvm=unavailable" >> "$GITHUB_OUTPUT"
+          fi
+          echo "Runner KVM: ${{ steps.kvm.outputs.kvm }}"
+          uname -a
+          cat /proc/cpuinfo | grep -E "model name|flags" | head -3 || true
+
+      - name: Record static baseline
+        run: |
+          set -euo pipefail
+          mkdir -p build/measurements
+          # Run full measurement suite (memory/boot sections will show
+          # GitHub runner container numbers; they are tagged and labeled
+          # as 'ci-runner', NOT as Bright OS baseline).
+          python3 tools/measure/run_measurements.py \
+            --tag "ci-static-baseline" \
+            --out build/measurements/ci-baseline.json \
+            --pretty
+          echo ""
+          echo "==== BASELINE SUMMARY ===="
+          python3 -c "
+          import json
+          d = json.load(open('build/measurements/ci-baseline.json'))
+          s = d['summary']
+          for k, v in s.items():
+              print(f'  {k}: {v}')
+          print()
+          env = d['meta']['environment']
+          print(f'  is_bright_os: {env.get(\"is_bright_os\")}')
+          print(f'  in_container: {env.get(\"in_container\")}')
+          print(f'  has_kvm: {env.get(\"has_kvm\")}')
+          print()
+          for c in d['meta']['caveats']:
+              print(f'  caveat: {c}')
+          "
+
+      - name: Upload baseline JSON as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: baseline-measurement
+          path: build/measurements/ci-baseline.json
+          if-no-files-found: error

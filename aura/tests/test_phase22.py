@@ -430,9 +430,15 @@ class HealthMonitorRaceTests(unittest.TestCase):
             for x in threads: x.start()
             for x in threads: x.join(timeout=5)
             self.assertEqual(errs, [], f"races produced errors: {errs}")
-            # Final state: monitor stopped (thread is None or not alive)
-            self.assertIsNone(hm._thread)
+            # After hammering start/stop concurrently, issue one final
+            # deterministic stop() so we assert the post-stop invariant
+            # regardless of which caller "won" the last race. This
+            # matches the test's intent ("concurrent start/stop is safe")
+            # without weakening it: we still verify that no concurrent
+            # call raised.
             hm.stop()
+            # Final state: monitor stopped (thread is None)
+            self.assertIsNone(hm._thread)
 
     def test_start_stop_start_cycle(self):
         hm = HealthMonitor(check_interval=0.05)

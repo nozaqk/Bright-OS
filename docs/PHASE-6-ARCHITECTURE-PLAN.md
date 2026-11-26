@@ -1,449 +1,396 @@
 # Phase 6: Ultra-Lightweight Architecture & USB/Desktop Compatibility
-## Architecture Assessment & Implementation Plan
+## Revised Architecture & Implementation Plan (v2)
 
-> Status: **PLAN FOR REVIEW** — no desktop/compositor/ISO changes made yet.
-> Base: `origin/main` at `f3f58e3` (PR #43, Phase 5, merged).
-> Working branch: `arena/phase6-lightweight-arch`.
+> Status: **PLAN FOR REVIEW — DOCUMENTATION ONLY** (no OS/package/session/ISO changes yet).
+> Base: `origin/main` at `f3f58e3` (Phase 5, PR #43 merged).
+> Working branch: `arena/phase6-lightweight-arch` (commit `aa83c6d` contains v1 of this plan; this commit revises it).
+> Review feedback applied per instructions dated 2026-11-26.
 
 ---
 
-## 1. Current Architecture Assessment
+## 0. Approved decisions (baseline)
 
-### 1.1 Repository status
-- **Phase 5 present in `main`:** yes — `0dfea5b`, `68c1445`, `5ee3f71`, `a0da32a` are all in main via merge commit `f3f58e3`.
-- **Branch tip:** `f3f58e3 Merge pull request #43`.
-- **GitHub Actions:** not configured (no `.github/workflows/`). Builds/validation are manual today.
-- **Packaged copies:** source at `aura/`, `bright_android/`, `desktop/`, `applications/` is duplicated under `config/includes.chroot/usr/lib/...`; kept byte-identical by sync tests (`test_phase32_runtime.py`, `GuiCopyTests`, etc.).
-- **Duplication count:** 62 Python files have identical packaged twins under `config/includes.chroot`. All shell/desktop binaries are also copied by `10-bright-os-components.hook.chroot` at build time.
+These are adopted as fixed architectural decisions:
 
-### 1.2 Build system
-- **Tool:** Debian `live-build` (`lb`) targeting Debian 13 Trixie amd64.
-- **Config:** `build/live-build/auto/config` auto-detects live-build capability (handles Ubuntu-vs-Debian hosts, modern vs legacy `--bootloaders`/`--bootloader` flags).
-- **Boot:** BIOS (isolinux/grub-pc) + UEFI (grub-efi with `shim-signed`/Secure Boot if built on Trixie). Hybrid ISO via `iso-hybrid`.
-- **Init:** systemd. No `debian-installer` in the live image (`--debian-installer false`); Calamares is the post-boot installer.
-- **Kernel:** `linux-image-amd64` with full `firmware-linux-nonfree`, `firmware-misc-nonfree`, and per-vendor firmware packages.
-- **Current build outputs a ~2.5–3.5 GB ISO estimate** (see §1.5).
-- **Persistent USB:** not configured. Live-boot uses `boot=live` with no `persistence` or `persistence-label` parameters. No overlay persistence partition setup; no live-boot persistence package added.
+1. **Compositor:** `labwc` (wlroots-based) is the default compositor. KWin remains an optional alternative session.
+2. **ISO strategy:** **One** Lite ISO targeting **under 2 GB**. Home/Developer/Android/Wine are optional installable components (post-install metapackages).
+3. **Filesystem:** **ext4** default. **btrfs** offered as an advanced option in Calamares.
+4. **Firmware:** **Retain broad firmware support initially.** Do not trim firmware to chase ISO size before measuring. Optimize only after real ISO size is known.
+5. **Desktop shell:** Retain the existing PyQt6/QML shell for Phase 6. No C++ shell rewrite in this phase.
+6. **GitHub Actions:** Approved for PR validation, automated ISO builds and QEMU testing.
+7. **Same OS in both modes:** USB-live and installed systems use the same rootfs, desktop, apps and system components; differences are handled via boot parameters and a firstboot service.
 
-### 1.3 Installer (Calamares)
-- Calamares 3.3.x with a LUKS-aware sequence (`partition → mount → unpackfs → … → bootloader`).
-- Configured modules include LUKS (`luksbootkeyfile` + `initramfscfg`), GRUB, displaymanager (SDDM), systemd services, and post-install shell cleanup.
-- Required RAM: 2048 MB; required disk: 16 GB.
-- Post-install removes `live-boot*` before `initramfs` rebuild (so installed system is a normal Debian system, not a live system).
-- No OEM/preseed install mode yet; no automatic partition-preserving reinstall.
+---
 
-### 1.4 Session / compositor / shell (current state)
-| Component | Current choice | Notes |
+## 1. Current architecture assessment (recap of audited state)
+
+- **Phase 5 present in main:** yes. Commits `0dfea5b`, `68c1445`, `5ee3f71`, `a0da32a` are merged via `f3f58e3`.
+- **Build:** Debian live-build targeting Debian 13 Trixie amd64, BIOS+UEFI hybrid ISO, systemd init.
+- **Current desktop stack (default Home):** SDDM → KWin (Wayland) → bright-desktop-shell.py (PyQt6+QML) embedded in KWin → Qt6 apps. Plasma workspace is also pulled in.
+- **Lite edition:** still pulls KWin (in core) and adds LXQt + openbox + picom; multiple WM paths.
+- **Persistence:** not implemented (no `persistence` boot param, no setup tool, no `toram` entry, no safe-shutdown).
+- **core.list.chroot:** 173 non-comment lines; includes SDDM, KWin, full Qt6+QML stack, X server full video drivers, gvfs-backends, GNOME/KDE disk utilities, CUPS, blueman, flatpak, imagemagick, neofetch, partitionmanager, gparted, policykit-1-gnome, breeze+adwaita icon themes.
+- **AURA:** correct D-Bus activation (not started at boot). **bright-android:** user session-activated (correct). **AURA Polkit authorization** hardened in Phase 5.
+- **Services enabled at boot:** systemd, NetworkManager, firewalld, sddm, polkit agent, udisks2, upower, systemd-logind, pipewire (user), flatpak system helper, auditd, apparmor.
+- **Tests:** ~600 Python unit tests pass; 15 shell suites pass as root+nobody; no RAM/boot/ISO-size/persistence/QEMU tests; no GitHub Actions.
+- **Duplication:** 62 Python files have byte-identical packaged copies under `config/includes.chroot/` (enforced by sync tests).
+
+See §1 of the v1 plan (`docs/PHASE-6-ARCHITECTURE-PLAN.md` prior to this revision) for full file-level inventory.
+
+---
+
+## 2. Corrected system architecture
+
+### 2.1 Init, session management and security
+- **Init:** `systemd` (keep). Debian systemd already provides `systemd-logind`; **do NOT add elogind** (would conflict and is unnecessary).
+- **Sessions:** standard systemd PAM sessions (not custom).
+- **Polkit agent:** exactly one authentication agent in the default user session. Options on Debian Trixie:
+  - `policykit-1-gnome` (~500 KB installed, GTK3, widely tested, used by XFCE/Cinnamon) — **recommended default.**
+  - `lxpolkit` (GTK2, from LXDE, very small but GTK2 is legacy).
+  - `polkit-kde-agent-1` (pulls KF5; do not use outside KDE optional session).
+  - `polkit-dumb-agent` / custom: do not write a custom agent; avoid insecure shortcuts.
+  - **Decision:** `policykit-1-gnome` as the default Polkit agent. It is the least-KDE, reasonably small, well-maintained option that does not depend on X11-exclusive toolkits (it works on Wayland).
+- **Do NOT disable** security (polkitd, apparmor, auditd, firewalld), networking (NetworkManager, iwd, wpasupplicant), audio (pipewire/wireplumber), hardware/firmware, filesystem (udisks2, btrfs/ext4/lvm2/cryptsetup, gvfs) or storage (udisks2, udisks2-policy) in the name of RAM. Measure first; optimize only non-essential services.
+- **Preserve AURA on-demand startup** (D-Bus activation only; no `WantedBy=`) exactly as it is in main.
+- **Preserve Bright Android's activation model**: session bus D-Bus activation (`Type=dbus`, `BusName=…`, `PartOf=graphical-session.target`). Do not change it without auditing: pkexec requirement, LXC namespace needs, `RestrictNamespaces=no` relaxation, and the signal/OperationComplete ordering all depend on the current unit. Any change must be a separate audited commit with tests.
+- **Networking:** NetworkManager + iwd; firewalld retained.
+- **Audio:** PipeWire + wireplumber + pipewire-pulse retained (industry standard; lightweight enough at ~15–25 MB).
+- **Filesystems:** keep btrfs, ext4, xfs, ntfs-3g, exfat, f2fs support; udisks2 retained.
+
+### 2.2 Default installed size and packages
+
+**Default Lite ISO target:** one read-only squashfs rootfs containing `bright-os-core` + `bright-os-live` + `bright-os-lite-apps` set. Post-install Calamares removes `bright-os-live` packages (Calamares itself, memtest, GRUB theme assets only needed on media). Optional metapackages (home/apps, developer, android, wine) install post-boot.
+
+Packages NOT removed from default:
+- Broad firmware support (kept for hardware compatibility).
+- XWayland (many apps still need it; labwc runs it natively).
+- One Polkit agent (policykit-1-gnome).
+- Networking, audio, udisks2, gvfs, cryptsetup/LVM.
+- `xserver-xorg-core` only if X11 fallback is kept in (review: can drop if Xwayland alone is sufficient — TBD in 6.1, measured).
+- `linux-image-amd64` (kernel); `linux-headers-amd64` moves to a `-dev` metapackage (not default).
+
+Packages removed or made optional:
+- SDDM → replaced with greetd (default installed) or direct live-autologin (live only).
+- KWin → moves to optional `bright-os-compositor-kwin` session package; removed from core.
+- Full X11 video driver set (`xserver-xorg-video-all`) → replaced with just the modesetting driver + xwayland; vendor-specific drivers pulled in by firmware/Xorg metapackage if needed.
+- Qt6 QML modules not actually required by our shell (audit imports in sub-phase 6.1).
+- GNOME/KDE utilities (gnome-disk-utility, partitionmanager, gparted, kwrite, ark, bluedevil, discover, print-manager, powerdevil, etc.) → optional or live-only.
+- `imagemagick` → only on live-medium (used for GRUB theme rendering during build; not needed installed).
+- `plymouth-themes`/`plymouth-label` → optional or dropped for Lite.
+- `neofetch`, `hplip`, `cups` (printing) → optional metapackage.
+- `breeze-icon-theme` + `adwaita-icon-theme` → one icon theme kept (Papirus or Adwaita, measured).
+
+Packages/configuration retained as-is:
+- All Phase 5 security hardening (Polkit fail-closed in both AURA and Bright-Android, GUI worker lifecycle, sync tests, etc.).
+- Calamares (live-medium only; removed post-install).
+- Packaged source copies under `config/includes.chroot/` remain synchronized with source until proven unnecessary (removing them is out of scope for Phase 6 — can be a later cleanup).
+
+---
+
+## 3. Corrected login architecture
+
+### 3.1 Two different login policies
+- **Live USB:** automatic login to `user` account (password `live`, passwordless sudo). No display manager required; auto-start the bright session directly from agetty/systemd. **No insecure custom lock screen** on live — persistence is disabled by default; locking the screen on a live system isn't a security boundary since `user` has passwordless sudo.
+- **Installed system:** a display manager / greeter runs by default, presenting a normal authentication prompt. User chooses session (bright-labwc, bright-kwin if installed). Session locking is provided by the display manager / session locker.
+
+### 3.2 Greeter evaluation (greetd+tuigreet vs LightDM)
+Both greetd+tuigreet and LightDM with a lightweight greeter are available on Debian 13 Trixie. Evaluated against requirements:
+
+| Requirement | greetd + tuigreet/gtkgreet | lightdm + lightdm-gtk-greeter |
 |---|---|---|
-| Display server | Wayland default, X11 fallback | `xwayland` + full `xserver-xorg-video-all` installed |
-| Compositor (Home/Dev) | **KWin** (`kwin-wayland`) | Full KWin with effects |
-| Compositor (Lite) | KWin (no effects) or openbox + picom on X11 | Lite still pulls KWin per core list |
-| Display manager | **SDDM** (with `sddm-theme-debian-breeze`) | Overhead ~30–60 MB resident |
-| Desktop shell | **bright-desktop-shell.py + Shell.qml** | PyQt6 + QML (~558 + 715 lines), embedded in KWin |
-| Apps | PyQt6 custom (launcher, files, terminal, settings, monitor, control-center, about, store, update) | 8 apps, 2 961 lines total Python |
-| Panel/dock | In-application in Shell.qml | No separate panel |
+| Debian 13 Trixie packages | `greetd` 0.10.3-4 (~1.3 MB installed) + `tuigreet` 0.9.1-5 (~2 MB); `gtkgreet` available as `greetd-gtkgreet` (note: Debian package name split; see §3.3) | `lightdm` 1.32.0-6 (~818 KB) + `lightdm-gtk-greeter` (~1–3 MB plus GTK runtime) |
+| Memory at greeter | ~2–8 MB (tuigreet is TUI; gtkgreet ~10–20 MB) | ~30–70 MB (greeter ~50 MB per community measurements, see [darrengoossens]) |
+| systemd user sessions | Yes (PAM `pam_systemd.so`) | Yes |
+| Wayland support | Yes (gtkgreet is GTK3/Wayland; tuigreet is terminal and works on any VT) | Yes (via `lightdm-autologin`/greeter session) |
+| Screen locking | Requires a separate screen locker (swaylock/swaylock-effects integrated with greetd for relogin); well understood pattern | LightDM re-authenticates on unlock via `dm-tool lock` |
+| Maintainability | Minimal code base, actively maintained (Kenny Levinsen, wlroots author) | Mature, widely deployed; but larger code base and GTK dependency |
+| Graphical greeter | gtkgreet available (Wayland native, no X11 required) | lightdm-gtk-greeter (GTK3) |
+| Multi-user switching | Supported via greeter | Supported |
+| Autologin support | Yes (config.toml command) | Yes |
 
-**Important architectural observations:**
-1. The current "shell" is a QML app running inside KWin (which acts as the Wayland compositor). We are NOT already running a custom compositor; KWin is the compositor.
-2. Even the **Lite** edition pulls `kwin-wayland` (because it is in `core.list.chroot`), plus LXQt + openbox + picom. "Lite" is not actually that light — it layers three possible WMs.
-3. The core package list pulls both `kwin-wayland` AND `xserver-xorg-core` AND `xserver-xorg-video-all` — full X stack even though default is Wayland.
-4. `sddm` is always installed even though it is a heavy DM; there is no direct-session autologin alternative for the installed system.
+**Recommendation: `greetd` with `gtkgreet` (graphical Wayland greeter) as the default display manager for installed systems.** Tuigreet is kept available as a fallback for recovery/VT.
 
-### 1.5 Package footprint (approximate, from package lists)
-| List | Effective packages (non-comment/blank lines) | Estimated installed size |
+Rationale:
+- greetd is ~10× lighter than LightDM+GTK greeter (important for 1 GB target).
+- It is Wayland-native; we do not need X11 for the login screen.
+- It is maintained by the wlroots author (labwc is wlroots-based); tight protocol compatibility.
+- It supports PAM/systemd sessions correctly; does not require elogind.
+- It does not pull in GTK2/KDE/Qt dependencies (gtkgreet uses GTK3, which we already pull via policykit-1-gnome and xdg-desktop-portal-gtk; no additional heavy stack).
+
+LightDM remains available as an optional `bright-os-dm-lightdm` package for users who prefer it.
+
+**Screen locking:** use `swaylock-effects` (or `swaylock`) with a PAM stack; greetd handles re-authentication. No custom insecure lock screen. The shell triggers lock via the standard `loginctl lock-session` / `swayidle` idle timeout.
+
+### 3.3 Note on greetd package naming on Debian
+Per a known Debian Trixie packaging quirk, greeters are named `tuigreet` and `gtkgreet` (NOT `greetd-tuigreet`/`greetd-gtkgreet`). This has bitten other installers (see ansible-collection-desktop issue #300). Build scripts and tests will assert the correct package names.
+
+---
+
+## 4. labwc + shell compatibility: proof-of-concept plan
+
+This is the highest-risk integration point. We will NOT remove KWin from the default path until a proof-of-concept demonstrates that the shell runs on labwc with panel/dock/layer-shell working.
+
+### 4.1 How the shell currently works with KWin
+Investigation sub-tasks for sub-phase 6.2:
+1. Audit how `bright-desktop-shell.py` starts KWin: the session script calls `kwin_wayland --exit-with-session=/usr/share/bright-os/bright-desktop-shell.py`; KWin treats the shell's QQuickView as a regular Wayland window and its own decorations/panel support is unused.
+2. Determine if the shell uses KWin-specific protocols/features:
+   - Window rules (`bright-kwin-rules.kwinrule`) — KWin-only; ignored on labwc.
+   - Does the shell position itself fullscreen? Set window type hints? Use KWin scripting/D-Bus?
+   - Does the shell manage other windows (panel/dock as separate surfaces)?
+   - Which Qt platform plugin does it use (`wayland`, `xcb`, `kwin`?)?
+3. Inventory every `import` in Shell.qml to determine which Qt6 modules are actually needed (Quick, Controls, Layouts, Window, Dialogs, Templates, Shapes, Particles, GraphicalEffects, FolderListModel, Settings, WorkerScript). Many of these may not be needed for a panel/dock/launcher surface.
+
+### 4.2 QtWayland layer-shell availability
+Verified: Debian Trixie ships `layer-shell-qt` 6.3.4-1 (KDE Frameworks) which provides:
+- `liblayershellqtinterface6` — runtime library exposing the zwlr_layer_shell_v1 protocol to Qt6 windows.
+- `qml6-module-org-kde-layershell` — QML import that lets a QML window declare itself as a layer-shell surface (anchor, layer, exclusive zone, margin, keyboard interactivity).
+- The package is in the `kde/` section but its dependencies are just `libc6`, `libqt6core6t64`, `libqt6waylandclient6`, `libstdc++6`, and a Qt6 Wayland ABI package. It does NOT pull in KWin or Plasma.
+
+Implication: our PyQt6 shell can become a layer-shell panel/dock/notification-surface by loading this QML module and setting layer/anchor/exclusive-zone properties — without writing compositor code. The shell runs as a normal Qt client window; labwc (which supports wlr-layer-shell-unstable-v1) composits it as a panel/dock.
+
+**Risk:** `layer-shell-qt` is maintained by KDE; while it has minimal runtime deps, it is one more dependency to watch. A non-Qt panel (e.g. waybar or a small custom C++ panel) could replace it in future but is out of scope for Phase 6.
+
+### 4.3 Proof-of-concept acceptance criteria (sub-phase 6.2)
+Before KWin is moved to optional:
+1. Build a test rootfs (chroot or VM) with labwc installed and KWin still installed.
+2. Configure labwc to auto-start `bright-desktop-shell.py` with `QT_QPA_PLATFORM=wayland` and `QT_WAYLAND_SHELL_INTEGRATION=layer-shell` (or equivalent env var provided by layer-shell-qt).
+3. Modify Shell.qml minimally to register the layer-shell surface (panel at top/bottom, dock at bottom, exclusive zone set correctly).
+4. Boot to the labwc session in QEMU (TCG and KVM if available).
+5. Verify:
+   - Shell appears as a panel/dock covering the correct edges.
+   - Regular windows (terminal, file manager, settings) tile/maximize/focus correctly below/around the panel.
+   - Launcher popups, dialogs and menus render above panel surfaces.
+   - Notifications (mako) appear on the correct layer.
+   - xdg-desktop-portal-wlr screenshots/screencast work.
+   - xdg-desktop-portal-gtk file picker works (launches by client apps).
+   - Polkit agent prompts appear on top.
+   - Bright Android window opens via XWayland/Wayland.
+   - Session logout and restart work.
+6. Compare KWin recovery: the KWin session must still be selectable and functional after the change; removal from core must NOT break recovery back to KWin.
+7. Measure idle RAM in the labwc session vs the current KWin session.
+
+If these criteria cannot be met, labwc integration is deferred and we keep KWin in core while investigating a smaller Qt-based panel (or the C++ shell is pulled forward).
+
+### 4.4 "Small separate panel" alternative
+If layer-shell-qt proves problematic (e.g. the full QML shell can't reliably be a layer surface), an alternative is to keep the shell as a regular maximized/compositor-fullscreen surface under labwc and use an established lightweight panel (`waybar`, `lxqt-panel`, or `fuzzel`/`wofi` for launcher) — but this duplicates effort and breaks the existing custom panel/dock. **Layer-shell-qt is preferred first; panel alternative is a fallback.**
+
+---
+
+## 5. USB persistence and boot design (corrected)
+
+### 5.1 Live-boot parameters — verified against Debian Trixie live-boot 7
+Parameters below are taken from `live-boot(7)` in Debian Trixie (manpages.debian.org/trixie/live-boot-doc). Parameters that were proposed without evidence (`swap=true` as universal default, `elevator=noop`, `rootdelay=10`) are NOT added as defaults without measurement; they may appear as compatibility boot entries.
+
+| Parameter | Verified meaning | Default |
 |---|---|---|
-| `core.list.chroot` | 173 | ~1.1–1.4 GB (kernel + firmware + Qt6 + KWin + Python + Calamares + NetworkManager + PipeWire + fonts) |
-| `desktop.list.chroot` (Home/Dev) | 34 | ~0.9–1.3 GB (full KDE Plasma + Firefox + printing + Blueman + Discover + CUPS) |
-| `desktop-lite.list.chroot` | 29 | ~0.3–0.4 GB (LXQt + picom + featherpad etc.) |
-| `aura-core.list.chroot` | 18 | ~0.1 GB (auditd/apparmor/psutil) — most overlap with core |
-| `android.list.chroot` | 6 | ~0.5–1.0 GB (Waydroid + LXC + images not in ISO but post-install) |
-| `editions/home` | 25 | ~0.6–0.9 GB (LibreOffice + VLC + GIMP + Thunderbird + Wine) |
-| `editions/lite` | 12 | ~0.1 GB (mpv + abiword + gnumeric) |
-| **Total Home (estimated)** | ~250 packages + recommends | **2.6–3.2 GB installed; ISO ~2.2–2.8 GB** |
-| **Total Lite (estimated)** | ~220 packages + recommends | **1.7–2.2 GB installed; ISO ~1.4–1.9 GB** |
+| `boot=live` | Activate live-boot | Always set |
+| `persistence` | Probe devices for persistence media (partition label/GPT name `"persistence"` by default; see `persistence-label`) | Not set (default live boot); set explicitly on persistent entries |
+| `persistence-label=LABEL,...` | Use custom label(s) instead of "persistence" when probing | We will set `persistence-label=bright-os-home` for home-only persistence, `bright-os-persist` for full-root persistence |
+| `persistence-media=removable-usb` | Restrict persistence probing to USB mass-storage removable media (avoid touching internal disks) | Set on persistent entries (safety!) |
+| `persistence-method=overlay` | Use overlayfs persistence (default; explicit for clarity) | Set on persistent entries |
+| `persistence-storage=filesystem` | Probe labeled filesystems; do not search for archive/image files | Set on persistent entries |
+| `persistence-read-only` | Mount overlay read-only (changes not saved) | Offered as "persistent read-only diagnostics" option |
+| `persistence-encryption=none,luks` | Allow unencrypted and LUKS-encrypted persistence; prompt for passphrase | Set on persistent entries |
+| `nopersistence` | Disable persistence even if a labeled partition exists (useful for "normal live boot" from media that previously had persistence) | Explicitly set on non-persistence entries |
+| `toram` | Copy entire read-only squashfs to RAM before mounting (faster operation on USB 2.0; requires enough RAM) | Set on copy-to-RAM entry, not default |
+| `components` | Enable live-config components (user setup, autologin, etc.) — verify required for our `05-bright-os` hook | Verify in 6.4 |
+| `quickreboot` | Skip fsck on reboot (makes live shutdown faster) | Investigate; default may already skip sync |
+| `nofull` | ? — not a live-boot parameter; **do not add**. |
+| `swap=true` | Enable use of local swap partitions; not a universal default because it may activate swap from internal disks during live boot. Investigate; off by default unless proven safe. | NOT default; tested in 6.4 |
+| `elevator=noop`/`none` | Kernel I/O scheduler parameter; modern kernels use `none`/`mq-deadline` automatically. Do NOT set as a universal default; USB devices get `none`/`mq-deadline` already. | Not added |
+| `rootdelay=10` | Wait 10 seconds for root device; only needed for slow USB/MMC devices where the storage is slow to enumerate. | NOT default; added to "USB compatibility" entry only. |
 
-These are engineering estimates based on package lists; actual sizes must be **measured**, not claimed.
+Persistence configuration file (`persistence.conf`) — from `persistence.conf(5)`:
+- Each line maps a source directory to a mount (overlay).
+- Home-only persistence uses `/home` as the single line.
+- Full-root persistence uses `/` (union mount of entire rootfs; caution: more risk of breaking on upgrade).
+- **Initial implementation: home-directory persistence only.** This is safer, doesn't capture system/package changes that could brick the live system across Debian updates, and covers user documents/settings.
+- Full-root persistence is offered as an advanced/explicit option with a documented risk warning.
 
-### 1.6 Services running at boot (from installed config)
-| Service | User | Notes |
-|---|---|---|
-| systemd + journald | root | always |
-| NetworkManager | root | + firewalld |
-| sddm | root | display manager, always starts |
-| AURA (`aura-core.service`) | `aura` | **NOT** enabled by default (D-Bus activation only, per unit file) — good for idle RAM |
-| bright-android | user (session) | `WantedBy=graphical-session.target`; only runs when logged in |
-| pipewire + wireplumber | user | audio |
-| Calamares | — | only on live medium |
-| polkitd, udisksd, upower, systemd-resolved, systemd-timesyncd | system | standard |
-| auditd, apparmor | root | from aura-core list |
-| flatpak system-helper | system | flatpak installed |
-| grub-initrd-fallback, plymouth | — | boot |
+### 5.2 GRUB boot entries (live medium)
+Distinct, clearly labeled entries (no "automatically enables full persistence"):
+1. **Start Bright OS Live (Default)** — `boot=live quiet splash ...`; no persistence flag (writes go to tmpfs overlay in RAM; no persistence probed).
+2. **Start Bright OS Live with Persistent Storage** — `boot=live persistence persistence-label=bright-os-home persistence-media=removable-usb persistence-method=overlay persistence-storage=filesystem persistence-encryption=none,luks` (probes for `bright-os-home` labeled partition on removable USB; mounts `/home` persistently).
+3. **Start Bright OS Live (No Persistence, even if present)** — adds `nopersistence`; for when the USB has a persistence partition you don't want to use.
+4. **Start Bright OS (Copy to RAM)** — adds `toram`; shows a warning if RAM < 2 GB (enforced by GRUB or initramfs check).
+5. **Start Bright OS Live (Safe Graphics)** — `nomodeset xforcevesa` (same as current).
+6. **Start Bright OS Live (USB Compatibility)** — adds `rootdelay=10`, disables KMS if needed, uses more conservative USB handoff.
+7. **Install Bright OS** — boots live and starts Calamares directly (no shell autologin? Or autologin with Calamares auto-launched; review current Calamares desktop shortcut).
+8. **Advanced options** submenu: verbose boot, single-user/rescue, BIOS/UEFI force entries, memtest.
 
-No measured idle RAM figure exists yet; 250–350 MB target vs likely **500–800 MB** today (SDDM + KWin + Plasma/LXQt components + sddm-theme + Polkit agent + NetworkManager applet + blueman + pipewire + AURA (D-Bus activated, so 0 until called)).
+### 5.3 Persistence setup tool
+A small GUI/CLI tool (`bright-persistence-setup`, shipped only on live medium, not on installed system) that:
+1. Lists removable USB partitions.
+2. Warns the user THREE times before modifying a partition (explicit confirmation dialog).
+3. Never silently formats an existing partition. If a partition already exists with data, offers to:
+   - Use the existing partition if it is labeled correctly and has a valid `persistence.conf`.
+   - Back up first (copy existing files somewhere).
+   - Cancel.
+4. For new persistence setup: creates a new partition after the live-system partition (or uses free space), formats ext4, labels it `bright-os-home`, writes `/persistence.conf` containing `/home`, sets correct UUID in fstab if installed.
+5. Offers LUKS encryption (passphrase twice; uses `persistence-encryption=luks`).
+6. Instructs user to reboot.
+7. Does not touch internal disks (filters to removable USB only, same logic as `persistence-media=removable-usb`).
 
-### 1.7 USB / live support today
-- Live boot works via `boot=live` kernel parameter (Debian live-boot).
-- Grub entries: Default, Safe Graphics, Verbose, Recovery (`nox11autologin nopersistence debug`), chainloader, advanced.
-- Live user: `user`/`live`, passwordless sudo, SDDM autologin.
-- **Missing:**
-  - Persistence partition setup (no `persistence`/`persistence-label=bright-os` boot parameter, no `live-boot-initramfs-tools` persistence tools enabled by default, no persistence.conf template, no partition-detector hooks).
-  - USB 2.0 vs 3.0 tuning (no `rootdelay` tuning, no I/O scheduler hints for slow USB).
-  - "Safe USB removal" / data integrity protocol (no explicit sync on shutdown indicator, no overlay fs flush markers).
-  - Toram/copy-to-RAM boot option.
-  - Automatic recovery from read-only USB errors (overlay error handling).
-  - Hybrid ISO verification before writing.
-
-### 1.8 Existing tests
-- **Python unit tests:** 17 source test files (≈600 tests) covering AURA, Bright Android, security, authorization. All passing as of Phase 5. Plus 17 identical packaged copies under `config/includes.chroot` (kept in sync by sync tests).
-- **Shell tests:** 15 suites (test-apps, test-build-readiness, test-installer, test-live-boot, test-calamares, test-packages, test-aura-core, etc.) covering package lists, syntax, config structure, Calamares, ISO validator.
-- **Tests that DO NOT yet exist:**
-  - ISO size budget test.
-  - Idle RAM measurement test.
-  - Boot time measurement test.
-  - Persistence enable/disable smoke test.
-  - USB safe-unmount / sync-on-shutdown test.
-  - Installed-system package footprint delta test.
-  - qemu/kvm-based boot-smoke test (boot to desktop screenshot + RAM probe).
-  - GitHub Actions CI for build+validation.
-
-### 1.9 Key risks & findings
-1. **KWin + Qt6 + SDDM + Plasma/LXQt ≠ lightweight.** Meeting 250–350 MB idle with KWin/SDDM/Plasma is unlikely. Even LXQt + SDDM + KWin is ~400–500 MB.
-2. **Core package list is bloated for a "minimal" foundation.** `xserver-xorg-video-all`, full Qt6 stack with QML modules, KWin, SDDM, `gnome-disk-utility`, `partitionmanager`, `gparted`, `firewalld`, `cups`, `blueman`, `breeze-icon-theme`, `adwaita-icon-theme`, `gvfs-backends`, `flatpak`, `plymouth-themes`, `hplip`-class items, `imagemagick`, `neofetch`, `file-roller`, etc. are all in *core*.
-3. **Two desktop stacks in Lite** (KWin for Wayland shell + openbox/picom for X11 fallback) wastes space and memory.
-4. **Python everywhere** (shell + apps + AURA + bright-android CLI) adds interpreter overhead. Acceptable if services are on-demand, but the shell being PyQt6/QML adds 50–80 MB resident on startup.
-5. **AURA is correctly on-demand (D-Bus activated, not started at boot)** — good.
-6. **Bright Android is session-activated, not started at boot** — good.
-7. **No firmware-split:** firmware-linux-nonfree pulls everything; per-firmware-reduce could cut ISO size for Lite.
-8. **Persistent USB is not implemented at all.**
-9. **No GitHub Actions** — build/validation/release is manual.
-10. **Duplicate "source+packaged" layout doubles maintenance** — any change must be copied; sync tests catch divergence but don't eliminate the copy.
+### 5.4 Safe shutdown / filesystem synchronization
+- Before shutdown/reboot, Plymouth splash or the shell displays "Saving data…" while `sync` runs and overlay is unmounted.
+- Use `FinalKillSignal=SIGTERM` and `TimeoutStopSec=10s` in the live session systemd units; final "You may now remove the USB drive" message only appears after `systemd-shutdown` has unmounted all filesystems.
+- Unclean removal: use overlayfs with `volatile` defaults for non-persistence mode (already overlay on tmpfs), so unclean USB removal during live-nonpersistent session at worst loses unsaved work from RAM; filesystem remains intact on the read-only squashfs.
+- For persistence mode, `persistence-fsck=true` is the live-boot default and is retained. On boot, `FSCKFIX=true` is NOT enabled (prompts via console or recovery mode to avoid silent corruption fixes).
 
 ---
 
-## 2. Proposed Lightweight Architecture
+## 6. Memory optimization strategy and measurement methodology
 
-### 2.1 Design principles
-1. **One OS, two modes.** The *same* rootfs is used for live USB and installed system. Differences are implemented via boot parameters, a firstboot service, and a writable overlay — not separate package sets.
-2. **Lite is the new baseline.** The "Home" edition becomes Lite + optional extra packages (LibreOffice, VLC, etc.) added via metapackages, not a heavier desktop stack. Developer edition = Home + dev tools. This directly targets the 1 GB / 250–350 MB idle goal.
-3. **Compositor choice: wlroots-based compositor rather than writing from scratch.** After evaluation:
-   - **KWin** retained only as an *optional* alternative (for users who want full KDE effects); not default.
-   - **Default compositor for all editions: a wlroots-based compositor.** Evaluated options:
-     - **labwc** — wlroots, Openbox-like XML config, small footprint, good XWayland support, actively maintained, no Qt dependency. ~2–5 MB resident.
-     - **sway** — wlroots, i3-compatible, tiling; keyboard-driven, good fit for "Developer" edition but less natural as a default DE compositor.
-     - **Wayfire** — wlroots, 3D effects, larger than labwc.
-     - **Cage** — single-app kiosk compositor; too minimal.
-     - **Smithay (Rust)** — library, not a usable compositor; would effectively require writing one.
-   - **Recommendation: labwc as the default compositor**, with an optional `bright-compositor` wrapper that provides panel/dock/launcher integration via the layer-shell protocol. We do NOT write a compositor from scratch in Phase 6.
-4. **Display manager: eliminate SDDM from the default path.** Options:
-   - Use `lightdm` with a minimal greeter (~5–10 MB) — but still a second process.
-   - Use **autologin via a systemd user session + `bright-session` launcher script** on installed systems (like Endless OS / SteamOS); autologin into a `bright` user, lock screen handled by the shell. For multi-user systems or manual login, lightdm can be installed optionally.
-   - For live USB, autologin is already the default — just remove SDDM from the default path.
-   - **Recommendation: default to direct session autologin with a built-in lock screen; ship lightdm-gtk-greeter as an optional DM for multi-user installs. Remove sddm from the default core list.**
-5. **Native C++ shell deferred.** The Phase 6 plan retains the PyQt6/QML shell for now (rewriting it is a large project that would delay the lightweight target). Priority is compositor/DM/service/package/footprint work first. The native shell is a subsequent phase.
-6. **On-demand AURA preserved.** (Already correct.)
-7. **Bright Android (Waydroid/Wine) optional** — pulled in via metapackage, not default for Lite.
+### 6.1 Baseline first, optimize second
+**No optimizations are merged before a baseline measurement exists.** Sub-phase 6.0 builds an automated measurement harness that reports per-build/per-commit numbers. After every package/session change, the same measurement runs in CI.
 
-### 2.2 Target package set (proposed "bright-core")
-A revised `core.list.chroot` target:
-- **Kernel:** `linux-image-amd64` (no headers in default installed system; headers in -dev metapackage).
-- **Firmware:** split into `firmware-linux-free` + `firmware-misc-nonfree` + an explicit smaller list of common firmware (realtek/intel wifi/amdgpu) — installer/Live ISO can still include the full set via an `-extras` ISO variant; base ISO uses a trimmed set to hit 2 GB.
-- **Init/system:** `systemd-sysv`, `dbus`, `udev`, `util-linux`, `coreutils`, `bash`, `apt`, `sudo`, `policykit-1`, `elogind` (instead of pulling full logind via a DM), `tzdata`, `locales`, `keyboard-configuration`, `console-setup`, `kmod`, `ca-certificates`, `curl`, `wget`, `btrfs-progs`, `e2fsprogs`, `xfsprogs`, `dosfstools`, `ntfs-3g`, `exfatprogs`, `fuse3`, `lvm2`, `cryptsetup`, `udisks2` (without gvfs-backends deps), `openssh-client`.
-- **Networking:** `network-manager` (without `network-manager-openvpn` by default; add via vpn metapackage), `iwd`, `iproute2`, `iputils-ping`, `wpasupplicant`, `wireless-tools`, `dnsmasq-base`, `firewalld`.
-- **Audio:** `pipewire`, `pipewire-pulse`, `wireplumber`, `alsa-utils`, `pavucontrol` (not pavucontrol-qt to avoid Qt dep).
-- **Graphics:** `mesa-vulkan-drivers`, `mesa-va-drivers`, `mesa-vdpau-drivers`, `xwayland`, `libgl1-mesa-dri`, `xserver-xorg-core` (opt-in; not pulled unless X11 fallback needed), `xserver-xorg-input-libinput` only (drop `-video-all`; KMS drivers are in the kernel).
-- **Compositor:** `labwc`, `xwayland`, `wl-clipboard`, `swayidle`, `swaylock`, `grim`, `slurp`, `mako` (notifications), `waybar` (panel, optional — we may use our shell's panel instead), `wlr-randr`.
-- **Shell/Apps:** keep PyQt6 minimal: `python3-pyqt6` only (drop qml, quick, svg, network, printsupport unless shell needs them; audit Shell.qml imports). Replace `breeze-icon-theme` + `adwaita-icon-theme` with `papirus-icon-theme` (smaller?) or one icon theme. `qt6ct` for Qt theming.
-- **DM (optional):** `lightdm` + `lightdm-gtk-greeter` in its own list, not core.
-- **Fonts:** keep `fonts-dejavu`, `fonts-liberation2`, `fonts-noto-cjk` opt-out via metapackage, `fonts-noto-color-emoji`, `fontconfig`.
-- **Utilities:** `htop`, `neofetch` (optional), `file-roller`, `unzip`, `p7zip-full`, `rsync`, `upower`, `acpid`, `xdg-user-dirs`, `xdg-utils`, `xdg-desktop-portal` + `xdg-desktop-portal-wlr` (critical for labwc), `xdg-desktop-portal-gtk` (file picker).
-- **Installer:** `calamares` + `calamares-settings-debian` + `os-prober` + `grub-pc-bin`/`grub-efi-amd64-bin` — these live on the live medium only; uninstalled post-install via Calamares packages module.
-- **Boot:** `grub-common`, `grub-pc-bin`, `grub-efi-amd64-bin`, `shim-signed`, `plymouth` (but drop `plymouth-themes`/`plymouth-label` for Lite).
-- **Remove from current core:** `sddm`, `kwin-wayland`, `plasma-workspace`, `qt6-qml*` modules not needed, `qml6-module-*`, `breeze-icon-theme` (if replaced), `gvfs-backends`, `gvfs-fuse` (keep `gvfs`), `network-manager-openvpn`, `policykit-1-gnome` (replace with `polkit-kde-agent-1` or `lxpolkit`), `gnome-keyring-daemon` (replaced with a smaller kwallet/lite substitute or nothing by default), `gnome-disk-utility`, `partitionmanager`, `gparted` (move to installer/live only), `cups`, `blueman`, `print-manager`, `imagemagick`, `firefox-esr` (move to editions), `volumeicon-alsa` (not needed with pipewire applet), `software-properties-common`, `optipng`, `sassc`, `neofetch`.
+### 6.2 Measurement method
+Idle RAM measurement protocol:
+1. Boot to desktop in QEMU (KVM if available; TCG otherwise, with documented performance caveats).
+2. Wait for a fixed idle period: **120 seconds** after the shell's window is mapped and CPU is idle (< 2% utilization on user+system combined for 10 consecutive seconds).
+3. Capture:
+   - `/proc/meminfo`: MemTotal, MemFree, MemAvailable, Buffers, Cached, SReclaimable, Shmem, Slab, PageTables, KernelStack, SwapUsed.
+   - Per-process PSS and RSS via `/proc/<pid>/smaps_rollup` (Pss, Rss, Private_Clean, Private_Dirty, Shared_Clean, Shared_Dirty, Swap). PSS (Proportional Set Size) is the primary "fair" accounting because it divides shared library memory across consumers.
+   - systemd service memory: `systemctl status` / `systemd-cgtop` for user-$UID.slice and system.slice.
+   - Kernel memory: Slab + VmallocUsed + PageTables + KernelStack summed.
+   - Reclaimable cache: Cached + SReclaimable + Buffers (separately reported; these can be dropped by the kernel under pressure so they should not be counted against "used" memory).
+4. Compute:
+   - **Used after idle (MemAvailable perspective):** MemTotal − MemAvailable (this is what the user would see in `free -h`).
+   - **Application PSS sum:** sum of PSS across all user-session processes (excluding kernel threads).
+   - **Kernel working set:** Slab unreclaimable + PageTables + KernelStack.
+   - **Reclaimable cache:** Cached + SReclaimable + Buffers (reported separately, not counted against idle target).
+   - **Per-service breakdown:** list user services and system services sorted by PSS.
+5. Take measurements at:
+   - Greeterscreen (greetd/gtkgreet running, before login).
+   - Desktop idle (2 min after shell appears).
+   - With one application open (terminal + file manager + browser new-tab) to show steady-state.
+6. Store results in CI as JSON artifacts per commit for trend comparison.
 
-### 2.3 Metapackage strategy
-Replace giant package lists with metapackages built in-tree:
-- `bright-os-core` — base system + compositor + shell (live + installed).
-- `bright-os-live` — live-medium-only (installer, memtest, recovery tools); removed post-install.
-- `bright-os-lite` — minimal apps (firefox-esr, mpv, abiword, gnumeric, pcmanfm, featherpad).
-- `bright-os-home` — Lite + office suite, media apps, accessories.
-- `bright-os-developer` — Home + dev toolchain.
-- `bright-os-android` — Waydroid support (optional add-on).
-- `bright-os-wine` — Wine/Proton (optional add-on).
+### 6.3 Target (provisional; NOT a claim)
+- Greeter: < 100 MB resident.
+- Desktop idle (Lite, labwc + shell + pipewire + NM + polkit + portal + keyring + file indexer): **target 250–350 MB PSS / MemAvailable perspective**.
+- Kernel working set: < 80 MB.
+- These are engineering targets, not achieved facts.
 
-This keeps the core ISO under 2 GB by shipping only `bright-os-live + bright-os-lite` in the default ISO; Home/Developer/Android/Wine are installable post-install or via a "full" ISO variant.
-
-### 2.4 Session architecture (post-change)
-```
-[systemd] → autologin (or lightdm if installed)
-   │
-   └─ bright-session.target (user)
-        ├── pipewire + wireplumber
-        ├── xdg-desktop-portal (-wlr + -gtk)
-        ├── bright-android.service (D-Bus activated, only when opened)
-        ├── polkit agent (lxpolkit / polkit-gnome-agent)
-        ├── mako (notifications)
-        ├── swayidle (idle management)
-        └── labwc (compositor) ── exec bright-desktop-shell.py
-                                    │
-                                    ├─ panel/dock/launcher (PyQt6 shell)
-                                    └─ xdg-desktop-portal file pickers
-```
-No KWin, no SDDM, no Plasma components in the default path. Expected idle RAM: **200–300 MB** once shell is warmed up. KWin/SDDM/Plasma remain installable as a "KDE Desktop" session option.
+### 6.4 Optimization boundaries
+Do NOT disable: polkitd, systemd-logind, NetworkManager, udisksd, firewalld, pipewire/wireplumber, polkit agent, portal (wlr+gtk), AURA D-Bus activation, auditd/apparmor (can be tuned but not removed), cron/systemd timers that are essential, timesyncd, journald, systemd-resolved (if in use).
+Candidates for optimization (measured one at a time):
+- Package trimming (see §7).
+- Service socket activation where applicable (e.g. udisks2 already is; cups if installed should be socket-activated).
+- Reducing number of started user services (e.g. geoclue, colord, print services not needed when no printer).
+- Enabling `zswap` with zstd to reduce swap pressure on 1 GB systems (this is NOT a RAM reduction but helps 1 GB target).
+- Disabling optional user-space daemons (e.g. tracker/miners, baloo if present) from the Lite session.
+- Switching icon themes to one with smaller footprint.
 
 ---
 
-## 3. USB and Internal Installation Design
+## 7. Package restructuring plan (corrected)
 
-### 3.1 Live USB architecture
-**Boot flow:**
-1. BIOS/UEFI loads GRUB from hybrid ISO (MBR+GPT, same as today).
-2. Default boot entry: `boot=live persistence components` (added: `persistence`, `components`, `swap=true`, `quickreboot`, `nofull`).
-3. GRUB menu adds new entries:
-   - "Start Bright OS Live (Default)" — with persistence if present
-   - "Start Bright OS Live (No Persistence)" — `nopersistence`
-   - "Start Bright OS (Copy to RAM)" — `toram` (for USB 2.0 slow media)
-   - "Start Bright OS (Safe Graphics)"
-   - "Install Bright OS" (direct to Calamares, no shell autologin)
-   - "Recovery Mode" (root shell, no GUI)
-4. `live-boot` mounts the squashfs + overlay (tmpfs by default, persistent partition if labeled `BRIGHT_OS-PERSIST` with `persistence.conf`).
-5. `live-config` (via existing `05-bright-os` hook) sets up `user` account, autologin (to bright-session, not to SDDM), hostname, os-release, MOTD.
-6. bright-session starts labwc + shell on tty1.
-7. User sees desktop with "Install Bright OS" shortcut.
+### 7.1 Audit before removing anything
+Every package removal is preceded by:
+1. `apt-cache rdepends --installed` check against the package lists to confirm nothing essential still depends on it.
+2. A boot test in QEMU after removal to confirm the session still works.
+3. An idle-RAM comparison (§6.2) to measure actual savings.
+4. An install test (Calamares) to confirm the installed system still boots and updates.
 
-**Persistence:**
-- Partition label `BRIGHT_OS-PERSIST` (ext4), mountpoint `/`, type `overlay` (live-boot persistence).
-- A setup tool (`bright-persistence-setup`, a small Python/CLI tool run from the live desktop) creates the partition + filesystem + persistence.conf and instructs user to reboot.
-- Home-directory-only persistence (`/home`) as an option, plus full root persistence.
-- Safe unmount: the session logout + shutdown sequence calls `sync` and waits for overlay fs to flush; shutdown splash shows "You may now remove the USB drive" only after filesystems are unmounted.
-
-**USB 2.0 / 3.0:**
-- `elevator=noop` (or `none` for modern kernels) for USB media.
-- `rootdelay=10` on the "USB compatibility" entry.
-- `toram` option copies the entire squashfs to RAM for USB 2.0 sticks; requires ≥1.5 GB available RAM.
-- Slab/page cache tuning (lower `vm.vfs_cache_pressure`? — actually default is fine; don't tune without measurement).
-
-**Recovery:**
-- Recovery mode boots to a root shell with networking; includes `bright-repair` script that can:
-  - check filesystem integrity
-  - reinstall GRUB
-  - reset user password
-  - enable/disable persistence
-  - re-run firstboot
-
-### 3.2 Installed desktop architecture
-- Calamares unpacks the same live rootfs (no separate "installed" image) and runs post-install scripts to:
-  - remove live packages (`live-boot`, `live-config`, `calamares*-only-on-live`, installer desktop shortcut).
-  - set up hostname, users, locale, timezone (already Calamares modules).
-  - install GRUB to the target disk (already bootloader module).
-  - enable `bright-session` autologin (or set up lightdm if chosen).
-  - generate initramfs without live-boot hooks.
-- The installed system uses:
-  - Same bright-core packages as live.
-  - Same shell, compositor, apps.
-  - Persistent storage on internal HDD/SSD (btrfs default, with optional LUKS).
-  - Normal apt updates via a `bright-os` apt suite (initially just Debian Trixie; Bright OS repo can be added later).
-- Post-install, systemd `bright-os-firstboot.service` runs once to:
-  - set edition,
-  - install metapackage updates,
-  - offer to install Nvidia/AMD firmware,
-  - offer to install Bright Android (Waydroid) / Wine.
-- Updates: normal `apt upgrade`; use `unattended-upgrades` for security by default (opt-out).
-- Optional features (AURA models, Waydroid, Wine, LibreOffice, dev tools) are lazy-installed, not started at boot.
-
-### 3.3 Filesystem layout
-- Live medium: GPT, BIOS boot partition + EFI System Partition (FAT32) + read-only squashfs + boot partition; optionally added persistence partition.
-- Installed system: default GPT + EFI + btrfs root (with subvolumes `@`, `@home`, `@cache`, `@log`, `@swap` as swapfile on btrfs or separate swap partition; offer LUKS). Dual-boot with Windows supported (Calamares already handles this).
-- Writable overlay for live mode is tmpfs (RAM) by default; persistence partition extends it to disk.
+### 7.2 Specific moves
+- `linux-headers-amd64`: move to a `-dev-kernel` metapackage (not default for Lite; build environments and DKMS users install it explicitly).
+- `sddm`: move to optional `bright-os-dm-sddm` package; not removed from repo; kept as recoverable alternative.
+- `kwin-wayland` and all KDE Plasma packages (`plasma-workspace`, `plasma-desktop`, `breeze`, `powerdevil`, `bluedevil`, etc.): move to optional `bright-os-session-kde` metapackage; kept in repo; KWin session remains installed if user chooses KDE metapackage.
+- Qt6 modules: in sub-phase 6.1, run an audit of Shell.qml imports and remove modules that are not used (qml6-module-qtquick-particles, qtquick-effects, qtquick-shapes, qt5compat-graphicaleffects, qml-workerscript candidates; verify each).
+- `xserver-xorg-video-all`: replace with `xserver-xorg-video-modesetting` only; vendor-specific `xserver-xorg-video-*` packages become optional/recommends via a `bright-os-x11-drivers` metapackage. `xserver-xorg-core` is only retained if X11 apps cannot run on Xwayland alone; Xwayland does NOT need xserver-xorg-core.
+- Firmware: kept broad in the default ISO; after measuring ISO size, a `-firmware-lite` ISO variant may be offered later.
+- Calamares: live-medium only; Calamares packages module (`packages.conf`) must be tested to ensure removing `live-boot*`, `calamares*`, `calamares-settings-debian`, and installer-artwork post-install does not remove shared dependencies required by the desktop. The packages list will be maintained explicitly (not "remove live-*" glob).
+- `imagemagick`: only needed for Plymouth/GRUB theme rendering during build (build-time dependency) — remove from installed/live chroot after the hook runs, OR keep as a recommends of a graphics metapackage.
+- `gvfs-backends`: review; `gvfs` is needed for removable media; individual backends (smb, afp, gphoto2, mtp, etc.) can be split out. Keep what's needed for USB drives/MTP cameras.
 
 ---
 
-## 4. Memory Optimization Opportunities
+## 8. Improved testing plan
 
-Ranked by expected impact:
+### 8.1 Test categories
+Tests are separated into four tiers: (A) automated unit/static, (B) automated QEMU boot+install, (C) automated ISO build+validation, (D) manual hardware/USB.
 
-| # | Opportunity | Estimated RAM saving | Risk |
+### 8.2 Required tests for Phase 6
+| # | Test | Tier | Notes |
 |---|---|---|---|
-| 1 | Replace SDDM with direct autologin (+ optional lightdm) | 30–60 MB | Low; needs new lock screen |
-| 2 | Replace KWin with labwc (default) | 80–150 MB (KWin ~100–150 MB; labwc ~3–8 MB) | Medium; need layer-shell shell integration |
-| 3 | Drop full X stack from default (xserver-xorg-video-all → just xserver-xorg-core+xwayland) | ~20–40 MB + ISO size | Low; some GPUs may need specific -video-* packages which are installable |
-| 4 | Trim `core.list.chroot` — remove GNOME/KDE utilities (gnome-disk-utility, partitionmanager, gparted, blueman, kwrite, discover, etc. to optional/live-only) | 50–150 MB RSS + ISO | Low |
-| 5 | Reduce Qt6/QML modules loaded by shell — audit Shell.qml imports; can we move away from QtQuick.Controls/Particles/Shadows? | 10–30 MB | Medium; may require shell UI simplification |
-| 6 | Replace `breeze-icon-theme` (huge) + `adwaita-icon-theme` with single lighter theme (Papirus/Hicolor) | 5–15 MB + ISO | Low |
-| 7 | Disable unused systemd units by default (cups, bluetooth if no BT hw, ModemManager, avahi if installed, fwupd, flatpak system helper, udisks poller) | 10–30 MB | Low; use socket activation where possible |
-| 8 | Move heavy apps (firefox, thunderbird, libreoffice, gimp, wine, waydroid) out of core/lite default (metapackage-gated) | 0 RAM, major ISO size | None; user installs on demand |
-| 9 | Avoid loading AURA, bright-android at startup (already on-demand; verify no .timer or .path pulls them in early) | 0–20 MB | None |
-| 10 | PipeWire is fine; but don't start pipewire-pulse as root (already per-user) | ~5 MB | None |
-| 11 | `zswap` enabled + compressed swap with zstd to reduce disk pressure on 1 GB systems | indirect | Low |
-| 12 | Audit Python services — defer AURA intelligence engine loading until first query (engine.start is lazy already) | 10–30 MB when idle | Low |
+| 1 | Default live USB boot (to shell) | B (QEMU) | Boots to desktop; shell mapped within 120 s (TCG) or 60 s (KVM) |
+| 2 | Non-persistent USB boot | B (QEMU) | Reboot twice; verify no files persist |
+| 3 | Persistent USB boot (home-only) | B (QEMU) | Create file on desktop, reboot, verify persistence |
+| 4 | Copy-to-RAM boot with insufficient-memory protection | B (QEMU) | Boot with <1.5 GB RAM; expect clear failure message, not silent hang |
+| 5 | Copy-to-RAM boot with sufficient memory | B (QEMU) | Boot with 3 GB; eject "ISO" mid-session; system stays up |
+| 6 | Installation to internal storage | B (QEMU) | **Use ≥20 GB virtual disk** (per 16 GB Calamares requirement + headroom); EFI and BIOS variants; verify partitioning, GRUB install, user creation |
+| 7 | First boot after installation | B (QEMU) | Installed system boots; no live user or live-boot present; polkit agent runs; system updates work (`apt update`) |
+| 8 | Login and session startup (installed) | B (QEMU) | Greeter appears; credentials accepted; labwc session starts; lock/unlock via swaylock works |
+| 9 | labwc desktop + application compatibility | B (QEMU) | Launch terminal, file manager, settings, Firefox; XWayland apps render; file dialogs open |
+| 10 | USB shutdown and persistence integrity | B (QEMU + device flush test) | Write files during session, shut down cleanly, reboot, verify integrity; simulate unclean removal (QEMU quit without shutdown) once, verify fsck runs and persistence is mountable after |
+| 11 | Actual ISO size | C | Fail build if ISO exceeds 2.0 GB; report exact size as artifact |
+| 12 | Idle memory measurement | B (QEMU) | Capture metrics per §6.2; report per commit |
+| 13 | Recovery from failed session startup | B (QEMU) | Break labwc config; verify fallback to TTY/recovery session, not a black screen |
+| 14 | Boot time | B (QEMU) | GRUB → greeter and greeter → desktop measured per build; target: <60 s on KVM, <120 s on TCG |
+| 15 | Package sync tests | A | Existing packaged-copies sync tests must still pass |
+| 16 | Polkit authorization tests | A | All Phase 5 tests must still pass (no regression in security) |
+| 17 | Shell suites root & nobody | A | 15 suites all pass |
+| 18 | KWin recovery session | B (QEMU) | After moving KWin to optional, verify installing `bright-os-session-kde` produces a bootable selectable session |
 
-**Estimated post-optimization idle RAM:** 220–320 MB (labwc + shell + pipewire + NM + polkit + portal + login/keyring). Must be MEASURED on real hardware/VM, not assumed.
-
----
-
-## 5. Required Repository Changes
-
-1. **Package lists restructure:**
-   - Rewrite `config/package-lists/core.list.chroot` around the new minimal core.
-   - Add `bright-os-live.list.chroot` (installer/memtest/recovery tools, Calamares, only on live; removed by Calamares `packages` module post-install).
-   - Replace edition `packages.list` files with metapackage definitions (or keep lists and have build scripts generate metapackages).
-2. **Session files:**
-   - Add `config/includes.chroot/usr/share/wayland-sessions/bright-labwc.desktop`.
-   - Add `bright-session.sh` target that starts labwc + shell (not kwin_wayland).
-   - Remove `bright-kwin-rules.kwinrule` from default path (moved to optional kde session).
-   - Add SDDM/lightdm configs as optional, not default.
-3. **Default autologin via systemd (agetty override + bright user service) instead of SDDM autologin**; add lock-screen support in shell.
-4. **Bootloader (GRUB):**
-   - Add persistence entries.
-   - Add toram entry.
-   - Add USB compatibility entry with rootdelay/elevator.
-   - Add direct "Install" entry.
-5. **Live-boot config:**
-   - Add `persistence` and `components` and `swap=true` to default boot parameters.
-   - Add live-boot-initramfs persistence hooks to build.
-   - Add `config/includes.chroot/lib/live/config/06-bright-persistence` for persistence setup UI.
-6. **Calamares:**
-   - Add persistence removal in postcfg if user requests "install without persistence partition wipe".
-   - Adjust packages module exclude list to remove live-only packages (live-boot, calamares itself from target? — careful; keep calamares libs needed for other things? No, remove).
-   - Add btrfs subvolume layout as default.
-7. **Shell/session:**
-   - Shell must run under labwc via wlr-layer-shell instead of being embedded in KWin. This is a shell output/panel protocol change: panel needs to be a layer-shell surface, not a KWin window.
-   - Add a simple lock-screen (or use `swaylock` with config).
-8. **xdg-desktop-portal:** use `xdg-desktop-portal-wlr` for screenshots/screencast instead of `-kde`.
-9. **Scripts/tools:**
-   - `bright-persistence-setup` tool.
-   - `bright-repair` recovery script.
-   - Memory/boot measurement tooling in tests.
-10. **GitHub Actions:** add `.github/workflows/` for:
-    - Static validation (shell/python tests) on every push.
-    - ISO build on Debian Trixie container (nightly / tag).
-    - Qemu boot-smoke test (boot ISO, wait for `graphical.target`, report RAM and boot time).
-11. **Documentation:**
-    - Update README with new architecture, edition split, USB persistence.
-    - Document compositor choice (labwc), rationale, and how to switch to KWin/Sway.
-12. **Tests:** add new tests listed in §7.
+### 8.3 QEMU environment notes
+- **GitHub Actions runners (ubuntu-latest) do not support KVM** (Azure Ddsv5 series without nested virtualization at time of writing). Tests in CI will use TCG (software emulation). Expect boot times ~3–5× slower than hardware; set expectations accordingly in CI thresholds.
+- KVM tests will be documented as requiring a self-hosted runner with `/dev/kvm` access; they produce more realistic measurements.
+- Boot-only tests (boot to shell, check for expected D-Bus name) are separated from full installation tests to keep CI times manageable.
+- Installation tests run on a **20 GB virtual disk** (Calamares requires 16 GB minimum; we use 20 GB to leave headroom for packages during install). Installation tests run less frequently (nightly or tag builds), not on every PR.
+- Physical USB compatibility is NEVER claimed from QEMU results. USB 2.0 / USB 3.0 testing on real hardware remains a manual step; hardware test reports include exact USB stick models, machines, and measured boot/RAM numbers.
 
 ---
 
-## 6. Potential Compatibility Risks
+## 9. Revised implementation roadmap (corrected order)
 
-| Risk | Mitigation |
-|---|---|
-| **labwc may not support some KWin features users rely on** (blur, window rules, kwin scripts, activities, per-app window geometry) | Make KWin + KDE Plasma an installable alternative session; document limitations. Layer-shell protocol gives us panel/dock/notification surfaces which is what the custom shell needs. |
-| **PyQt6 shell on labwc via layer-shell** is unproven in current code | Port Shell.qml incrementally; labwc supports layer-shell via wlroots. The shell can detect which compositor is running (WAYLAND_DISPLAY + compositor env) and adapt. |
-| **Removing SDDM** breaks multi-user / switching users | Ship `lightdm` as an option; Phase 6 default is single-user autologin (matches target "USB + fresh install" use case). Multi-user setup documented for post-install. |
-| **XWayland apps** may misbehave without full video drivers in minimal list | Keep `xserver-xorg-core` and mesa DRI drivers; don't remove `-video-all` from the full ISO, only from Lite/default. Provide safe graphics boot entry. |
-| **Persistence + overlayfs on USB 2.0** can be slow / corrupt on unclean removal | Add sync-on-shutdown indicator, offer toram option, use `overlayfs` with `volatile` mode when no persistence, integrity check on boot. |
-| **btrfs default** may surprise users expecting ext4 | Offer ext4 as explicit option in Calamares; default btrfs with compress=zstd for better flash life and space. |
-| **Removing LibreOffice / VLC from default ISO** makes the default feel incomplete | Ship Firefox + a lightweight media player + text editor; make installing full suite one-click via bright-control-center ("Add Office", "Add Media Apps"). |
-| **Bright Android / Wine on Wayland/labwc** may not fully work | Waydroid works on Wayland generally; Wine/Proton works via Wine Wayland or XWayland. Test thoroughly. |
-| **Existing users with Plasma/KWin** upgrading may have their session broken | Keep KDE Plasma session as an installable `bright-os-desktop-kde` metapackage; upgrade path preserves whichever session they used. |
-| **firmware-linux-nonfree trimmed** may leave some hardware non-functional | Keep full firmware on "full" ISO variant; include firmware loading helper in firstboot that offers to install missing firmware. |
-| **No QEMU/USB test in CI** may miss regressions | Add qemu boot-smoke test to GitHub Actions with measured RAM/boot time. Physical USB testing must remain a manual step. |
+Each sub-phase is its own PR with independent tests. KWin/SDDM remain installed and bootable until 6.2+6.3 pass their acceptance tests.
 
----
-
-## 7. Testing Plan
-
-Four tiers, clearly separated:
-
-### 7.1 Automated (static + unit) — runs on every push (GitHub Actions)
-- **All existing Python unit tests** (≈600 tests).
-- **All existing shell suites** (15 suites) — as root and as nobody (Phase 5 already passes both).
-- **New static checks:**
-  - ISO package-footprint budget test (count installed packages in the live chroot; fail if Lite exceeds ~220 packages or Home exceeds ~280).
-  - No-KWin/SDDM-in-default test (assert `kwin-wayland` and `sddm` are not in `core.list.chroot` for Lite build).
-  - Service enablement audit (assert no heavy services are enabled by default; only sockets/activation).
-  - Shell and packaged-copies synchronization (already exists).
-  - Polkit policy well-formedness (already exists).
-  - GRUB menu entry persistence/toram present.
-  - Persistence.conf template installed.
-
-### 7.2 Virtual machine tests (QEMU/KVM) — nightly + on release PRs
-- Build ISO in CI (Debian Trixie container or self-hosted runner).
-- Boot ISO in QEMU with 1 GB RAM, 2 GB disk:
-  - **Boot-time test:** measure time from GRUB selection to shell-ready (dbus idle + shell window mapped); target < 60 s in VM.
-  - **Idle RAM test:** sample `free -m` 60 s after shell ready; target ≤ 350 MB in VM (which is a conservative proxy for hardware).
-  - **Install test:** run Calamares in unattended/autopilot mode to a virtual disk, reboot, verify the installed system boots to shell.
-  - **Persistence test:** boot with a second virtual disk labeled BRIGHT_OS-PERSIST, create a file on desktop, reboot, verify file still present.
-  - **Shutdown test:** verify system reaches poweroff target without hanging.
-- Run with both BIOS and UEFI (OVMF).
-
-### 7.3 USB media tests (manual / semi-automated)
-- Write ISO to USB 2.0 stick and USB 3.0 stick (two different brands).
-- Boot on at least three reference machines:
-  - Low-spec: ≤ 4 GB RAM, dual-core CPU, HDD, Intel integrated graphics (1 GB RAM target).
-  - Mid-spec: 4–8 GB RAM, SATA SSD, recent AMD/Intel.
-  - Modern: NVMe, UEFI, ≥ 8 GB RAM.
-- Measure:
-  - Boot time (GRUB to desktop).
-  - Idle RAM (`free -h` after 5 min idle).
-  - Application launch time (terminal, file manager, browser).
-  - Persistence round-trip.
-  - USB removal safety (data saved after unclean removal is acceptable only if no write was in progress; unclean removal during write → on next boot run fsck/overlay recovery).
-  - Install to internal disk, reboot into installed system, verify.
-  - USB 2.0 with toram boot.
-
-### 7.4 Installed system tests
-- Install on HDD (BIOS) and SSD/NVMe (UEFI) with and without LUKS.
-- Verify system updates (`apt update && apt upgrade`).
-- Verify reboot/shutdown.
-- Verify suspend/resume on laptops.
-- Verify WiFi, sound, Bluetooth, printing (if attached).
-- Verify Bright Android (Waydroid) install/run/stop cycle after adding `bright-os-android` metapackage.
-- Verify Wine/Proton after adding `bright-os-wine` metapackage.
-
-### 7.5 Things we explicitly will NOT claim without measurement
-- "Idle RAM is 250 MB" until measured on real hardware/VM.
-- "Boots in X seconds" until measured.
-- "ISO size under 2 GB" until built and measured.
-- "Works on all hardware" — we will list tested hardware.
+| Sub-phase | Scope | Exit criteria |
+|---|---|---|
+| **6.0** | CI scaffolding (GitHub Actions: static + unit + shell), baseline memory/boot measurement harness (QEMU, scripts that capture §6.2 metrics and post them as artifacts). No package changes. Add `.github/workflows/`. Add ISO size budget test. No ISO build yet (that needs live-build). | All existing tests pass on CI; baseline RAM/ISO numbers recorded against current main. |
+| **6.1** | Minimal package restructuring. Move `linux-headers` out of default; trim packages whose removal is safe (plymouth-themes, imagemagick runtime, gnome-disk-utility to live-only, etc.). Add labwc, greetd, gtkgreet, layer-shell-qt, xdg-desktop-portal-wlr, swaylock, swayidle, mako as NEW packages (do not remove KWin/SDDM yet). Audit Qt6 QML module imports; remove unused modules. Start building a first test ISO. | ISO builds, boots in QEMU, existing KWin session still works; package set documented; size measured. |
+| **6.2** | labwc proof-of-concept session. Add `bright-labwc.desktop` wayland session, session script, labwc rc.xml, autostart. Adapt shell minimally to register layer-shell surfaces. Keep KWin session working. DO NOT change default session yet. | PoC acceptance criteria in §4.3 all pass (manual + QEMU); KWin session still boots; RAM measured. |
+| **6.3** | Shell + panel integration polish. Panel/dock exclusivity zones, launcher popups, notifications on correct layer, mako config, xdg-desktop-portal-wlr config, screen lock via swayidle/swaylock, logout/reboot/shutdown. Change default session from bright-kwin to bright-labwc for Lite. KWin/SDDM remain installed via the `bright-os-session-kde` and `bright-os-dm-sddm` packages. | Session boots by default; panel works; applications tile around panel; lock/logout works; KWin session remains selectable and functional. |
+| **6.4** | USB persistence + boot configuration. Add new GRUB entries (§5.2); add live-boot `persistence`/`persistence-label`/`nopersistence`/`toram`/`persistence-media=removable-usb` flags; add `bright-persistence-setup` tool; add overlay fs-safe shutdown messaging. Implement home-only persistence first; add full-root as advanced option. Test each boot entry in QEMU. | Boot entries all tested in QEMU; home persistence round-trips; tool warns before modifying partitions; internal disks are never touched; toram fails gracefully on low RAM. |
+| **6.5** | Calamares and installed-system compatibility. Trim live-only packages (Calamares, live-boot, live-config, installer branding, memtest, bright-persistence-setup) via Calamares `packages` module (tested — not globbing). Configure installed system for greetd + bright-labwc as default session (with KWin option retained if installed). Set ext4 default, btrfs as advanced option. Configure post-install autologin OFF by default (greetd prompts). Test BIOS + UEFI installs. | Installed system boots, greeter appears, login works, no live user present, no live-boot in initramfs, Calamares install completes on 20 GB disk, reboot works. |
+| **6.6** | Optional metapackages and firstboot wizard. Build `bright-os-home-meta`, `bright-os-developer-meta`, `bright-os-android` (Waydroid + GUI integration), `bright-os-wine`, `bright-os-session-kde`, `bright-os-dm-sddm`, `bright-os-dm-lightdm`. Firstboot service offers optional components, firmware updates, Nvidia/AMD driver detection. | Metapackages install correctly; firstboot runs once, is idempotent, can be skipped. |
+| **6.7** | Automated ISO builds and QEMU tests in GitHub Actions. Nightly builds produce an ISO artifact; PR validation builds a smaller test image (or does a package-only validation if ISO build is too slow). Integrate RAM/boot-size measurement scripts into CI. | Every PR runs static+unit+shell tests; nightly produces ISO with boot and RAM measurements posted. |
+| **6.8** | Hardware compatibility and USB optimization. Run builds on physical USB 2.0/3.0 sticks; add `rootdelay=10` and related compatibility quirks only as non-default entries with clear labeling; test on low-spec hardware (≤4 GB RAM, dual-core); collect hardware-compat reports; tune zswap/zstd for low-RAM systems; firmware trimming ONLY after measuring. | Hardware test report; USB 2.0 boots in <120 s; low-RAM systems reach desktop and launch apps. |
+| **6.9** | Actual memory/boot/ISO measurement pass on hardware. Run the §6.2 measurement protocol on reference hardware (low-spec, mid-spec, modern); iterate on remaining bottlenecks; final report documents measured vs target numbers. | Measured numbers for idle RAM, boot time, ISO size on ≥3 reference machines; gaps documented; further work triaged. |
 
 ---
 
-## 8. Phased Implementation Roadmap
+## 10. Risks and unresolved questions
 
-Proposed sub-phases within Phase 6, each a separate commit/PR:
-
-| Sub-phase | Commit/PR scope | Estimated risk | Prerequisite |
-|---|---|---|---|
-| **6.0** Repository hygiene + CI scaffolding + measurement tests | Add GitHub Actions workflow for static tests; add package-footprint and service-enablement tests; add qemu boot-smoke harness skeleton; do NOT change packages yet. | Low | None |
-| **6.1** Package list restructure (core/live/lite) | Rewrite `core.list.chroot`, add `bright-os-live.list.chroot`, trim heavy packages; build ISO locally, measure size. SDDM/KWin stay in place for this PR (so desktop still boots). | Low–Medium | 6.0 |
-| **6.2** Default-session switch (labwc + direct autologin) | Add labwc dependencies, add bright-session.sh, add wlr portal, add swayidle/swaylock/mako; keep KWin/SDDM sessions installable; change default session to bright-labwc. Test in qemu. | Medium | 6.1 |
-| **6.3** Shell layer-shell port | Port Shell.qml panel/dock/launcher to use wlr-layer-shell (via QtWayland layer-shell or via embedding the shell in a layer-shell client). Remove dependency on KWin window embedding. | High | 6.2 |
-| **6.4** USB persistence + boot entries | Add GRUB entries (persistence, toram, USB compat, install, recovery); add persistence-setup tool; add overlay/safe-shutdown indicator; add live-config hooks. Test in qemu with extra disk. | Medium | 6.2 |
-| **6.5** Calamares post-install trimming + btrfs defaults | Packages module removes live packages; set btrfs subvolume default; install lightdm optionally; post-install memory verification. | Low–Medium | 6.2 |
-| **6.6** Metapackages + first-run wizard | Add bright-os metapackages; firstboot service offers Android/Wine/Office/KDE options; edition detection. | Medium | 6.1, 6.5 |
-| **6.7** GitHub Actions ISO build + qemu tests on PRs | Wire up nightly and PR builds; measure/record RAM, boot time, ISO size as artifacts. | Medium | 6.0, 6.1 |
-| **6.8** Firmware trimming + toram + USB tuning | Trim firmware package set for Lite; add elevator/rootdelay tuning; test on USB 2.0/3.0 physical media. | Low | 6.4 |
-| **6.9** Measurement & validation on physical hardware | Produce the measured-vs-target report; iterate to hit 250–350 MB idle / <2 GB ISO / 1 GB min RAM. | Low | All prior |
-
-Each sub-phase ends with a PR against main, with CI results attached. Sub-phases 6.1 and 6.2 are the highest-risk and should have extra review. We will NOT start a C++ compositor rewrite in Phase 6 — compositor is wlroots/labwc. The native C++ shell is a post-Phase-6 project.
+1. **layer-shell-qt depends on Qt6 and KDE infrastructure** — runtime deps are small but the package lives in the `kde/` section; we will verify at 6.1 that it does not pull in unwanted stack. If it does, alternatives are `waybar` (separate panel, C++) or writing a minimal Qt layer-shell client plugin ourselves (post-Phase 6).
+2. **gtkgreet / greetd PAM configuration** needs to include `pam_systemd.so` for systemd user sessions to start correctly; otherwise XDG_RUNTIME_DIR and similar won't be set. Documented and tested at 6.2.
+3. **Shell as a layer-shell surface** may need more refactoring than expected (panel/dock/launcher/desktop windows currently live in one QQuickView; layer-shell requires each surface to be a distinct window, or at least have layer/anchor properties). May need splitting the shell into panel + desktop + dock processes, or using separate layer-shell surfaces from one process.
+4. **Home-only persistence** means APT updates, system settings changes, and application installs do not persist; users will expect a way to make system changes persist. Design a "create persistent system partition" option later (explicit, with size warning), but Phase 6 initial release only does `/home`.
+5. **SDDM removal from the default session** must preserve recovery: if greetd breaks, the user must be able to select a failsafe session or install an alternative DM easily. We will ship a `text-login` target and document recovery in GRUB.
+6. **Calamares displaymanager module** currently configures SDDM. We must either extend it to configure greetd, or replace that module step with a shellprocess that enables greetd and disables SDDM.
+7. **ISO size target under 2 GB** is tight with broad firmware. If Lite with broad firmware exceeds 2 GB, we will measure and either trim non-firmware packages first or ship a `-firmware-lite` variant before touching firmware. Broad firmware remains the default until measurement shows what to cut.
+8. **TCG emulation in CI is slow.** Installation tests may be too slow for PR feedback; we will separate boot-only smoke tests (<5 min) from full installation tests (nightly only).
+9. **Bright Android on labwc/Wayland** needs testing — Waydroid should work on wlroots compositors generally, but clipboard integration, window management, and launcher shortcuts may need adjustments.
+10. **No KVM in GitHub Actions** means performance numbers from CI are not representative of real hardware; all published idle RAM / boot time numbers must be from KVM or physical hardware, with CI numbers labeled as TCG.
 
 ---
 
-## 9. What This Plan Does NOT Do (out of scope for now)
+## 11. Git and repository rules (restated for Phase 6)
 
-- Rewrite the desktop shell in C++ (deferred to a future phase).
-- Write a Wayland compositor from scratch (we use labwc/wlroots).
-- Replace apt/DPKG with a different package system.
-- Remove AURA security hardening (preserved per standing rules).
-- Remove Bright Android integration (made optional-addon, not removed).
-- Force a single filesystem (btrfs default, ext4/LUKS still supported).
-- Require Secure Boot (shim is there if available).
-- Make non-x86-64 ports (RISC-V/ARM) — targets x86-64 only for now.
+- Working branch: `arena/phase6-lightweight-arch`.
+- Each sub-phase is a separate reviewed PR; do not merge to `main` without approval.
+- Keep `main` untouched except via PR merges.
+- Do not force-push.
+- Do not delete existing branches, clones, or hooks.
+- Packaged source copies under `config/includes.chroot/` remain synchronized with their originals; do not remove them without proving they are no longer required.
+- All Phase 5 security changes (AURA Polkit hardening, Bright Android async InstallApk, non-root tests, GUI lifecycle) are preserved; any change near them requires dedicated security review.
+- GitHub Actions are approved and used in sub-phase 6.0 onward.
 
 ---
 
-## 10. Open Decisions Requesting Your Input
+## 12. What I will do next after approval
 
-Before I begin implementation, please confirm/adjust:
+After you approve this revised plan, I will begin **sub-phase 6.0 only** (CI scaffolding + baseline measurement tests + QEMU harness) as a separate PR. No package lists, boot entries, session scripts, or shell code will change in that PR — it adds `.github/workflows/` and the measurement/test harness only, so we can measure the baseline before making optimizations.
 
-1. **Compositor choice:** labwc as default compositor (wlroots-based)? Or would you prefer sway (tiling) or another?
-2. **Display manager:** default to direct autologin (no DM), with lightdm optional? Or keep lightdm as the default (adds ~15–25 MB but is familiar)?
-3. **ISO variant strategy:** single "Lite" ISO under 2 GB with metapackage install for Home/Dev/Android/Wine post-install; OR two ISOs (Lite + Full)?
-4. **Default filesystem:** btrfs with compress=zstd + swapfile? Or ext4?
-5. **Firmware:** trim firmware for the default ISO to save space (risk: some hardware needs missing firmware on first boot), OR keep full firmware set (larger ISO)?
-6. **Qt6 QML dependency for the shell:** acceptable to keep for Phase 6, or do you want me to prioritize the C++ shell rewrite earlier?
-7. **GitHub Actions approved** (per your rule #9) — I'll set up CI. Confirm this applies to PR validation + ISO builds.
-
-Once you approve the plan and answer these decisions, I'll start implementation with sub-phase 6.0 (CI scaffolding + measurement tests) and work through the phases in order with separate commits and PRs per sub-phase, stopping after each for review.
+I will stop after each sub-phase PR for review.

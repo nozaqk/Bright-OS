@@ -1,0 +1,65 @@
+# =============================================================================
+# Bright OS — Nightly workflow (scaffolding for sub-phase 6.7)
+# In sub-phase 6.0 this workflow runs the same static + unit tests as CI and
+# records a timestamped baseline. Actual ISO build + QEMU boot testing will
+# be added in sub-phase 6.7 when the build container is configured.
+# =============================================================================
+name: Nightly
+
+on:
+  schedule:
+    # 03:17 UTC daily (pseudo-random minute to avoid load spikes)
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  nightly-checks:
+    name: Nightly checks + baseline
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run Python tests
+        run: |
+          python3 -m unittest discover -s aura/tests -p "test_*.py"
+          python3 -m unittest discover -s bright_android/tests -p "test_*.py"
+
+      - name: Run shell tests
+        run: |
+          for t in tests/test-*.sh; do bash "$t" || exit 1; done
+
+      - name: Record nightly baseline
+        run: |
+          mkdir -p build/measurements
+          python3 tools/measure/run_measurements.py \
+            --tag "nightly-$(date -u +%Y%m%d)" \
+            --out build/measurements/nightly.json
+
+      - name: Upload nightly baseline
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-baseline-${{ github.run_id }}
+          path: build/measurements/nightly.json
+          retention-days: 90
+
+  # Placeholder for ISO build (sub-phase 6.7):
+  # build-iso:
+  #   needs: nightly-checks
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - name: Set up Debian build container
+  #       ... install live-build, debootstrap, etc.
+  #     - name: Build Lite ISO
+  #       run: ./build/scripts/build.sh lite
+  #     - name: Measure ISO
+  #       run: python3 tools/measure/measure_iso.py --iso build/output/lite/bright-os-*.iso
+  #     - name: Boot in QEMU (TCG)
+  #       run: ./build/scripts/test-in-qemu.sh --display none --serial-log serial.log ...
+  #     - name: Collect idle RAM from serial log
+  #       ... harvest BRIGHT-OS-MEASUREMENT-JSON block
