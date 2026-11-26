@@ -101,16 +101,19 @@ jobs:
         run: |
           set -eu
           echo "Before: $(df -h / | tail -1 | awk '{print $4}')"
-          # In Debian container, remove unnecessary docs/cache to free space
-          rm -rf /usr/share/doc/* /usr/share/man/* /var/cache/apt/archives/*.deb 2>/dev/null || true
           apt-get clean
+          rm -rf /var/cache/apt/archives/*.deb 2>/dev/null || true
           echo "After:  $(df -h / | tail -1 | awk '{print $4}')"
 
       - name: Install live-build and build dependencies
         run: |
-          set -eux
+          set -ux
           export DEBIAN_FRONTEND=noninteractive
-          apt-get update -qq
+          echo "--- Sources list ---"
+          cat /etc/apt/sources.list /etc/apt/sources.list.d/*.list 2>/dev/null || true
+          echo "--- apt-get update ---"
+          apt-get update
+          echo "--- Installing core build dependencies ---"
           # Required live-build and ISO creation tools (tested on Debian Trixie).
           apt-get install -y --no-install-recommends \
             live-build debootstrap debian-archive-keyring squashfs-tools xorriso \
@@ -119,15 +122,17 @@ jobs:
             file coreutils cpio procps gdisk kmod debian-keyring \
             python3 python3-pip ca-certificates wget curl git sudo \
             numfmt util-linux
-          # Optional: Secure Boot shim + signed GRUB (not required for build).
+          echo "--- Optional: Secure Boot shim ---"
           apt-get install -y --no-install-recommends shim-signed grub-efi-amd64-signed \
             || echo "(shim-signed / signed GRUB unavailable; continuing without Secure Boot)"
-          # Optional: QEMU for smoke test (separate from build).
+          echo "--- Optional: QEMU for smoke test ---"
           apt-get install -y --no-install-recommends qemu-utils qemu-system-x86 ovmf \
             || echo "(QEMU unavailable; smoke test will be skipped)"
+          echo "--- Verify required tools ---"
           lb --version
           for t in lb debootstrap mksquashfs xorriso isoinfo file grub-mkstandalone unsquashfs; do
             command -v "$t" >/dev/null || { echo "::error::missing tool: $t"; exit 1; }
+            echo "  found: $t"
           done
 
       - name: Sanity-check live-build capabilities
