@@ -58,6 +58,7 @@ from . import config as ba_config
 from . import waydroid_manager
 from . import compatibility
 from . import apk_validator
+from . import config_policy
 from . import launcher_integration
 
 
@@ -94,16 +95,16 @@ def _get_caller_credentials(sender, bus) -> tuple:
     Returns (ok: bool, pid: int, uid: int, reason: str). When ok is False,
     pid/uid are 0 and reason describes why credentials could not be obtained.
 
-    Production-invariant: when HAS_DBUS is True and the call was dispatched by
-    dbus-python, `bus` is always the service's Connection object and `sender`
-    is always a non-None bus name. The in-process/headless path below is only
-    reachable when HAS_DBUS is False (dbus module unavailable, e.g. unit tests
-    or headless CLI use) and does NOT apply to real D-Bus-dispatched calls.
+    Every failure returns ok=False (deny): dbus-python missing, no bus object,
+    no sender, or credentials that cannot be read or are out of range.
     """
     if not HAS_DBUS:
-        # dbus-python is not importable in this process: we are running in
-        # headless mode or unit tests. There is no D-Bus attack surface.
-        return True, 0, SERVICE_UID, "in-process call (no D-Bus bus)"
+        # dbus-python is not importable, so this process cannot receive or
+        # verify D-Bus callers. Authorization must not be granted without a
+        # verifiable caller identity: deny. (Nothing calls this path at
+        # runtime: the authorized methods exist only on the D-Bus service
+        # class, which is defined only when HAS_DBUS is True.)
+        return False, 0, 0, "D-Bus unavailable (python3-dbus missing); denied"
 
     # When HAS_DBUS is True but bus is None, this is a programming error in
     # the caller (method was invoked without passing self._bus) or a direct
@@ -145,16 +146,131 @@ def _get_caller_credentials(sender, bus) -> tuple:
     return True, pid, uid, ""
 
 
+# Maximum time to wait for a Polkit decision. ALLOW_USER_INTERACTION may show
+# an authentication prompt, so this must be generous.
+POLKIT_CHECK_TIMEOUT_SECONDS = 60
+
+# Maximum Polkit checks in flight at once, including checks that have timed
+# out but whose thread is still blocked. A slot is released only when the
+# worker thread actually finishes, so hung threads cannot accumulate without
+# bound. When every slot is taken, new requests are denied immediately.
+POLKIT_MAX_IN_FLIGHT = 4
+_POLKIT_SLOTS = threading.BoundedSemaphore(POLKIT_MAX_IN_FLIGHT)
+
+
+def _polkit_consult(action_id: str, pid: int, uid: int,
+                    timeout: float = None) -> tuple:
+    """Ask Polkit whether process `pid` may perform `action_id`.
+
+    Returns (allowed: bool, reason: str). Fails closed: a missing authority,
+    an exception, a timeout, a saturated pool, or a response that is not
+    exactly True/False is a denial. Only an explicit is_authorized() == True
+    allows.
+
+    Resource limits:
+    - At most POLKIT_MAX_IN_FLIGHT checks run at once. The slot is acquired
+      without blocking, so a saturated pool denies at once and the D-Bus
+      service stays responsive.
+    - Python cannot cancel a thread blocked inside a C call. A timed-out check
+      keeps its thread and its slot until the call returns. The thread is not
+      killed, and no result from it is ever used.
+    - Each request has its own state. The caller marks it abandoned on
+      timeout, and the worker discards any result that arrives after that.
+      A late "authorized" therefore cannot authorize a request that already
+      returned a denial.
+    """
+    if timeout is None:
+        timeout = POLKIT_CHECK_TIMEOUT_SECONDS
+
+    if not _POLKIT_SLOTS.acquire(blocking=False):
+        return False, (
+            f"Polkit authorization busy (too many checks in flight); denied {action_id}"
+        )
+
+    lock = threading.Lock()
+    req = {"status": "pending", "result": None, "error": None, "stage": None}
+
+    def _settle(**fields):
+        # Store the outcome only if the caller has not already given up.
+        with lock:
+            if req["status"] != "pending":
+                return False
+            req.update(fields)
+            req["status"] = "done"
+            return True
+
+    def _worker():
+        try:
+            try:
+                authority = Polkit.Authority.get_sync(None)
+            except Exception as e:
+                _settle(stage="authority", error=e)
+                return
+            try:
+                subject = Polkit.UnixProcess.new(pid)
+                result = authority.check_authorization_sync(
+                    subject,
+                    action_id,
+                    None,
+                    Polkit.CheckAuthorizationFlags.ALLOW_USER_INTERACTION,
+                    None,
+                )
+            except Exception as e:
+                _settle(stage="check", error=e)
+                return
+            _settle(result=result)
+        finally:
+            _POLKIT_SLOTS.release()
+
+    worker = threading.Thread(target=_worker, name="polkit-check", daemon=True)
+    try:
+        worker.start()
+    except Exception:
+        _POLKIT_SLOTS.release()
+        return False, "Polkit check could not start; denied"
+    worker.join(timeout)
+
+    with lock:
+        if req["status"] == "pending":
+            req["status"] = "abandoned"  # any late result is now discarded
+            timed_out = True
+        else:
+            timed_out = False
+        snapshot = dict(req)
+
+    if timed_out:
+        return False, (
+            f"Polkit check timed out after {timeout}s for {action_id}; denied"
+        )
+    if snapshot["error"] is not None:
+        if snapshot["stage"] == "authority":
+            return False, f"Polkit authority unavailable: {snapshot['error']}"
+        return False, f"Polkit authorization check failed: {snapshot['error']}"
+
+    result = snapshot["result"]
+    try:
+        authorized = result.get_is_authorized()
+        challenge = result.get_is_challenge()
+    except Exception as e:
+        return False, f"Polkit returned an invalid response: {e}"
+
+    if authorized is True:
+        return True, "polkit authorized"
+    if challenge is True:
+        return False, "authentication required"
+    if authorized is False:
+        return False, "not authorized"
+    return False, f"Polkit returned an invalid response: {authorized!r}"
+
+
 def _check_authorization(sender, action_id: str, bus=None,
                          allow_same_user: bool = False) -> tuple:
     """Authorize a D-Bus method call.
 
     Authorization model (Phase 2.3 — FAIL-CLOSED for all state changes):
-      0. In-process calls (HAS_DBUS=False): allow (trusted path).
-         Not reachable from any real D-Bus dispatch; dbus-python always
-         supplies a bus object and sender for dispatched methods. If HAS_DBUS
-         is True and bus is None (caller error), we DENY to prevent accidental
-         in-process bypass.
+      0. No D-Bus (HAS_DBUS=False) or no bus object: DENY. There is no
+         trusted in-process path; a caller whose identity cannot be verified
+         is never authorized.
       1. Credentials must be obtainable (PID/UID) → fail closed otherwise.
       2. Root is always authorized.
       3. Same-UID check: caller UID must match service UID. Other local
@@ -207,12 +323,12 @@ def _check_authorization(sender, action_id: str, bus=None,
     if not ok:
         return False, reason
 
-    # In-process / headless mode (HAS_DBUS=False): trusted path.
-    if "in-process" in reason or "headless" in reason:
-        return True, reason
-
-    # Root is always authorized for any action
+    # Root is always authorized. Polkit is not consulted for root, so record
+    # root-authorized state changes for audit (read-only calls are not logged).
     if uid == 0:
+        if not allow_same_user:
+            logger.info("Root authorized state-changing action=%s (Polkit not consulted)",
+                        action_id)
         return True, "root caller"
 
     # Same-user verification — other local accounts are denied
@@ -247,37 +363,10 @@ def _check_authorization(sender, action_id: str, bus=None,
             "State-changing operations require Polkit."
         )
 
-    try:
-        authority = Polkit.Authority.get_sync(None)
-    except Exception as e:
-        logger.warning(
-            "Failed to obtain Polkit authority for action=%s pid=%d uid=%d: %s",
-            action_id, pid, uid, e,
-        )
-        return False, f"Polkit authority unavailable: {e}"
-
-    try:
-        subject = Polkit.UnixProcess.new(pid)
-        result = authority.check_authorization_sync(
-            subject,
-            action_id,
-            None,
-            Polkit.CheckAuthorizationFlags.ALLOW_USER_INTERACTION,
-            None,
-        )
-    except Exception as e:
-        logger.warning(
-            "Polkit check_authorization_sync raised for action=%s pid=%d uid=%d: %s",
-            action_id, pid, uid, e,
-        )
-        return False, f"Polkit authorization check failed: {e}"
-
-    if result.get_is_authorized():
-        return True, "polkit authorized"
-    elif result.get_is_challenge():
-        return False, "authentication required"
-    else:
-        return False, "not authorized"
+    allowed, reason = _polkit_consult(action_id, pid, uid)
+    if not allowed:
+        logger.warning("Denied action=%s caller uid=%d: %s", action_id, uid, reason)
+    return allowed, reason
 
 
 # Backwards-compatible alias (old name); prefer _check_authorization in new code.
@@ -302,12 +391,13 @@ class BackgroundWorker:
                     self.service.OperationProgress(op_name, msg)
             kwargs["progress_cb"] = progress
             func(*args, **kwargs)
+            # Arguments follow the declared signature (operation, message, success).
             if HAS_DBUS:
-                self.service.OperationComplete(op_name, True, "")
+                self.service.OperationComplete(op_name, "", True)
         except Exception as e:
             logger.error("[%s] failed: %s", op_name, e)
             if HAS_DBUS:
-                self.service.OperationComplete(op_name, False, str(e))
+                self.service.OperationComplete(op_name, str(e), False)
 
     def start(self, func, op_name: str, *args, **kwargs):
         with self._lock:
@@ -443,13 +533,15 @@ if HAS_DBUS:
                     "org.bright_os.BrightAndroid.NotAuthorized",
                     f"Cannot set config: {reason}"
                 )
-            if "/" not in key:
+            # Allowlist and value validation run after authorization, for every
+            # caller including root. See core/config_policy.py.
+            try:
+                config_policy.set_setting(key, value)
+            except config_policy.ConfigPolicyError as e:
                 raise dbus.exceptions.DBusException(
                     "org.bright_os.BrightAndroid.InvalidArgument",
-                    "Key must be in section/key format"
+                    f"Rejected config change: {e}"
                 )
-            section, k = key.split("/", 1)
-            ba_config.set_value(section, k, value)
 
         @method(INTERFACE, in_signature="", out_signature="aa{sv}", sender_keyword="sender")
         def ListApps(self, sender=None):

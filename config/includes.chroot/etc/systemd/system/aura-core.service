@@ -7,6 +7,9 @@ Wants=dbus.service
 
 # AURA should not block the boot process if it fails
 FailureAction=none
+# Start-rate limiting belongs in the Unit section; systemd ignores it in the Service section.
+StartLimitIntervalSec=60
+StartLimitBurst=5
 # AURA starts after sysusers/tmpfiles have created its runtime user and dirs.
 
 [Service]
@@ -16,8 +19,6 @@ Group=aura
 ExecStart=/usr/bin/aura-core-service --foreground
 Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=60
-StartLimitBurst=5
 
 # Security hardening
 NoNewPrivileges=yes
@@ -52,5 +53,8 @@ WorkingDirectory=/var/lib/aura
 ExecStartPre=+/bin/systemd-tmpfiles --create /usr/lib/tmpfiles.d/aura.conf
 
 [Install]
-WantedBy=multi-user.target
+# AURA is NOT started at boot. It has no WantedBy= target, so enabling it does
+# not pull it in at boot. It starts on demand: a D-Bus client calling
+# org.bright_os.AURA triggers activation via org.bright_os.AURA.service, or an
+# administrator runs `systemctl start aura-core.service`.
 Alias=aura.service

@@ -214,8 +214,16 @@ class SystemdUnitTests(unittest.TestCase):
     def test_syslog_identifier(self):
         self.assertIn("SyslogIdentifier=aura-core", self.content)
 
-    def test_install_wanted_by_multi_user(self):
-        self.assertIn("WantedBy=multi-user.target", self.content)
+    def test_start_limit_is_in_unit_section(self):
+        # systemd reads StartLimit* only from [Unit]; in [Service] it is ignored.
+        unit_sec = self.content.split("[Service]")[0]
+        self.assertIn("StartLimitIntervalSec=60", unit_sec)
+        self.assertIn("StartLimitBurst=5", unit_sec)
+
+    def test_install_not_wanted_at_boot(self):
+        # AURA must start only on request, never automatically at boot.
+        self.assertNotRegex(self.content, r"(?m)^WantedBy=",
+                            "AURA must not be pulled in at boot")
         self.assertIn("Alias=aura.service", self.content)
 
 
@@ -550,8 +558,10 @@ class ChrootHookTests(unittest.TestCase):
     def test_hook_has_useradd_fallback(self):
         self.assertIn("useradd", self.hook)
 
-    def test_hook_enables_service(self):
-        self.assertIn("systemctl enable aura-core.service", self.hook)
+    def test_hook_does_not_enable_service(self):
+        # Enabling would make AURA start at boot. The hook must keep it disabled.
+        self.assertNotIn("systemctl enable aura-core.service", self.hook)
+        self.assertIn("systemctl disable aura-core.service", self.hook)
 
     def test_hook_sets_launcher_executable(self):
         self.assertIn("chmod +x /usr/bin/aura-core-service", self.hook)

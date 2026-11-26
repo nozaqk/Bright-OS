@@ -605,7 +605,7 @@ class SecurityValidationTests(unittest.TestCase):
 
     def test_polkit_check_rejects_no_sender(self):
         """When a real bus is present, sender=None must be denied (fail-closed).
-        bus=None in-process calls are allowed separately."""
+        bus=None is also denied (see FailClosedTests)."""
         from bright_android.core.android_service import _check_authorization
         import bright_android.core.android_service as svc
         bus_mock = mock.MagicMock()
@@ -875,6 +875,46 @@ class RealWaydroidIntegrationTests(unittest.TestCase):
         from bright_android.core import waydroid_manager
         status = waydroid_manager.get_status(force_refresh=True)
         self.assertIn("running", status)
+
+
+class BackgroundWorkerSignalTests(unittest.TestCase):
+    """OperationComplete is declared (operation s, message s, success b).
+
+    Completion arguments must follow that order, or D-Bus marshalling fails
+    and clients never see the completion signal.
+    """
+
+    class _FakeService:
+        def __init__(self):
+            self.complete = []
+
+        def OperationProgress(self, *args):
+            pass
+
+        def OperationComplete(self, *args):
+            self.complete.append(args)
+
+    def _run_op(self, func):
+        from bright_android.core import android_service as svc
+        fake = self._FakeService()
+        with mock.patch.object(svc, "HAS_DBUS", True):
+            svc.BackgroundWorker(fake)._run(func, "init")
+        self.assertEqual(len(fake.complete), 1)
+        return fake.complete[0]
+
+    def test_success_arguments_match_declaration(self):
+        op, message, success = self._run_op(lambda progress_cb=None: None)
+        self.assertEqual(op, "init")
+        self.assertIsInstance(message, str)
+        self.assertIs(success, True)
+
+    def test_failure_arguments_match_declaration(self):
+        def boom(progress_cb=None):
+            raise RuntimeError("download failed")
+        op, message, success = self._run_op(boom)
+        self.assertEqual(op, "init")
+        self.assertEqual(message, "download failed")
+        self.assertIs(success, False)
 
 
 if __name__ == "__main__":

@@ -110,7 +110,8 @@ class CheckPolkitUnitTests(unittest.TestCase):
         # Replace Polkit module attributes
         self._fake_authority = FakeAuthority()
         fake_polkit = types.SimpleNamespace(
-            Authority=types.SimpleNamespace(get=lambda: self._fake_authority),
+            Authority=types.SimpleNamespace(
+                get_sync=lambda *a, **k: self._fake_authority),
             UnixProcess=types.SimpleNamespace(new=lambda pid: FakeSubject(pid)),
             CheckAuthorizationFlags=types.SimpleNamespace(
                 ALLOW_USER_INTERACTION=1, NONE=0),
@@ -214,7 +215,7 @@ class CheckPolkitUnitTests(unittest.TestCase):
         self.assertIn("only root", reason)
 
     def test_polkit_exception_fails_closed(self):
-        """If Polkit.Authority.get() or check_authorization_sync raises,
+        """If Polkit.Authority.get_sync() or check_authorization_sync raises,
         fail closed rather than allowing."""
         svc_mod.HAS_POLKIT = True
         svc_mod.HAS_DBUS = True
@@ -223,7 +224,7 @@ class CheckPolkitUnitTests(unittest.TestCase):
             def check_authorization_sync(self, *a, **k):
                 raise RuntimeError("simulated polkitd crash")
         svc_mod.Polkit = types.SimpleNamespace(
-            Authority=types.SimpleNamespace(get=lambda: BoomAuthority()),
+            Authority=types.SimpleNamespace(get_sync=lambda *a, **k: BoomAuthority()),
             UnixProcess=types.SimpleNamespace(new=lambda pid: mock.MagicMock()),
             CheckAuthorizationFlags=types.SimpleNamespace(ALLOW_USER_INTERACTION=1),
         )
@@ -231,6 +232,28 @@ class CheckPolkitUnitTests(unittest.TestCase):
         ok, reason = svc_mod._check_polkit(":1.42", "some.action", bus=bus)
         self.assertFalse(ok)
         self.assertIn("polkit error", reason)
+
+    def test_get_sync_failure_fails_closed(self):
+        """An error from get_sync (for example, polkitd not reachable) denies."""
+        svc_mod.HAS_POLKIT = True
+        svc_mod.HAS_DBUS = True
+
+        def unreachable(*a, **k):
+            raise RuntimeError("Could not connect to polkitd")
+        svc_mod.Polkit = types.SimpleNamespace(
+            Authority=types.SimpleNamespace(get_sync=unreachable),
+            UnixProcess=types.SimpleNamespace(new=lambda pid: mock.MagicMock()),
+            CheckAuthorizationFlags=types.SimpleNamespace(ALLOW_USER_INTERACTION=1),
+        )
+        bus = FakeBus(pid=2345, uid=1000)
+        ok, reason = svc_mod._check_polkit(":1.42", "some.action", bus=bus)
+        self.assertFalse(ok)
+        self.assertIn("polkit error", reason)
+
+    def test_source_uses_get_sync_not_deprecated_get(self):
+        source = (PROJECT_ROOT / "aura/core/aura_core_service.py").read_text()
+        self.assertIn("Polkit.Authority.get_sync(", source)
+        self.assertNotRegex(source, r"Polkit\.Authority\.get\(\s*\)")
 
 
 class PolkitPolicyFileTests(unittest.TestCase):

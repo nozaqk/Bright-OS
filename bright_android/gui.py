@@ -7,7 +7,6 @@ Provides Home, Applications, and Settings pages.
 """
 import sys
 import os
-import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
@@ -391,12 +390,12 @@ class HomePage(QWidget):
         self.refresh_status()
 
     def start_android(self):
-        from bright_android.core import waydroid_manager
-        self._run_worker(waydroid_manager.start_session, op_name="Starting Android")
+        from bright_android.core.service_client import BrightAndroidClient
+        self._run_worker(BrightAndroidClient().start_runtime, op_name="Starting Android")
 
     def stop_android(self):
-        from bright_android.core import waydroid_manager
-        self._run_worker(waydroid_manager.stop_session, op_name="Stopping Android")
+        from bright_android.core.service_client import BrightAndroidClient
+        self._run_worker(BrightAndroidClient().stop_runtime, op_name="Stopping Android")
 
     def init_android(self):
         reply = QMessageBox.question(
@@ -407,9 +406,9 @@ class HomePage(QWidget):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
-            from bright_android.core import waydroid_manager
-            # Init requires pkexec; the waydroid_manager handles that
-            self._run_worker(waydroid_manager.init, mode="auto",
+            # The service authorizes initialization (Polkit admin) and waits for completion.
+            from bright_android.core.service_client import BrightAndroidClient
+            self._run_worker(BrightAndroidClient().initialize_runtime,
                             op_name="Initializing Android (downloading images)")
 
 
@@ -591,7 +590,8 @@ class ApplicationsPage(QWidget):
                 return
             self.progress_bar.setVisible(True)
             self.setEnabled(False)
-            self.worker = StatusWorker(waydroid_manager.start_session,
+            from bright_android.core.service_client import BrightAndroidClient
+            self.worker = StatusWorker(BrightAndroidClient().start_runtime,
                                       op_name="Starting Android...")
             # After start completes, chain to install
             self.worker.finished.connect(lambda ok, err: self._on_start_then_install(ok, err, path))
@@ -609,11 +609,11 @@ class ApplicationsPage(QWidget):
         self._do_install_apk(apk_path)
 
     def _do_install_apk(self, path):
-        from bright_android.core import waydroid_manager
+        from bright_android.core.service_client import BrightAndroidClient
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)
         self.setEnabled(False)
-        self.worker = StatusWorker(waydroid_manager.install_apk, path,
+        self.worker = StatusWorker(BrightAndroidClient().install_apk, path,
                                   op_name=f"Installing {Path(path).name}")
         self.worker.finished.connect(self._on_install_done)
         self.worker.start()
@@ -628,9 +628,9 @@ class ApplicationsPage(QWidget):
         self.refresh_apps()
 
     def launch_app(self, package):
-        from bright_android.core import waydroid_manager
+        from bright_android.core.service_client import BrightAndroidClient
         try:
-            waydroid_manager.launch_app(package)
+            BrightAndroidClient().launch_app(package)
         except Exception as e:
             QMessageBox.critical(self, "Launch Failed", str(e))
 
@@ -643,9 +643,9 @@ class ApplicationsPage(QWidget):
         if reply != QMessageBox.StandardButton.Yes:
             return
 
-        from bright_android.core import waydroid_manager
+        from bright_android.core.service_client import BrightAndroidClient
         try:
-            waydroid_manager.uninstall_app(package)
+            BrightAndroidClient().uninstall_app(package)
             QMessageBox.information(self, "Uninstalled", f"{name} has been uninstalled.")
         except Exception as e:
             QMessageBox.critical(self, "Uninstall Failed", str(e))
@@ -780,21 +780,61 @@ class SettingsPage(QWidget):
         self.show_logs_cb.setChecked(ba_config.get_bool("developer", "show_logs", False))
         self.nogpu_cb.setChecked(ba_config.get_bool("developer", "nogpu_mode", False))
 
+    def _setting_checkboxes(self):
+        """(section, key, checkbox) for every setting this page controls."""
+        return [
+            ("runtime", "auto_start", self.auto_start_cb),
+            ("runtime", "start_on_demand", self.on_demand_cb),
+            ("integration", "clipboard_share", self.clipboard_cb),
+            ("integration", "notification_forward", self.notifications_cb),
+            ("integration", "app_integration", self.app_integration_cb),
+            ("appearance", "freeform_windows", self.freeform_cb),
+            ("storage", "shared_downloads", self.share_downloads_cb),
+            ("storage", "shared_documents", self.share_documents_cb),
+            ("storage", "shared_pictures", self.share_pictures_cb),
+            ("developer", "adb_enabled", self.adb_cb),
+            ("developer", "show_logs", self.show_logs_cb),
+            ("developer", "nogpu_mode", self.nogpu_cb),
+        ]
+
     def save_settings(self):
         from bright_android.core import config as ba_config
-        ba_config.set_bool("runtime", "auto_start", self.auto_start_cb.isChecked())
-        ba_config.set_bool("runtime", "start_on_demand", self.on_demand_cb.isChecked())
-        ba_config.set_bool("integration", "clipboard_share", self.clipboard_cb.isChecked())
-        ba_config.set_bool("integration", "notification_forward", self.notifications_cb.isChecked())
-        ba_config.set_bool("integration", "app_integration", self.app_integration_cb.isChecked())
-        ba_config.set_bool("appearance", "freeform_windows", self.freeform_cb.isChecked())
-        ba_config.set_bool("storage", "shared_downloads", self.share_downloads_cb.isChecked())
-        ba_config.set_bool("storage", "shared_documents", self.share_documents_cb.isChecked())
-        ba_config.set_bool("storage", "shared_pictures", self.share_pictures_cb.isChecked())
-        ba_config.set_bool("developer", "adb_enabled", self.adb_cb.isChecked())
-        ba_config.set_bool("developer", "show_logs", self.show_logs_cb.isChecked())
-        ba_config.set_bool("developer", "nogpu_mode", self.nogpu_cb.isChecked())
-        QMessageBox.information(self, "Settings Saved", "Android settings have been saved.")
+        # Send only changed values. Each SetConfig call is authorized by the
+        # service, and a change may require an admin prompt.
+        changes = []
+        for section, key, checkbox in self._setting_checkboxes():
+            want = checkbox.isChecked()
+            current = ba_config.get_value(section, key, None)
+            if current is None or (str(current).lower() == "true") != want:
+                changes.append((f"{section}/{key}", want))
+        if not changes:
+            QMessageBox.information(self, "Settings Saved", "No changes to save.")
+            return
+        self.save_worker = StatusWorker(self._apply_settings, changes,
+                                        op_name="Saving settings")
+        self.save_worker.finished.connect(self._on_settings_saved)
+        self.save_worker.start()
+
+    def _apply_settings(self, changes, progress_cb=None):
+        from bright_android.core.service_client import (
+            BrightAndroidClient, BrightAndroidClientError,
+        )
+        client = BrightAndroidClient()
+        done = 0
+        for path, value in changes:
+            try:
+                client.set_config(path, value)
+            except BrightAndroidClientError as e:
+                raise BrightAndroidClientError(
+                    f"Saved {done} of {len(changes)} changes. "
+                    f"Failed on {path}: {e}") from e
+            done += 1
+
+    def _on_settings_saved(self, success, error):
+        if success:
+            QMessageBox.information(self, "Settings Saved", "Android settings have been saved.")
+        else:
+            QMessageBox.critical(self, "Settings Not Saved", error)
 
     def restart_runtime(self):
         reply = QMessageBox.question(
@@ -804,13 +844,23 @@ class SettingsPage(QWidget):
         if reply != QMessageBox.StandardButton.Yes:
             return
         from bright_android.core import waydroid_manager
-        try:
-            if waydroid_manager.is_running():
-                waydroid_manager.stop_session()
-            waydroid_manager.start_session()
+        from bright_android.core.service_client import BrightAndroidClient
+
+        def restart(progress_cb=None):
+            client = BrightAndroidClient()
+            if waydroid_manager.is_running():  # read-only check
+                client.stop_runtime()
+            client.start_runtime()
+
+        self.restart_worker = StatusWorker(restart, op_name="Restarting Android")
+        self.restart_worker.finished.connect(self._on_restart_done)
+        self.restart_worker.start()
+
+    def _on_restart_done(self, success, error):
+        if success:
             QMessageBox.information(self, "Restarted", "Android runtime restarted.")
-        except Exception as e:
-            QMessageBox.critical(self, "Restart Failed", str(e))
+        else:
+            QMessageBox.critical(self, "Restart Failed", error)
 
     def remove_data(self):
         reply = QMessageBox.warning(

@@ -17,7 +17,9 @@ skipped by default (set BRIGHT_ANDROID_REAL_INTEGRATION=1 to run them on a
 provisioned system with a running bright-android service).
 """
 import os
+import logging
 import re
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -26,6 +28,12 @@ from bright_android.core import android_service as svc
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+# Fixed, non-root service UID for these tests. Previously the tests used
+# os.getuid(), so when the suite ran as root the "same user" caller was root
+# and the root-always-allowed rule masked the cases under test. Pinning the
+# UID makes results independent of who runs the suite. Assertions are unchanged.
+TEST_SERVICE_UID = 1000
 
 
 class AuthorizationTests(unittest.TestCase):
@@ -55,7 +63,7 @@ class AuthorizationTests(unittest.TestCase):
             bus.get_connection_unix_user.side_effect = uid_raises
         else:
             bus.get_connection_unix_user.return_value = (
-                uid if uid is not None else os.getuid()
+                uid if uid is not None else TEST_SERVICE_UID
             )
         return bus
 
@@ -76,12 +84,12 @@ class AuthorizationTests(unittest.TestCase):
         self.assertFalse(ok, f"expected denial, got: {reason}")
         self.assertIn("no bus provided", reason)
 
-    def test_inprocess_allowed_when_has_dbus_false(self):
-        """When HAS_DBUS=False (headless / unit test mode with dbus-python
-        not importable), the in-process path is allowed."""
+    def test_denied_when_has_dbus_false(self):
+        """Missing dbus-python means no verifiable caller: deny, never allow."""
         with mock.patch.object(svc, "HAS_DBUS", False):
             ok, reason = svc._check_authorization(None, svc.POLKIT_ACTION_INIT, bus=None)
-        self.assertTrue(ok, f"expected in-process allow when HAS_DBUS=False: {reason}")
+        self.assertFalse(ok, f"missing dbus must deny: {reason}")
+        self.assertIn("D-Bus unavailable", reason)
 
     def test_missing_pid_is_denied(self):
         bus = self._make_bus(pid_raises=Exception("no such sender"))
@@ -123,15 +131,16 @@ class AuthorizationTests(unittest.TestCase):
 
     def test_same_user_allowed_for_read_actions(self):
         """allow_same_user=True must let the same uid through without Polkit."""
-        bus = self._make_bus(uid=os.getuid())
-        svc.SERVICE_UID = os.getuid()
+        bus = self._make_bus(uid=TEST_SERVICE_UID)
+        svc.SERVICE_UID = TEST_SERVICE_UID
         ok, reason = svc._check_authorization(
             ":1.50", svc.POLKIT_ACTION_SYNC, bus=bus, allow_same_user=True
         )
         self.assertTrue(ok, f"same-user should be allowed for sync: {reason}")
 
     def test_same_user_allowed_for_launch(self):
-        bus = self._make_bus(uid=os.getuid())
+        bus = self._make_bus(uid=TEST_SERVICE_UID)
+        svc.SERVICE_UID = TEST_SERVICE_UID
         ok, reason = svc._check_authorization(
             ":1.50", svc.POLKIT_ACTION_LAUNCH, bus=bus, allow_same_user=True
         )
@@ -157,8 +166,8 @@ class AuthorizationTests(unittest.TestCase):
 
     def test_polkit_unavailable_fails_closed_for_non_root(self):
         """Without Polkit and non-root non-self uid, privileged actions fail."""
-        bus = self._make_bus(uid=os.getuid())
-        svc.SERVICE_UID = os.getuid()
+        bus = self._make_bus(uid=TEST_SERVICE_UID)
+        svc.SERVICE_UID = TEST_SERVICE_UID
         # allow_same_user=False requires Polkit; Polkit is unavailable → deny
         ok, reason = svc._check_authorization(
             ":1.50", svc.POLKIT_ACTION_INIT, bus=bus, allow_same_user=False
@@ -168,8 +177,8 @@ class AuthorizationTests(unittest.TestCase):
 
     def test_polkit_unavailable_denies_admin_action(self):
         """Phase 2.3: Admin actions fail closed when Polkit is unavailable."""
-        bus = self._make_bus(uid=os.getuid())
-        svc.SERVICE_UID = os.getuid()
+        bus = self._make_bus(uid=TEST_SERVICE_UID)
+        svc.SERVICE_UID = TEST_SERVICE_UID
         ok, reason = svc._check_authorization(
             ":1.50", svc.POLKIT_ACTION_INIT, bus=bus
         )
@@ -185,8 +194,8 @@ class AuthorizationTests(unittest.TestCase):
         fail closed when Polkit is unavailable. There is NO same-user bypass
         for state-changing actions — Polkit is the authority for active-session
         verification; a Polkit outage must not be converted into authorization."""
-        bus = self._make_bus(uid=os.getuid())
-        svc.SERVICE_UID = os.getuid()
+        bus = self._make_bus(uid=TEST_SERVICE_UID)
+        svc.SERVICE_UID = TEST_SERVICE_UID
         ok, reason = svc._check_authorization(
             ":1.50", svc.POLKIT_ACTION_START, bus=bus
         )
@@ -227,8 +236,8 @@ class AuthorizationTests(unittest.TestCase):
         return polkit_mod
 
     def test_polkit_authorized_allows(self):
-        bus = self._make_bus(uid=os.getuid())
-        svc.SERVICE_UID = os.getuid()
+        bus = self._make_bus(uid=TEST_SERVICE_UID)
+        svc.SERVICE_UID = TEST_SERVICE_UID
         svc.HAS_POLKIT = True
         polkit_mod = self._install_mock_polkit()
         try:
@@ -246,8 +255,8 @@ class AuthorizationTests(unittest.TestCase):
         self.assertTrue(ok, f"expected allow: {reason}")
 
     def test_polkit_challenge_denied(self):
-        bus = self._make_bus(uid=os.getuid())
-        svc.SERVICE_UID = os.getuid()
+        bus = self._make_bus(uid=TEST_SERVICE_UID)
+        svc.SERVICE_UID = TEST_SERVICE_UID
         svc.HAS_POLKIT = True
         polkit_mod = self._install_mock_polkit()
         try:
@@ -267,8 +276,8 @@ class AuthorizationTests(unittest.TestCase):
 
     def test_polkit_authority_init_error_denied(self):
         """Phase 2.3: If Polkit.Authority.get_sync raises, deny."""
-        bus = self._make_bus(uid=os.getuid())
-        svc.SERVICE_UID = os.getuid()
+        bus = self._make_bus(uid=TEST_SERVICE_UID)
+        svc.SERVICE_UID = TEST_SERVICE_UID
         svc.HAS_POLKIT = True
         polkit_mod = self._install_mock_polkit()
         try:
@@ -283,8 +292,8 @@ class AuthorizationTests(unittest.TestCase):
 
     def test_polkit_check_error_denied(self):
         """Phase 2.3: If check_authorization_sync raises, deny."""
-        bus = self._make_bus(uid=os.getuid())
-        svc.SERVICE_UID = os.getuid()
+        bus = self._make_bus(uid=TEST_SERVICE_UID)
+        svc.SERVICE_UID = TEST_SERVICE_UID
         svc.HAS_POLKIT = True
         polkit_mod = self._install_mock_polkit()
         try:
@@ -301,8 +310,8 @@ class AuthorizationTests(unittest.TestCase):
 
     def test_polkit_explicit_denial_has_clear_message(self):
         """Explicit denial must produce 'not authorized' message."""
-        bus = self._make_bus(uid=os.getuid())
-        svc.SERVICE_UID = os.getuid()
+        bus = self._make_bus(uid=TEST_SERVICE_UID)
+        svc.SERVICE_UID = TEST_SERVICE_UID
         svc.HAS_POLKIT = True
         polkit_mod = self._install_mock_polkit()
         try:
@@ -322,8 +331,8 @@ class AuthorizationTests(unittest.TestCase):
 
     def test_polkit_challenge_has_clear_message(self):
         """Challenge (auth required but not completed) must produce a clear message."""
-        bus = self._make_bus(uid=os.getuid())
-        svc.SERVICE_UID = os.getuid()
+        bus = self._make_bus(uid=TEST_SERVICE_UID)
+        svc.SERVICE_UID = TEST_SERVICE_UID
         svc.HAS_POLKIT = True
         polkit_mod = self._install_mock_polkit()
         try:
@@ -344,8 +353,8 @@ class AuthorizationTests(unittest.TestCase):
     def test_authorized_active_session_allows_session_actions(self):
         """When Polkit returns is_authorized=True (active console session),
         all session actions must be allowed."""
-        bus = self._make_bus(uid=os.getuid())
-        svc.SERVICE_UID = os.getuid()
+        bus = self._make_bus(uid=TEST_SERVICE_UID)
+        svc.SERVICE_UID = TEST_SERVICE_UID
         svc.HAS_POLKIT = True
         polkit_mod = self._install_mock_polkit()
         try:
@@ -388,8 +397,8 @@ class AuthorizationTests(unittest.TestCase):
             del svc.Polkit
 
     def test_polkit_not_authorized_denied(self):
-        bus = self._make_bus(uid=os.getuid())
-        svc.SERVICE_UID = os.getuid()
+        bus = self._make_bus(uid=TEST_SERVICE_UID)
+        svc.SERVICE_UID = TEST_SERVICE_UID
         svc.HAS_POLKIT = True
         polkit_mod = self._install_mock_polkit()
         try:
@@ -1002,6 +1011,583 @@ def _try_import(mod):
         return True
     except ImportError:
         return False
+
+
+
+def _polkit_thread_count():
+    import threading as _t
+    return sum(1 for th in _t.enumerate() if th.name == "polkit-check" and th.is_alive())
+
+
+def _wait_for_polkit_threads(expected=0, timeout=5.0):
+    """Wait until hung polkit-check threads have finished (test isolation)."""
+    import time as _time
+    end = _time.monotonic() + timeout
+    while _polkit_thread_count() > expected and _time.monotonic() < end:
+        _time.sleep(0.01)
+    return _polkit_thread_count()
+
+
+class PolkitResponseTests(unittest.TestCase):
+    """Polkit decision handling: timeout, invalid responses, and failures.
+
+    Every case here must DENY. Only an explicit is_authorized() == True allows.
+    """
+
+    def setUp(self):
+        self._hd = svc.HAS_DBUS
+        self._hp = svc.HAS_POLKIT
+        self._suid = svc.SERVICE_UID
+        self._to = svc.POLKIT_CHECK_TIMEOUT_SECONDS
+        svc.HAS_DBUS = True
+        svc.HAS_POLKIT = True
+        svc.SERVICE_UID = TEST_SERVICE_UID
+        self._release = threading.Event()
+        self._polkit_before = getattr(svc, "Polkit", None)
+
+    def tearDown(self):
+        self._release.set()  # unblock any hung fake authority thread
+        _wait_for_polkit_threads()
+        svc.HAS_DBUS = self._hd
+        svc.HAS_POLKIT = self._hp
+        svc.SERVICE_UID = self._suid
+        svc.POLKIT_CHECK_TIMEOUT_SECONDS = self._to
+        if self._polkit_before is None:
+            if hasattr(svc, "Polkit"):
+                del svc.Polkit
+        else:
+            svc.Polkit = self._polkit_before
+
+    def _install(self, authority=None, get_sync_error=None):
+        polkit_mod = mock.MagicMock()
+        if get_sync_error is not None:
+            polkit_mod.Authority.get_sync.side_effect = get_sync_error
+        else:
+            polkit_mod.Authority.get_sync.return_value = authority
+        svc.Polkit = polkit_mod
+        return polkit_mod
+
+    def _check(self, action=None):
+        bus = mock.MagicMock()
+        bus.get_connection_unix_process_id.return_value = 4242
+        bus.get_connection_unix_user.return_value = TEST_SERVICE_UID
+        return svc._check_authorization(
+            ":1.77", action or svc.POLKIT_ACTION_INIT, bus=bus
+        )
+
+    def _authority_returning(self, result):
+        authority = mock.MagicMock()
+        authority.check_authorization_sync.return_value = result
+        return authority
+
+    def _result(self, authorized, challenge):
+        r = mock.MagicMock()
+        r.get_is_authorized.return_value = authorized
+        r.get_is_challenge.return_value = challenge
+        return r
+
+    # --- timeout -----------------------------------------------------------
+    def test_polkit_timeout_denies(self):
+        svc.POLKIT_CHECK_TIMEOUT_SECONDS = 0.05
+        authority = mock.MagicMock()
+
+        def hang(*_a, **_k):
+            self._release.wait(5)  # simulate a hung authority
+            return self._result(True, False)  # would allow if it ever returned
+
+        authority.check_authorization_sync.side_effect = hang
+        self._install(authority)
+        ok, reason = self._check()
+        self.assertFalse(ok, "a timed-out Polkit check must deny")
+        self.assertIn("timed out", reason)
+
+    def test_polkit_hung_authority_lookup_denies(self):
+        svc.POLKIT_CHECK_TIMEOUT_SECONDS = 0.05
+        polkit_mod = mock.MagicMock()
+
+        def hang_lookup(*_a, **_k):
+            self._release.wait(5)
+            return mock.MagicMock()
+
+        polkit_mod.Authority.get_sync.side_effect = hang_lookup
+        svc.Polkit = polkit_mod
+        ok, reason = self._check()
+        self.assertFalse(ok)
+        self.assertIn("timed out", reason)
+
+    # --- invalid responses ---------------------------------------------------
+    def test_none_result_denies(self):
+        self._install(self._authority_returning(None))
+        ok, reason = self._check()
+        self.assertFalse(ok)
+        self.assertIn("invalid response", reason)
+
+    def test_result_getter_raises_denies(self):
+        r = mock.MagicMock()
+        r.get_is_authorized.side_effect = RuntimeError("corrupt result")
+        self._install(self._authority_returning(r))
+        ok, reason = self._check()
+        self.assertFalse(ok)
+        self.assertIn("invalid response", reason)
+
+    def test_non_boolean_authorized_denies(self):
+        # Truthy garbage must not be read as authorization.
+        self._install(self._authority_returning(self._result("yes", False)))
+        ok, reason = self._check()
+        self.assertFalse(ok, "non-bool is_authorized must not allow")
+        self.assertIn("invalid response", reason)
+
+    def test_missing_decision_denies(self):
+        # Neither authorized nor challenge set to a real boolean.
+        self._install(self._authority_returning(self._result(None, None)))
+        ok, reason = self._check()
+        self.assertFalse(ok)
+
+    def test_challenge_without_authorization_denies(self):
+        self._install(self._authority_returning(self._result(False, True)))
+        ok, reason = self._check()
+        self.assertFalse(ok)
+        self.assertIn("authentication required", reason)
+
+    def test_explicit_authorized_allows(self):
+        self._install(self._authority_returning(self._result(True, False)))
+        ok, reason = self._check()
+        self.assertTrue(ok, reason)
+        self.assertEqual(reason, "polkit authorized")
+
+    # --- exceptions ------------------------------------------------------------
+    def test_authority_lookup_exception_denies(self):
+        self._install(get_sync_error=RuntimeError("no agent"))
+        ok, reason = self._check()
+        self.assertFalse(ok)
+        self.assertIn("Polkit authority unavailable", reason)
+
+    def test_check_exception_denies(self):
+        authority = mock.MagicMock()
+        authority.check_authorization_sync.side_effect = RuntimeError("dbus down")
+        self._install(authority)
+        ok, reason = self._check()
+        self.assertFalse(ok)
+        self.assertIn("Polkit authorization check failed", reason)
+
+    def test_polkit_missing_module_denies(self):
+        svc.HAS_POLKIT = False
+        ok, reason = self._check()
+        self.assertFalse(ok)
+        self.assertIn("Polkit is unavailable", reason)
+
+
+class FailClosedTests(unittest.TestCase):
+    """Every missing, failed, or malformed input must DENY. Runs as root and non-root."""
+
+    STATE_ACTION = None  # set in setUp
+
+    def setUp(self):
+        self._saved = {k: getattr(svc, k) for k in ("HAS_DBUS", "HAS_POLKIT", "SERVICE_UID")}
+        self._polkit_before = getattr(svc, "Polkit", None)
+        svc.HAS_DBUS = True
+        svc.HAS_POLKIT = True
+        svc.SERVICE_UID = TEST_SERVICE_UID
+        self.STATE_ACTION = svc.POLKIT_ACTION_INIT
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            setattr(svc, k, v)
+        if self._polkit_before is None:
+            if hasattr(svc, "Polkit"):
+                del svc.Polkit
+        else:
+            svc.Polkit = self._polkit_before
+
+    def _bus(self, pid=4242, uid=TEST_SERVICE_UID, pid_v=None, uid_v=None,
+             pid_exc=None, uid_exc=None):
+        bus = mock.MagicMock()
+        if pid_exc is not None:
+            bus.get_connection_unix_process_id.side_effect = pid_exc
+        else:
+            bus.get_connection_unix_process_id.return_value = pid if pid_v is None else pid_v
+        if uid_exc is not None:
+            bus.get_connection_unix_user.side_effect = uid_exc
+        else:
+            bus.get_connection_unix_user.return_value = uid if uid_v is None else uid_v
+        return bus
+
+    def _assert_denied(self, ok, reason, msg=""):
+        self.assertIs(ok, False, f"{msg} must deny, got ok={ok!r} reason={reason!r}")
+
+    # --- D-Bus / bus / sender missing ---------------------------------------
+    def test_missing_dbus_module_denies_every_action(self):
+        svc.HAS_DBUS = False
+        for action in (svc.POLKIT_ACTION_INIT, svc.POLKIT_ACTION_SYNC, svc.POLKIT_ACTION_START):
+            for same_user in (False, True):
+                ok, reason = svc._check_authorization(
+                    ":1.1", action, bus=self._bus(), allow_same_user=same_user)
+                self._assert_denied(ok, reason, f"no dbus, action={action}, same_user={same_user}")
+
+    def test_missing_bus_object_denies_even_for_read_only(self):
+        for same_user in (False, True):
+            ok, reason = svc._check_authorization(
+                ":1.1", svc.POLKIT_ACTION_SYNC, bus=None, allow_same_user=same_user)
+            self._assert_denied(ok, reason, f"no bus, same_user={same_user}")
+
+    def test_missing_sender_denies_even_for_read_only(self):
+        for same_user in (False, True):
+            ok, reason = svc._check_authorization(
+                None, svc.POLKIT_ACTION_SYNC, bus=self._bus(), allow_same_user=same_user)
+            self._assert_denied(ok, reason, f"no sender, same_user={same_user}")
+
+    # --- malformed or failing credentials -----------------------------------
+    def test_malformed_pid_denies(self):
+        for bad in (None, 0, -1, "4242", 1.5, True):
+            ok, reason = svc._check_authorization(
+                ":1.1", self.STATE_ACTION, bus=self._bus(pid_v=bad))
+            self._assert_denied(ok, reason, f"pid={bad!r}")
+
+    def test_malformed_uid_denies(self):
+        for bad in (None, -1, "0", 2.0):
+            ok, reason = svc._check_authorization(
+                ":1.1", self.STATE_ACTION, bus=self._bus(uid_v=bad))
+            self._assert_denied(ok, reason, f"uid={bad!r}")
+
+    def test_credential_getter_exceptions_deny(self):
+        cases = [
+            self._bus(pid_exc=RuntimeError("no such sender")),
+            self._bus(uid_exc=RuntimeError("no such sender")),
+            self._bus(pid_exc=AttributeError("bad bus")),
+        ]
+        for bus in cases:
+            ok, reason = svc._check_authorization(":1.1", self.STATE_ACTION, bus=bus)
+            self._assert_denied(ok, reason, "credential lookup raised")
+
+    # --- invalid credentials never become authorization for root ------------
+    def test_root_with_missing_bus_denies(self):
+        ok, reason = svc._check_authorization(":1.1", self.STATE_ACTION, bus=None)
+        self._assert_denied(ok, reason, "root without bus")
+
+    def test_root_with_malformed_pid_denies(self):
+        ok, reason = svc._check_authorization(
+            ":1.1", self.STATE_ACTION, bus=self._bus(uid=0, pid_v=0))
+        self._assert_denied(ok, reason, "root with pid 0")
+
+    def test_root_with_missing_dbus_denies(self):
+        svc.HAS_DBUS = False
+        ok, reason = svc._check_authorization(
+            ":1.1", self.STATE_ACTION, bus=self._bus(uid=0))
+        self._assert_denied(ok, reason, "root without dbus")
+
+    # --- Polkit missing or failing -------------------------------------------
+    def test_polkit_module_missing_denies_state_change(self):
+        svc.HAS_POLKIT = False
+        ok, reason = svc._check_authorization(":1.1", self.STATE_ACTION, bus=self._bus())
+        self._assert_denied(ok, reason, "polkit module missing")
+
+    def test_polkit_authority_none_denies(self):
+        polkit_mod = mock.MagicMock()
+        polkit_mod.Authority.get_sync.return_value = None  # check call will raise
+        svc.Polkit = polkit_mod
+        ok, reason = svc._check_authorization(":1.1", self.STATE_ACTION, bus=self._bus())
+        self._assert_denied(ok, reason, "authority None")
+
+    def test_unexpected_return_values_deny(self):
+        bad_results = [
+            None,
+            "authorized",
+            True,  # bare bool is not a Polkit result object
+        ]
+        for bad in bad_results:
+            polkit_mod = mock.MagicMock()
+            authority = mock.MagicMock()
+            authority.check_authorization_sync.return_value = bad
+            polkit_mod.Authority.get_sync.return_value = authority
+            svc.Polkit = polkit_mod
+            ok, reason = svc._check_authorization(":1.1", self.STATE_ACTION, bus=self._bus())
+            self._assert_denied(ok, reason, f"polkit returned {bad!r}")
+
+    def test_truthy_string_authorization_denies(self):
+        result = mock.MagicMock()
+        result.get_is_authorized.return_value = "True"
+        result.get_is_challenge.return_value = False
+        authority = mock.MagicMock()
+        authority.check_authorization_sync.return_value = result
+        polkit_mod = mock.MagicMock()
+        polkit_mod.Authority.get_sync.return_value = authority
+        svc.Polkit = polkit_mod
+        ok, reason = svc._check_authorization(":1.1", self.STATE_ACTION, bus=self._bus())
+        self._assert_denied(ok, reason, "string 'True' authorization")
+
+    # --- the only allow path ------------------------------------------------
+    def test_only_explicit_true_allows_state_change(self):
+        result = mock.MagicMock()
+        result.get_is_authorized.return_value = True
+        authority = mock.MagicMock()
+        authority.check_authorization_sync.return_value = result
+        polkit_mod = mock.MagicMock()
+        polkit_mod.Authority.get_sync.return_value = authority
+        svc.Polkit = polkit_mod
+        ok, reason = svc._check_authorization(":1.1", self.STATE_ACTION, bus=self._bus())
+        self.assertTrue(ok, reason)
+        self.assertEqual(reason, "polkit authorized")
+
+
+class RootAuditTests(unittest.TestCase):
+    """Root bypasses Polkit, so state-changing root authorizations must be logged."""
+
+    def setUp(self):
+        self._saved = {k: getattr(svc, k) for k in ("HAS_DBUS", "HAS_POLKIT", "SERVICE_UID")}
+        svc.HAS_DBUS = True
+        svc.HAS_POLKIT = False
+        svc.SERVICE_UID = TEST_SERVICE_UID
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            setattr(svc, k, v)
+
+    def _root_bus(self):
+        bus = mock.MagicMock()
+        bus.get_connection_unix_process_id.return_value = 4242
+        bus.get_connection_unix_user.return_value = 0
+        return bus
+
+    def test_root_state_change_is_logged(self):
+        with self.assertLogs("bright_android", level="INFO") as cap:
+            ok, reason = svc._check_authorization(
+                ":1.1", svc.POLKIT_ACTION_INSTALL, bus=self._root_bus())
+        self.assertTrue(ok)
+        self.assertEqual(reason, "root caller")
+        self.assertTrue(any("Root authorized state-changing" in m for m in cap.output))
+
+    def test_root_read_only_is_not_logged(self):
+        with mock.patch.object(svc.logger, "info") as info:
+            ok, _ = svc._check_authorization(
+                ":1.1", svc.POLKIT_ACTION_SYNC, bus=self._root_bus(), allow_same_user=True)
+        self.assertTrue(ok)
+        info.assert_not_called()
+
+
+class LaunchPackageValidationTests(unittest.TestCase):
+    """LaunchApp must validate the package name before it reaches waydroid."""
+
+    def test_option_like_and_malformed_names_are_rejected_before_run(self):
+        from bright_android.core import waydroid_manager as wm
+        bad = ["--help", "-x", "", "com.example app", "a;rm -rf /", "1starts.with.digit",
+               "com/evil", "../../etc"]
+        with mock.patch.object(wm, "_run") as run, mock.patch.object(wm, "is_running", return_value=True):
+            for name in bad:
+                with self.assertRaises(wm.WaydroidError, msg=repr(name)):
+                    wm.launch_app(name)
+            run.assert_not_called()
+
+    def test_valid_name_passes_validation(self):
+        from bright_android.core import waydroid_manager as wm
+        with mock.patch.object(wm, "_run", return_value=(0, "", "")) as run, \
+             mock.patch.object(wm, "is_running", return_value=True), \
+             mock.patch.object(wm, "is_installed", return_value=True):
+            wm.launch_app("org.fdroid.fdroid")
+        run.assert_called()
+
+
+class PolkitResourceTests(unittest.TestCase):
+    """Bounded Polkit checks: repeated timeouts, late results, concurrency."""
+
+    def setUp(self):
+        self._saved = {k: getattr(svc, k) for k in
+                       ("HAS_DBUS", "HAS_POLKIT", "SERVICE_UID", "POLKIT_CHECK_TIMEOUT_SECONDS", "_POLKIT_SLOTS")}
+        self._polkit_before = getattr(svc, "Polkit", None)
+        svc.HAS_DBUS = True
+        svc.HAS_POLKIT = True
+        svc.SERVICE_UID = TEST_SERVICE_UID
+        svc.POLKIT_CHECK_TIMEOUT_SECONDS = 0.1
+        svc._POLKIT_SLOTS = threading.BoundedSemaphore(2)
+        self._release = threading.Event()
+
+    def tearDown(self):
+        self._release.set()
+        _wait_for_polkit_threads()
+        for k, v in self._saved.items():
+            setattr(svc, k, v)
+        if self._polkit_before is None:
+            if hasattr(svc, "Polkit"):
+                del svc.Polkit
+        else:
+            svc.Polkit = self._polkit_before
+
+    def _bus(self, pid=4242):
+        bus = mock.MagicMock()
+        bus.get_connection_unix_process_id.return_value = pid
+        bus.get_connection_unix_user.return_value = TEST_SERVICE_UID
+        return bus
+
+    def _install(self, check_fn):
+        polkit_mod = mock.MagicMock()
+        authority = mock.MagicMock()
+        authority.check_authorization_sync.side_effect = check_fn
+        polkit_mod.Authority.get_sync.return_value = authority
+        polkit_mod.UnixProcess.new.side_effect = lambda pid: mock.Mock(pid=pid)
+        svc.Polkit = polkit_mod
+
+    @staticmethod
+    def _result(authorized, challenge=False):
+        r = mock.MagicMock()
+        r.get_is_authorized.return_value = authorized
+        r.get_is_challenge.return_value = challenge
+        return r
+
+    def _call(self, pid=4242):
+        return svc._check_authorization(":1.9", svc.POLKIT_ACTION_INIT, bus=self._bus(pid))
+
+    def _hang(self, *_a, **_k):
+        self._release.wait(10)
+        return self._result(True)
+
+    def test_repeated_timeouts_do_not_accumulate_threads(self):
+        self._install(self._hang)
+        for _ in range(2):  # fill both slots with hung checks
+            ok, reason = self._call()
+            self.assertFalse(ok)
+            self.assertIn("timed out", reason)
+        self.assertEqual(_polkit_thread_count(), 2)
+        for _ in range(10):  # further requests are denied, and no thread is added
+            ok, reason = self._call()
+            self.assertFalse(ok)
+            self.assertIn("busy", reason)
+            self.assertLessEqual(_polkit_thread_count(), 2)
+
+    def test_saturated_pool_responds_immediately(self):
+        import time as _time
+        svc.POLKIT_CHECK_TIMEOUT_SECONDS = 5.0  # a blocking wait would take 5 s
+        self._install(self._hang)
+        svc.POLKIT_CHECK_TIMEOUT_SECONDS = 0.1
+        self._call()
+        self._call()  # two timeouts hold both slots
+        start = _time.monotonic()
+        ok, reason = self._call()
+        elapsed = _time.monotonic() - start
+        self.assertFalse(ok)
+        self.assertIn("busy", reason)
+        self.assertLess(elapsed, 0.5, "a saturated pool must deny without waiting")
+
+    def test_slots_recover_after_hung_checks_finish(self):
+        self._install(self._hang)
+        self._call()
+        self._call()
+        self._release.set()
+        self.assertEqual(_wait_for_polkit_threads(), 0, "hung threads should finish")
+        self._install(lambda *a, **k: self._result(True))
+        ok, reason = self._call()
+        self.assertTrue(ok, f"slot should be free again: {reason}")
+
+    def test_late_authorization_cannot_authorize_expired_request(self):
+        import time as _time
+        def late_allow(*_a, **_k):
+            _time.sleep(0.3)  # answers "authorized" only after the caller gave up
+            return self._result(True)
+        self._install(late_allow)
+        ok, reason = self._call(pid=1111)
+        self.assertFalse(ok)
+        self.assertIn("timed out", reason)
+        # Let the late worker finish; it must not change the already-returned denial.
+        self.assertEqual(_wait_for_polkit_threads(), 0)
+        self.assertFalse(ok)
+        # A new request is independent and gets its own answer.
+        self._install(lambda *a, **k: self._result(False))
+        ok2, reason2 = self._call(pid=2222)
+        self.assertFalse(ok2)
+        self.assertEqual(reason2, "not authorized")
+
+    def test_concurrent_requests_do_not_cross_results(self):
+        import time as _time
+        svc._POLKIT_SLOTS = threading.BoundedSemaphore(16)  # room for all 16 requests
+        svc.POLKIT_CHECK_TIMEOUT_SECONDS = 5.0
+        def check(subject, *_a, **_k):
+            _time.sleep(0.02)
+            return self._result(subject.pid % 2 == 0)  # authorized iff pid is even
+        self._install(check)
+        results = {}
+        def run(pid):
+            results[pid] = self._call(pid=pid)
+        threads = [threading.Thread(target=run, args=(pid,)) for pid in range(100, 116)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(10)
+        self.assertEqual(len(results), 16)
+        for pid, (ok, reason) in results.items():
+            self.assertEqual(ok, pid % 2 == 0, f"pid {pid} got {ok} ({reason})")
+
+    def test_in_flight_checks_never_exceed_cap(self):
+        import time as _time
+        cap = 3
+        svc._POLKIT_SLOTS = threading.BoundedSemaphore(cap)
+        svc.POLKIT_CHECK_TIMEOUT_SECONDS = 5.0
+        lock = threading.Lock()
+        state = {"now": 0, "max": 0}
+        def check(*_a, **_k):
+            with lock:
+                state["now"] += 1
+                state["max"] = max(state["max"], state["now"])
+            _time.sleep(0.05)
+            with lock:
+                state["now"] -= 1
+            return self._result(True)
+        self._install(check)
+        outcomes = []
+        def run():
+            outcomes.append(self._call())
+        threads = [threading.Thread(target=run) for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(10)
+        self.assertEqual(len(outcomes), 20)
+        self.assertLessEqual(state["max"], cap)
+        for ok, reason in outcomes:
+            if not ok:
+                self.assertIn("busy", reason)  # denied only because the pool was full
+
+
+class RootPolicyTests(unittest.TestCase):
+    """Decision 1: root keeps its Polkit bypass but still passes every other check."""
+
+    def setUp(self):
+        self._saved = {k: getattr(svc, k) for k in ("HAS_DBUS", "HAS_POLKIT", "SERVICE_UID")}
+        svc.HAS_DBUS = True
+        svc.HAS_POLKIT = False  # root must still pass without Polkit
+        svc.SERVICE_UID = TEST_SERVICE_UID
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            setattr(svc, k, v)
+
+    def _bus(self, uid=0, pid=4242):
+        bus = mock.MagicMock()
+        bus.get_connection_unix_process_id.return_value = pid
+        bus.get_connection_unix_user.return_value = uid
+        return bus
+
+    def test_root_bypasses_polkit_for_state_change(self):
+        ok, reason = svc._check_authorization(":1.1", svc.POLKIT_ACTION_START, bus=self._bus())
+        self.assertTrue(ok)
+        self.assertEqual(reason, "root caller")
+
+    def test_root_still_needs_sender_identity(self):
+        ok, _ = svc._check_authorization(None, svc.POLKIT_ACTION_START, bus=self._bus())
+        self.assertFalse(ok)
+
+    def test_root_still_needs_valid_pid(self):
+        ok, _ = svc._check_authorization(":1.1", svc.POLKIT_ACTION_START, bus=self._bus(pid=0))
+        self.assertFalse(ok)
+
+    def test_root_still_needs_a_bus(self):
+        ok, _ = svc._check_authorization(":1.1", svc.POLKIT_ACTION_START, bus=None)
+        self.assertFalse(ok)
+
+    def test_root_authorization_does_not_skip_config_allowlist(self):
+        # Root is authorized to call SetConfig, but the allowlist still applies.
+        from bright_android.core import config_policy
+        ok, _ = svc._check_authorization(":1.1", svc.POLKIT_ACTION_SET_CONFIG, bus=self._bus())
+        self.assertTrue(ok)
+        with self.assertRaises(config_policy.ConfigPolicyError):
+            config_policy.validate_setting("storage/data_path", "/tmp/evil")
 
 
 if __name__ == "__main__":

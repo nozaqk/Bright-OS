@@ -70,10 +70,13 @@ if [ -d /usr/share/polkit-1/actions ]; then
     : # already in place
 fi
 
-# --- Enable systemd service ---
+# --- Keep the service OFF at boot (on-demand only) ---
+# AURA starts when requested: via D-Bus activation of org.bright_os.AURA or
+# `systemctl start aura-core.service`. Remove any leftover enable link so an
+# older image or manual enable cannot make it start at boot.
 if [ -d /etc/systemd/system ]; then
-    systemctl enable aura-core.service 2>/dev/null || true
-    echo "I: aura-core.service enabled" | systemd-cat -t bright-os-aura -p info
+    systemctl disable aura-core.service 2>/dev/null || true
+    echo "I: aura-core.service left disabled (on-demand start)" | systemd-cat -t bright-os-aura -p info
 fi
 
 echo "I: AURA subsystem installation complete." | systemd-cat -t bright-os-aura -p info
