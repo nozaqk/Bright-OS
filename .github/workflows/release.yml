@@ -99,10 +99,12 @@ jobs:
           export BRIGHT_EDITION BRIGHT_VERSION BRIGHT_DEBIAN_CODENAME
           ISO_DIR="${GITHUB_WORKSPACE}/build/output/${BRIGHT_EDITION}"
           mkdir -p "$ISO_DIR"
-          bash build/scripts/build.sh \
+          echo "Running as: $(id)"
+          sudo -E bash build/scripts/build.sh \
             --version "$BRIGHT_VERSION" \
             --distro "$BRIGHT_DEBIAN_CODENAME" \
             "$BRIGHT_EDITION" 2>&1 | tee "$ISO_DIR/build.log"
+          sudo chown -R "$(id -u):$(id -g)" "${GITHUB_WORKSPACE}/build"
           ISO_NAME="bright-os-${BRIGHT_VERSION}-${BRIGHT_EDITION}-amd64.iso"
           ISO_PATH="$ISO_DIR/$ISO_NAME"
           test -s "$ISO_PATH" || { echo "::error::ISO not produced"; ls -la "$ISO_DIR"; exit 1; }

@@ -135,10 +135,19 @@ jobs:
           export BRIGHT_EDITION BRIGHT_VERSION BRIGHT_DEBIAN_CODENAME
           ISO_DIR="${GITHUB_WORKSPACE}/build/output/${BRIGHT_EDITION}"
           mkdir -p "$ISO_DIR"
-          bash build/scripts/build.sh \
+          echo "Running as: $(id)"
+          echo "Free disk in project root: $(df -h "${GITHUB_WORKSPACE}" | tail -1)"
+          echo "lb version: $(lb --version 2>&1 | head -1)"
+          echo "debootstrap version: $(debootstrap --version 2>&1 | head -1)"
+          # lb build needs root for chroot/mount operations; runner has
+          # passwordless sudo. Use -E to preserve BRIGHT_* env vars.
+          sudo -E bash build/scripts/build.sh \
             --version "$BRIGHT_VERSION" \
             --distro "$BRIGHT_DEBIAN_CODENAME" \
             "$BRIGHT_EDITION" 2>&1 | tee "$ISO_DIR/build.log"
+          # Fix ownership of build artifacts so subsequent steps (running as
+          # runner user) can read them.
+          sudo chown -R "$(id -u):$(id -g)" "${GITHUB_WORKSPACE}/build"
           ISO_NAME="bright-os-${BRIGHT_VERSION}-${BRIGHT_EDITION}-amd64.iso"
           ISO_PATH="$ISO_DIR/$ISO_NAME"
           test -s "$ISO_PATH" || { echo "::error::ISO not produced at $ISO_PATH"; ls -la "$ISO_DIR"; exit 1; }
@@ -293,10 +302,11 @@ jobs:
         with:
           name: build-logs-${{ env.BRIGHT_EDITION }}-${{ github.run_id }}
           path: |
-            ${{ steps.build.outputs.iso_dir }}/build.log
-            ${{ steps.build.outputs.iso_dir }}/validation.log
-            ${{ steps.build.outputs.iso_dir }}/build-measurement.json
-            ${{ steps.build.outputs.iso_dir }}/manifest/packages.txt
-            ${{ steps.build.outputs.iso_dir }}/qemu-serial.log
+            build/output/${{ env.BRIGHT_EDITION }}/build.log
+            build/output/${{ env.BRIGHT_EDITION }}/validation.log
+            build/output/${{ env.BRIGHT_EDITION }}/build-measurement.json
+            build/output/${{ env.BRIGHT_EDITION }}/release-measurement.json
+            build/output/${{ env.BRIGHT_EDITION }}/manifest/packages.txt
+            build/output/${{ env.BRIGHT_EDITION }}/qemu-serial.log
           if-no-files-found: warn
           retention-days: 30
