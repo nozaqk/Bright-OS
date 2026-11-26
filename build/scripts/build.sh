@@ -278,7 +278,9 @@ check_source_files() {
         "${CONFIG_DIR}/package-lists/aura-core.list.chroot"
         "${CONFIG_DIR}/hooks/live/00-bright-os-branding.hook.chroot"
         "${CONFIG_DIR}/hooks/live/10-bright-os-components.hook.chroot"
+        "${CONFIG_DIR}/hooks/live/15-display-manager.hook.chroot"
         "${CONFIG_DIR}/hooks/live/40-aura-setup.hook.chroot"
+        "${CONFIG_DIR}/includes.chroot/etc/greetd/config.toml"
         "${CONFIG_DIR}/includes.binary/boot/grub/grub.cfg"
         "${CONFIG_DIR}/includes.chroot/etc/bright-os/edition"
         "${CONFIG_DIR}/includes.chroot/usr/bin/bright-desktop-shell"
@@ -442,13 +444,18 @@ fi
 mkdir -p config/includes.chroot/etc/bright-os
 echo "${EDITION}" > config/includes.chroot/etc/bright-os/edition
 
+# Mask services that are not part of core.list.chroot (Phase 6.3):
+# We do this preemptively in case apt recommends pull them in. The 10-
+# components hook will re-enable the ones that ARE installed (by checking
+# binary presence). This avoids unnecessary boot-time RAM use by services
+# the user didn't ask for.
+mkdir -p config/includes.chroot/etc/systemd/system
+for svc in bluetooth.service cups.service ModemManager.service avahi-daemon.service; do
+    ln -sf /dev/null "config/includes.chroot/etc/systemd/system/${svc}" 2>/dev/null || true
+done
+
 if [ "${EDITION}" = "lite" ]; then
-    mkdir -p config/includes.chroot/etc/systemd/system
-    # Mask heavy services not needed in Lite
-    for svc in bluetooth.service cups.service ModemManager.service; do
-        ln -sf /dev/null "config/includes.chroot/etc/systemd/system/${svc}" 2>/dev/null || true
-    done
-    log_info "Lite edition: masking bluetooth, cups, ModemManager"
+    log_info "Lite edition: will not enable bluetooth/cups/ModemManager/avahi (services masked if present)"
 fi
 
 # --- Export environment for auto/config ---

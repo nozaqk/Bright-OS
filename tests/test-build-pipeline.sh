@@ -393,10 +393,19 @@ else
 fi
 
 DESKTOP_PKGS="${TEST_REPO}/build/output/lite/config/package-lists/desktop-packages.list.chroot"
-if [ -f "$DESKTOP_PKGS" ] && grep -q "lxqt-core" "$DESKTOP_PKGS"; then
-    pass "Lite uses desktop-lite.list.chroot (lxqt-core found)"
+# Phase 6.3: desktop-lite no longer requires lxqt-core; labwc comes from core.
+# Verify the lite desktop list IS being selected (check for a known-lite package).
+if [ -f "$DESKTOP_PKGS" ] && grep -q "xarchiver\|qterminal\|qps" "$DESKTOP_PKGS"; then
+    pass "Lite uses desktop-lite.list.chroot (lite-specific package found)"
 else
-    fail "Lite desktop packages incorrect"
+    fail "Lite desktop packages incorrect (desktop-lite.list.chroot not selected?)"
+fi
+
+# Core on all editions must include labwc (Phase 6.3 default compositor)
+if grep -q "^labwc$" "${TEST_REPO}/build/output/lite/config/package-lists/core.list.chroot"; then
+    pass "Lite core includes labwc (default compositor)"
+else
+    fail "Lite core missing labwc"
 fi
 
 if [ "$(cat "${TEST_REPO}/build/output/lite/config/includes.chroot/etc/bright-os/edition" 2>/dev/null)" = "lite" ]; then
@@ -413,11 +422,13 @@ else
     fail "--skip-build failed for developer"
 fi
 
+# Phase 6.3: core no longer includes plasma-workspace; dev edition inherits
+# the slim desktop.list.chroot + edition packages. Verify labwc is present.
 DESKTOP_PKGS="${TEST_REPO}/build/output/developer/config/package-lists/desktop-packages.list.chroot"
-if [ -f "$DESKTOP_PKGS" ] && grep -q "plasma-workspace" "$DESKTOP_PKGS"; then
-    pass "Developer uses full Plasma desktop (plasma-workspace found)"
+if grep -q "^labwc$" "${TEST_REPO}/build/output/developer/config/package-lists/core.list.chroot"; then
+    pass "Developer core includes labwc (Phase 6.3 default)"
 else
-    fail "Developer desktop packages don't include plasma-workspace"
+    fail "Developer core missing labwc"
 fi
 
 if [ "$(cat "${TEST_REPO}/build/output/developer/config/includes.chroot/etc/bright-os/edition" 2>/dev/null)" = "developer" ]; then
@@ -434,10 +445,18 @@ else
     fail "--skip-build failed for home"
 fi
 DESKTOP_PKGS="${TEST_REPO}/build/output/home/config/package-lists/desktop-packages.list.chroot"
-if [ -f "$DESKTOP_PKGS" ] && grep -q "plasma-desktop" "$DESKTOP_PKGS"; then
-    pass "Home uses full Plasma desktop (plasma-desktop found)"
+# Phase 6.3: home uses the slim desktop.list.chroot (firefox-esr, mpv, ...),
+# NOT plasma-desktop. labwc comes from core.
+if grep -q "^labwc$" "${TEST_REPO}/build/output/home/config/package-lists/core.list.chroot"; then
+    pass "Home core includes labwc (default compositor, Phase 6.3)"
 else
-    fail "Home desktop packages incorrect"
+    fail "Home desktop packages incorrect (labwc missing from core)"
+fi
+# Also verify no KDE plasma desktop in default desktop list
+if grep -q "^plasma-desktop$" "$DESKTOP_PKGS"; then
+    fail "Home desktop list unexpectedly includes plasma-desktop (should be optional only)"
+else
+    pass "Home desktop list is lightweight (no Plasma desktop)"
 fi
 
 # =============================================================================

@@ -1,0 +1,9 @@
+# =============================================================================
+# Bright OS — Optional: Network extras (VPN, WWAN, mDNS)
+# Not installed by default in the lightweight core.
+# =============================================================================
+
+network-manager-openvpn
+modemmanager
+avahi-daemon
+avahi-utils

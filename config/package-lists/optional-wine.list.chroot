@@ -1,0 +1,8 @@
+# =============================================================================
+# Bright OS — Optional: Wine/Proton compatibility layer
+# Not installed by default in the lightweight core.
+# =============================================================================
+
+wine
+wine64
+winetricks

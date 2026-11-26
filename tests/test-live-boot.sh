@@ -186,9 +186,9 @@ fi
 echo ""
 echo "--- Package list consistency ---"
 
-# Check critical packages exist in core list
+# Check critical packages exist in core list (Phase 6.3: labwc + greetd)
 CORE="config/package-lists/core.list.chroot"
-for pkg in calamares cryptsetup-initramfs sddm kwin-wayland grub-pc-bin grub-efi-amd64-bin shim-signed cryptsetup keyutils python3-pyqt6 qt6ct pipewire wireplumber network-manager flatpak initramfs-tools; do
+for pkg in calamares cryptsetup-initramfs grub-pc-bin grub-efi-amd64-bin cryptsetup keyutils python3-pyqt6 qt6ct pipewire wireplumber network-manager flatpak initramfs-tools labwc greetd cage xdg-desktop-portal-wlr layer-shell-qt mako-notifier; do
     if grep -q "^${pkg}$" "$CORE"; then
         pass "Core package list includes $pkg"
     else
@@ -196,37 +196,54 @@ for pkg in calamares cryptsetup-initramfs sddm kwin-wayland grub-pc-bin grub-efi
     fi
 done
 
-# Check Lite doesn't have Plasma
-if grep -q "^plasma-desktop$" config/package-lists/desktop-lite.list.chroot; then
-    fail "Lite desktop list includes plasma-desktop"
+# shim-signed moved to optional-secureboot in Phase 6.3 (unsigned boot works on non-SB systems)
+if grep -q "^shim-signed$" config/package-lists/optional-secureboot.list.chroot; then
+    pass "shim-signed available in optional-secureboot profile"
 else
-    pass "Lite desktop list does not include plasma-desktop"
+    fail "shim-signed missing from optional-secureboot profile"
 fi
 
-# Check Lite has LXQt/Openbox
-for pkg in lxqt-core openbox picom pcmanfm-qt qterminal; do
-    if grep -q "^${pkg}$" config/package-lists/desktop-lite.list.chroot; then
-        pass "Lite desktop list includes $pkg"
+# KWin + SDDM moved to optional-recovery-kwin in Phase 6.3
+RECOVERY="config/package-lists/optional-recovery-kwin.list.chroot"
+for pkg in sddm kwin-wayland; do
+    if grep -q "^${pkg}$" "$RECOVERY"; then
+        pass "Recovery profile includes $pkg"
     else
-        fail "Lite desktop list missing $pkg"
+        fail "Recovery profile missing $pkg"
     fi
 done
 
-# Check Home/Developer Plasma packages present
-for pkg in plasma-workspace plasma-desktop plasma-nm breeze sddm-theme-debian-breeze; do
+# Check Lite does not include Plasma/KWin/SDDM
+for pkg in plasma-desktop plasma-workspace kwin-wayland sddm; do
+    if grep -q "^${pkg}$" config/package-lists/desktop-lite.list.chroot; then
+        fail "Lite desktop list unexpectedly includes $pkg"
+    fi
+done
+pass "Lite desktop list does not include KDE Plasma components (Phase 6.3)"
+
+# Check Home/Developer desktop list does NOT pull in full Plasma stack
+# (Phase 6.3: desktop.list.chroot is now slim user apps, not Plasma)
+if grep -q "^plasma-workspace$" config/package-lists/desktop.list.chroot; then
+    fail "Default desktop list still pulls in full Plasma stack"
+else
+    pass "Default desktop list is lightweight (no full Plasma stack, Phase 6.3)"
+fi
+
+# Check essential user apps present in default desktop list
+for pkg in firefox-esr mpv; do
     if grep -q "^${pkg}$" config/package-lists/desktop.list.chroot; then
-        pass "Desktop (Plasma) list includes $pkg"
+        pass "Default desktop list includes $pkg"
     else
-        fail "Desktop (Plasma) list missing $pkg"
+        fail "Default desktop list missing $pkg"
     fi
 done
 
 # Check for non-existent packages (common Trixie package naming issues)
-# breeze-gtk-theme was renamed to breeze-gtk in Debian
-if grep -q "^breeze-gtk-theme$" "$CORE" || grep -q "^breeze-gtk-theme$" config/package-lists/desktop.list.chroot; then
-    fail "Package list uses 'breeze-gtk-theme' (correct name is 'breeze-gtk' in Debian)"
+# breeze-gtk-theme is correct in Trixie (the breeze-gtk package is GTK2/3 theme engine)
+if grep -q "^breeze-gtk-theme$" "$CORE"; then
+    fail "Package list uses wrong name 'breeze-gtk-theme' (package is 'breeze-gtk-theme' in Trixie)"
 else
-    pass "No use of deprecated 'breeze-gtk-theme' package name"
+    pass "No invalid breeze-gtk-theme/breeze-gtk confusion"
 fi
 
 # Non-existent 'bluetooth' meta-package (bluez provides bluetoothd)

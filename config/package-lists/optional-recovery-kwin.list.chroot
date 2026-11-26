@@ -1,0 +1,15 @@
+# =============================================================================
+# Bright OS — Optional: KWin/Plasma recovery session + SDDM
+# Provides the legacy KWin Wayland session and the SDDM display manager
+# as a recovery path. SDDM and kwin-wayland are NOT in the default core.
+# =============================================================================
+
+sddm
+sddm-theme-debian-breeze
+kwin-wayland
+kde-config-gtk-style
+kde-config-gtk-style-preview
+breeze-gtk
+powerdevil
+xdg-desktop-portal-kde
+pavucontrol-qt

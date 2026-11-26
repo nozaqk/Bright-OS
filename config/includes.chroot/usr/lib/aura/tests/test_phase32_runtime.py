@@ -574,22 +574,31 @@ class PackageListTests(unittest.TestCase):
     def setUp(self):
         self.plist = _read(
             PROJECT_ROOT / "config/package-lists/aura-core.list.chroot")
+        core_path = PROJECT_ROOT / "config/package-lists/core.list.chroot"
+        self.core_plist = _read(core_path) if core_path.exists() else ""
+        self.all_pkgs = set(self.plist.splitlines()) | set(self.core_plist.splitlines())
 
     def test_required_packages(self):
+        # Phase 6.3: some of these (python3, dbus, systemd, policykit-1)
+        # ship in core.list.chroot. Check either location.
         for pkg in ("python3", "python3-dbus", "python3-gi", "python3-yaml",
                     "python3-psutil", "dbus", "systemd", "policykit-1",
                     "gir1.2-polkit-1.0"):
-            self.assertIn(pkg, self.plist.splitlines(),
-                          f"Missing package: {pkg}")
+            self.assertIn(pkg, self.all_pkgs,
+                          f"Missing package: {pkg} (not in aura-core or core)")
 
     def test_no_model_packages(self):
         """No model runtime packages must be installed by default.
-        Comment lines (#) are ignored."""
-        active_lines = [
-            l for l in self.plist.splitlines()
-            if l.strip() and not l.lstrip().startswith("#")
-        ]
-        active = "\n".join(active_lines).lower()
+        Check both aura-core AND core list. Comment lines (#) ignored."""
+        def active(path):
+            if not path.exists():
+                return []
+            return [l for l in _read(path).splitlines()
+                    if l.strip() and not l.lstrip().startswith("#")]
+        active = "\n".join(
+            active(PROJECT_ROOT / "config/package-lists/aura-core.list.chroot")
+            + active(PROJECT_ROOT / "config/package-lists/core.list.chroot")
+        ).lower()
         for forbidden in ("llama.cpp", "gguf", "ollama",
                           "stable-diffusion", "pytorch"):
             self.assertNotIn(forbidden, active,

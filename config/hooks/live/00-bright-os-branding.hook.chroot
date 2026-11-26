@@ -1,33 +1,52 @@
 #!/bin/sh
-# Bright OS branding hook - runs inside the chroot during build
-# NOTE: Do NOT regenerate initramfs here; Plymouth theme setup happens in hook 20
+# Bright OS branding hook — runs inside the chroot during build
+# Phase 6.3: default Wayland session uses labwc; KWin recovery session is
+# only installed when kwin_wayland is present (from optional-recovery-kwin).
+# NOTE: Do NOT regenerate initramfs here; Plymouth setup happens in hook 20.
 set -e
 
 echo "Applying Bright OS branding..."
 
-# Install our custom desktop entry for SDDM (Wayland)
+# --- Default Wayland session (labwc) --------------------------------------
 cat > /usr/share/wayland-sessions/bright.desktop <<'EOF'
 [Desktop Entry]
 Name=Bright Desktop
-Comment=Bright OS Desktop Environment
+Comment=Bright OS Desktop Environment (labwc Wayland compositor)
 Exec=/usr/bin/bright-desktop-shell
 TryExec=/usr/bin/bright-desktop-shell
 Type=Application
 DesktopNames=Bright
 EOF
 
-# Also create X11 session entry as fallback
+# --- KWin recovery session (only present if kwin_wayland is installed) ----
+if [ -x /usr/bin/kwin_wayland ]; then
+    cat > /usr/share/wayland-sessions/bright-kwin.desktop <<'EOF'
+[Desktop Entry]
+Name=Bright Desktop (KWin recovery)
+Comment=Bright OS with KWin Wayland (recovery session)
+Exec=/usr/bin/bright-desktop-shell --kwin
+TryExec=/usr/bin/kwin_wayland
+Type=Application
+DesktopNames=Bright
+NoDisplay=true
+EOF
+    echo "  - Installed KWin recovery session (bright-kwin.desktop)."
+else
+    rm -f /usr/share/wayland-sessions/bright-kwin.desktop
+fi
+
+# --- X11 fallback session (used if Wayland is unavailable) ---------------
 cat > /usr/share/xsessions/bright.desktop <<'EOF'
 [Desktop Entry]
 Name=Bright Desktop (X11)
 Comment=Bright OS Desktop Environment (X11 fallback)
-Exec=/usr/bin/bright-desktop-shell
+Exec=/usr/bin/bright-desktop-shell --shell-only
 TryExec=/usr/bin/bright-desktop-shell
 Type=Application
 DesktopNames=Bright
 EOF
 
-# Install Bright OS wallpaper links
+# --- Install Bright OS wallpaper links ------------------------------------
 mkdir -p /usr/share/backgrounds/bright-os
 if [ -d /usr/share/bright-os/wallpapers ]; then
     for wp in /usr/share/bright-os/wallpapers/*; do

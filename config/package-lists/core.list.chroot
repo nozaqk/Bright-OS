@@ -1,13 +1,31 @@
 # =============================================================================
-# Bright OS — Core System Packages
-# These packages are required for ALL editions (Home, Developer, Lite).
-# They form the foundation upon which desktop and edition packages are added.
+# Bright OS — Core System Packages (Phase 6.3 lightweight default)
+#
+# These packages are required for the default lightweight Bright OS image:
+#   * Linux kernel + firmware
+#   * systemd + essential CLI
+#   * Networking (NetworkManager + iwd + wpa_supplicant + firewalld)
+#   * Storage + Calamares installer
+#   * Wayland + labwc compositor (default)
+#   * greetd + gtkgreet lightweight display manager
+#   * PyQt6 / Qt6 runtime for the Bright Desktop Shell
+#   * PipeWire audio
+#   * Minimal icon/font set
+#   * Essential utilities
+#
+# Heavy components moved to OPTIONAL profiles:
+#   * sddm + kwin-wayland (full KDE compositor/DM) → optional-recovery-kwin
+#   * Bluetooth, printing, VPN/WWAN, mDNS, Wine, Dev tools, QEMU, Plymouth,
+#     Secure Boot shim → optional-*.list.chroot
+#   * AURA and Bright Android packages are kept as core because they add
+#     almost no space (they are mostly Python scripts) and their services
+#     are on-demand only (no boot-time cost).
+#
 # Target: Debian 13 (Trixie) amd64
 # =============================================================================
 
-# --- Kernel and firmware ---
+# --- Kernel and firmware (keep all for broad USB/hardware support) ---
 linux-image-amd64
-linux-headers-amd64
 firmware-linux
 firmware-linux-nonfree
 firmware-misc-nonfree
@@ -23,6 +41,7 @@ cryptsetup-initramfs
 systemd
 systemd-sysv
 dbus
+dbus-user-session
 udev
 util-linux
 coreutils
@@ -47,14 +66,10 @@ kmod
 ca-certificates
 gnupg
 lsb-release
-command-not-found
 man-db
-manpages
-info
 
-# --- Networking ---
+# --- Networking (lightweight but fully functional) ---
 network-manager
-network-manager-openvpn
 wireless-tools
 wpasupplicant
 iwd
@@ -67,7 +82,7 @@ openssh-client
 curl
 wget
 
-# --- Storage and filesystems ---
+# --- Storage and filesystems (needed for live + install) ---
 parted
 dosfstools
 ntfs-3g
@@ -79,28 +94,53 @@ lvm2
 cryptsetup
 exfatprogs
 fuse3
-fuseiso
 gvfs
 gvfs-backends
 gvfs-fuse
 keyutils
 
-# --- Display server (needed by all editions; Wayland + X11 fallback) ---
+# --- Display server: Wayland native + XWayland for X11 apps ---
 xwayland
+# Minimal X server drivers (avoid xserver-xorg-video-all which pulls in many
+# legacy drivers: vmware, qxl, cirrus, fbdev, nouveau, ati, radeon, vesa…).
+# The -modesetting driver is built into xserver-xorg-core.
 xserver-xorg-core
 xserver-xorg-input-libinput
-xserver-xorg-video-all
+xserver-xorg-video-amdgpu
+xserver-xorg-video-intel
 mesa-utils
 mesa-va-drivers
 mesa-vdpau-drivers
 mesa-vulkan-drivers
 
-# --- Display manager ---
-sddm
+# --- Display manager: greetd + gtkgreet (lightweight, ~5 MB vs SDDM ~120 MB) ---
+# cage is the kiosk compositor that hosts gtkgreet on the login screen.
+# (greetd itself is just a session daemon; it needs a Wayland compositor to
+# display the greeter on.)
+greetd
+gtkgreet
+cage
 
-# --- Window manager / Wayland compositor ---
-# KWin is required by Bright Desktop shell for Wayland mode.
-kwin-wayland
+# --- Default Wayland compositor: labwc (wlroots, ~5 MB resident) ---
+labwc
+# Qt layer-shell integration so the PyQt6 Bright Shell becomes a proper
+# wlr-layer-shell surface (panels/docks reserve an exclusive zone)
+layer-shell-qt
+qml6-module-org-kde-layershell
+# XDG portal for wlroots (screenshots, screencopy, screen casting)
+xdg-desktop-portal-wlr
+# Notifications daemon (lightweight, Wayland native; no notify-osd/KNotify)
+mako-notifier
+# Screen lock / idle (lightweight; no KDE screenlocker)
+swaylock
+swayidle
+# Multi-monitor / HiDPI profiles
+kanshi
+# Screenshot helpers
+grim
+slurp
+# Output/brightness/keyboard tools
+brightnessctl
 
 # --- Qt 6 runtime (required by Bright Desktop shell) ---
 libqt6core6
@@ -120,7 +160,7 @@ libqt6xml6
 qt6-qpa-plugins
 qt6ct
 
-# --- QML modules (required by Shell.qml; Qt 6 versions) ---
+# --- QML modules required by Shell.qml ---
 qml6-module-qtquick
 qml6-module-qtquick-controls
 qml6-module-qtquick-layouts
@@ -135,7 +175,7 @@ qml6-module-qt-labs-folderlistmodel
 qml6-module-qt-labs-settings
 qml6-module-qtqml-workerscript
 
-# --- Python 3 runtime (required by Bright shell and system apps) ---
+# --- Python 3 runtime (Bright shell + AURA + system tools) ---
 python3
 python3-pip
 python3-pyqt6
@@ -147,6 +187,8 @@ python3-gi
 python3-apt
 python3-pil
 python3-yaml
+python3-psutil
+python3-setuptools
 
 # --- XDG integration ---
 xdg-user-dirs
@@ -154,33 +196,33 @@ xdg-utils
 xdg-desktop-portal
 xdg-desktop-portal-gtk
 
-# --- Audio (PipeWire for all editions) ---
+# --- Audio (PipeWire; systemd socket activation keeps boot lean) ---
 pipewire
 pipewire-pulse
 pipewire-alsa
-pipewire-jack
 wireplumber
 pulseaudio-utils
 alsa-utils
+pavucontrol-qt
 
-# --- Fonts ---
+# --- Fonts (compact, good coverage) ---
 fonts-dejavu
 fonts-dejavu-core
-fonts-liberation2
 fonts-noto
-fonts-noto-cjk
 fonts-noto-color-emoji
 fonts-hack
 fontconfig
 
-# --- Icon themes (required by Bright shell and apps) ---
+# --- Icon themes (Breeze for Qt apps, Adwaita for GTK apps) ---
 breeze-icon-theme
 adwaita-icon-theme
+breeze-cursor-theme
 
-# --- System utilities ---
-htop
-neofetch
-file-roller
+# --- Lightweight terminal + text editor + file manager + archive ---
+alacritty
+featherpad
+pcmanfm-qt
+engrampa
 unzip
 zip
 p7zip-full
@@ -190,13 +232,21 @@ bzip2
 xz-utils
 zstd
 rsync
-gnome-disk-utility
-partitionmanager
+
+# --- System utilities ---
+htop
+file-roller
 gparted
+gnome-disk-utility
 upower
 acpid
+xfce4-power-manager
+network-manager-gnome
 
-# --- Flatpak support ---
+# --- Image processing (needed by GRUB theme rendering in build hooks) ---
+imagemagick
+
+# --- Flatpak support (core design pillar: apps via Flatpak) ---
 flatpak
 
 # --- Installer (Calamares) ---
@@ -204,17 +254,12 @@ calamares
 calamares-settings-debian
 os-prober
 
-# --- GRUB bootloader (needed for Calamares to install to target) ---
+# --- GRUB bootloader (unsigned variant; shim-signed in optional-secureboot) ---
 grub-pc-bin
 grub-efi-amd64-bin
-grub-efi-amd64-signed
-shim-signed
 grub-common
-
-# --- Boot splash ---
-plymouth
-plymouth-themes
-plymouth-label
 
 # --- Additional essentials ---
 software-properties-common
+desktop-file-utils
+shared-mime-info

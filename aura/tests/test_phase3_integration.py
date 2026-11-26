@@ -181,24 +181,35 @@ class FileLayoutTests(unittest.TestCase):
 
 
 class PackageListTests(unittest.TestCase):
-    """Verify package lists reference required packages."""
+    """Verify package lists reference required packages.
+
+    Phase 6.3: AURA relies on some packages that ship in core.list.chroot
+    (e.g. python3, dbus, systemd, policykit-1). Tests accept a package if it
+    appears in EITHER list.
+    """
 
     def setUp(self):
-        self.pkglist = _read(CONFIG.parent / "package-lists" / "aura-core.list.chroot")
+        self.aura_pkglist = _read(CONFIG.parent / "package-lists" / "aura-core.list.chroot")
+        core_path = CONFIG.parent / "package-lists" / "core.list.chroot"
+        self.core_pkglist = _read(core_path) if core_path.exists() else ""
+        self.all_pkgs = set(self.aura_pkglist.splitlines()) | set(self.core_pkglist.splitlines())
+
+    def _assert_pkg(self, pkg):
+        self.assertIn(pkg, self.all_pkgs,
+                      f"Missing package: {pkg} (not in aura-core or core)")
 
     def test_required_python_packages(self):
         for pkg in ("python3", "python3-dbus", "python3-gi", "python3-yaml",
                     "python3-psutil"):
-            self.assertIn(pkg, self.pkglist.splitlines(),
-                          f"Missing package: {pkg}")
+            self._assert_pkg(pkg)
 
     def test_required_system_packages(self):
         for pkg in ("dbus", "systemd", "policykit-1"):
-            self.assertIn(pkg, self.pkglist.splitlines(),
-                          f"Missing package: {pkg}")
+            self._assert_pkg(pkg)
 
     def test_polkit_gir_package(self):
-        self.assertIn("gir1.2-polkit-1.0", self.pkglist.splitlines(),
+        # gir1.2-polkit-1.0 is in AURA's own list
+        self.assertIn("gir1.2-polkit-1.0", self.aura_pkglist.splitlines(),
                       "Polkit GIR bindings required for authorization checks")
 
     def test_no_model_weights_in_package_lists(self):

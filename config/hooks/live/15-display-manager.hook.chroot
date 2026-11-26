@@ -1,0 +1,59 @@
+#!/bin/sh
+# =============================================================================
+# Display manager setup hook (Phase 6.3)
+#
+# Sets greetd as the default display manager. If SDDM is present (from
+# optional-recovery-kwin), disable it (greetd handles session switching).
+# If greetd is not present (unusual, fallback), fall back to SDDM if available.
+# =============================================================================
+set -e
+
+echo "I: Configuring display manager (greetd preferred)..."
+
+# Ensure the greeter user + runtime dir exist (sysusers/tmpfiles should have
+# done this; if running outside of a package-managed install, create them).
+if ! id greeter >/dev/null 2>&1; then
+    useradd --system --home-dir /var/lib/greeter --shell /usr/sbin/nologin \
+            --user-group greeter 2>/dev/null || true
+    for grp in video input render; do
+        getent group "$grp" >/dev/null 2>&1 && adduser greeter "$grp" >/dev/null 2>&1 || true
+    done
+fi
+mkdir -p /var/lib/greeter
+chown greeter:greeter /var/lib/greeter
+chmod 0700 /var/lib/greeter
+
+# Default DM = greetd if available.
+if [ -x /usr/sbin/greetd ]; then
+    # systemd unit is 'greetd.service' (provided by Debian's greetd package).
+    if [ -d /etc/systemd/system/display-manager.service ]; then
+        rm -f /etc/systemd/system/display-manager.service
+    fi
+    ln -sf /lib/systemd/system/greetd.service \
+           /etc/systemd/system/display-manager.service
+    echo "I: greetd enabled as default display manager."
+
+    # Disable SDDM if present (we'll manage it through display-manager.service).
+    if [ -x /usr/sbin/sddm ]; then
+        systemctl disable sddm.service >/dev/null 2>&1 || true
+        echo "I: SDDM present but disabled (greetd is default)."
+    fi
+elif [ -x /usr/sbin/sddm ]; then
+    # Fallback: greetd missing, SDDM present.
+    if [ -d /etc/systemd/system/display-manager.service ]; then
+        rm -f /etc/systemd/system/display-manager.service
+    fi
+    ln -sf /lib/systemd/system/sddm.service \
+           /etc/systemd/system/display-manager.service
+    echo "W: greetd not found; falling back to SDDM."
+fi
+
+# Ensure no other DM unit shadows us (lightdm, gdm3, etc. if they accidentally
+# get pulled in via recommends).
+for dm in lightdm gdm3 gdm lxdm xdm wdm nodm; do
+    if [ -f "/lib/systemd/system/${dm}.service" ]; then
+        systemctl disable "${dm}.service" >/dev/null 2>&1 || true
+    fi
+done
+
+echo "I: Display manager setup complete."

@@ -1,61 +1,33 @@
 # =============================================================================
-# Bright OS — Desktop Environment Packages
-# These packages provide the full KDE Plasma desktop experience for
-# Home and Developer editions. Lite edition uses a different, lighter
-# set (see config/package-lists/desktop-lite.list.chroot).
+# Bright OS — Default Desktop Apps (layered on top of lightweight core)
+#
+# Phase 6.3: the heavy KDE Plasma stack has been removed from the default
+# desktop. The default experience runs on labwc + Bright Shell (PyQt6/QML).
+# This list adds user-facing apps that ship on the Home ISO.
+#
+# Heavy applications (LibreOffice, Thunderbird, GIMP, VLC, Wine, Dev tools,
+# etc.) have been moved to edition-specific lists or optional profiles.
 # Target: Debian 13 (Trixie) amd64
 # =============================================================================
 
-# --- KDE Plasma Desktop ---
-plasma-workspace
-plasma-desktop
-plasma-nm
-plasma-pa
-breeze
-breeze-gtk
-kde-config-gtk-style
-kde-config-gtk-style-preview
-xdg-desktop-portal-kde
-
-# --- KDE Plasma utilities ---
-powerdevil
-bluedevil
-print-manager
-kcalc
-kwrite
-ark
-plasma-discover
-plasma-discover-backend-flatpak
-plasma-discover-backend-apt
-
-# --- Theme engines ---
-qt5-style-kvantum
-gtk2-engines-murrine
-sassc
-optipng
-
-# --- Breeze theme for SDDM ---
-sddm-theme-debian-breeze
-
-# --- Volume control ---
-pavucontrol-qt
-
-# --- Bluetooth ---
-bluez
-blueman
-
-# --- Printing ---
-cups
-cups-filters
-printer-driver-all
-system-config-printer
-system-config-printer-common
-
-# --- Image tools (needed for GRUB theme rendering in hooks) ---
-imagemagick
-
-# --- Web browser ---
+# --- Web browser (essential) ---
 firefox-esr
 
-# --- Volume icon for system tray ---
-volumeicon-alsa
+# --- Media (lightweight defaults) ---
+mpv
+viewnior
+
+# --- Lightweight image viewer / screenshot ---
+screengrab
+lximage-qt
+
+# --- Calculator ---
+galculator
+
+# --- BitTorrent client (lightweight, CLI core) ---
+transmission-cli
+transmission-gtk
+
+# --- Theme / style support for non-Qt apps ---
+breeze-gtk-theme
+gtk2-engines-murrine

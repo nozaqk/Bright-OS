@@ -1,40 +1,44 @@
 # =============================================================================
 # Bright OS Home Edition — Additional applications
-# Target: Everyday users, general-purpose desktop
-# Desktop: Full KDE Plasma (selected by build script via desktop.list.chroot)
+# Phase 6.3: lightweight core (labwc + greetd) plus user-facing apps.
+# Heavy components like Bluetooth, Printing, and Android are included here
+# because Home is the "kitchen-sink" edition for everyday users.
+# Dev tools and Wine are NOT included (install post-install via flatpak/apt).
 # =============================================================================
 
-# --- Web and email ---
+# --- Web / email / media ---
 firefox-esr
 thunderbird
-
-# --- Media ---
 vlc
-audacity
+
+# --- Graphics / office ---
 gimp
 inkscape
-
-# --- Office suite ---
 libreoffice-writer
 libreoffice-calc
 libreoffice-impress
 libreoffice-draw
 libreoffice-gtk3
 libreoffice-math
-libreoffice-base
 evince
 eog
 
 # --- Utilities ---
 simple-scan
-transmission-gtk
 cheese
 gnome-calculator
 gnome-screenshot
-gnome-weather
-gnome-calendar
+mtpaint
 
-# --- Wine for Windows application compatibility ---
-wine
-wine64
-winetricks
+# --- Bluetooth and printing ---
+bluez
+blueman
+cups
+cups-filters
+cups-bsd
+system-config-printer
+
+# --- VPN / mDNS for convenience on home networks ---
+network-manager-openvpn
+avahi-daemon
+avahi-utils

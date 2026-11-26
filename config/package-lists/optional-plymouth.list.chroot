@@ -1,0 +1,8 @@
+# =============================================================================
+# Bright OS — Optional: Plymouth boot splash
+# Eye candy only; adds ~30 MB and slows down boot slightly.
+# =============================================================================
+
+plymouth
+plymouth-themes
+plymouth-label
