@@ -112,7 +112,8 @@ jobs:
             live-build debootstrap debian-archive-keyring squashfs-tools xorriso \
             isolinux syslinux-common syslinux-efi mtools dosfstools genisoimage \
             grub-pc-bin grub-efi-amd64-bin grub-efi-amd64-signed shim-signed grub-common \
-            file coreutils cpio qemu-utils qemu-system-x86 ovmf
+            file coreutils cpio qemu-utils qemu-system-x86 ovmf \
+            python3 python3-pip ca-certificates
           lb --version
           for t in lb debootstrap mksquashfs xorriso isoinfo file grub-mkstandalone unsquashfs; do
             command -v "$t" >/dev/null || { echo "::error::missing tool: $t"; exit 1; }
@@ -127,6 +128,20 @@ jobs:
               && echo "OK: $opt supported" \
               || { echo "::error::live-build missing $opt"; exit 1; }
           done
+          # Also log all options we plan to use so we can see if any are missing
+          echo "Checking planned options..."
+          for opt in --mirror-bootstrap --mirror-binary --archive-areas \
+                     --apt-recommends --binary-image --binary-images \
+                     --checksums --iso-application --iso-publisher --iso-volume \
+                     --memtest --firmware-binary --firmware-chroot --initsystem \
+                     --win32-loader --zsync --debian-installer --hdd-label \
+                     --uefi-secure-boot --keyring-packages --parent-archive-areas; do
+            if echo "$LB_HELP" | grep -qE -- "^  $opt( |=|$)"; then
+              echo "  HAVE: $opt"
+            else
+              echo "  MISS: $opt"
+            fi
+          done
 
       - name: Build ISO
         id: build
@@ -135,6 +150,61 @@ jobs:
           export BRIGHT_EDITION BRIGHT_VERSION BRIGHT_DEBIAN_CODENAME
           ISO_DIR="${GITHUB_WORKSPACE}/build/output/${BRIGHT_EDITION}"
           mkdir -p "$ISO_DIR"
+          LOG="$ISO_DIR/build.log"
+          on_error() {
+            local ec=$?
+            echo ""
+            echo "=============================================="
+            echo "BUILD FAILED (exit $ec); tail of build.log:"
+            echo "=============================================="
+            sudo chown -R "$(id -u):$(id -g)" "${GITHUB_WORKSPACE}/build" 2>/dev/null || true
+            # Collect error summary
+            ERR_SUMMARY=""
+            LAST_ERR_LINES=""
+            if [ -f "$LOG" ]; then
+              echo "--- Last 200 lines of build.log ---"
+              tail -200 "$LOG"
+              echo ""
+              echo "--- All E: / ERROR / FAIL lines ---"
+              ERRLINES=$(grep -nE "E: |ERROR|FAIL|error:|failed|invalid|unrecognized|Unknown" "$LOG" | tail -80) || true
+              echo "$ERRLINES"
+              # Capture a few key errors as ::error annotations so they show up in the UI
+              echo "$ERRLINES" | head -10 | while IFS= read -r line; do
+                echo "::error::$line" | head -c 500
+                echo ""
+              done
+              echo ""
+              echo "--- Context around first error ---"
+              FIRST_ERR=$(echo "$ERRLINES" | head -1 | cut -d: -f1)
+              if [ -n "$FIRST_ERR" ] && [ "$FIRST_ERR" -gt 0 ] 2>/dev/null; then
+                START=$((FIRST_ERR - 10)); [ "$START" -lt 1 ] && START=1
+                END=$((FIRST_ERR + 30))
+                sed -n "${START},${END}p" "$LOG"
+              fi
+              # Write last 60 lines to GITHUB_STEP_SUMMARY
+              {
+                echo "## ❌ Build ISO failed (exit code $ec)"
+                echo ""
+                echo "### Last 60 lines of build.log"
+                echo '```'
+                tail -60 "$LOG"
+                echo '```'
+                echo ""
+                echo "### Key error lines"
+                echo '```'
+                echo "$ERRLINES" | head -20
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "(no build.log file found at $LOG)"
+              ls -la "$ISO_DIR/" 2>&1 || echo "(ISO dir empty/missing)"
+            fi
+            echo "=============================================="
+            echo "END OF ERROR DUMP"
+            echo "=============================================="
+            exit 1
+          }
+          trap on_error ERR
           echo "Running as: $(id)"
           echo "Free disk in project root: $(df -h "${GITHUB_WORKSPACE}" | tail -1)"
           echo "lb version: $(lb --version 2>&1 | head -1)"
@@ -142,15 +212,14 @@ jobs:
           echo "Key package versions:"
           dpkg-query -W -f='${Package}=${Version}\n' live-build debian-archive-keyring \
             grub-pc-bin grub-efi-amd64-bin isolinux syslinux-common syslinux-efi shim-signed 2>&1 || true
-          # lb build needs root for chroot/mount operations; runner has
-          # passwordless sudo. Use -E to preserve BRIGHT_* env vars.
-          # Run with bash -x for verbose trace so failures are visible in CI log.
+          echo ""
+          echo "=== Starting live-build ==="
+          # lb build needs root for chroot/mount; use -E to preserve env. bash -x for trace.
           sudo -E bash -x build/scripts/build.sh \
             --version "$BRIGHT_VERSION" \
             --distro "$BRIGHT_DEBIAN_CODENAME" \
-            "$BRIGHT_EDITION" 2>&1 | tee "$ISO_DIR/build.log"
-          # Fix ownership of build artifacts so subsequent steps (running as
-          # runner user) can read them.
+            "$BRIGHT_EDITION" 2>&1 | tee "$LOG"
+          # Fix ownership so later steps (runner user) can read build artifacts.
           sudo chown -R "$(id -u):$(id -g)" "${GITHUB_WORKSPACE}/build"
           ISO_NAME="bright-os-${BRIGHT_VERSION}-${BRIGHT_EDITION}-amd64.iso"
           ISO_PATH="$ISO_DIR/$ISO_NAME"
@@ -171,7 +240,6 @@ jobs:
         if: always()
         run: |
           LOG="build/output/${BRIGHT_EDITION}/build.log"
-          # Fix ownership in case build failed mid-way (sudo leaves files as root)
           sudo chown -R "$(id -u):$(id -g)" "${GITHUB_WORKSPACE}/build" 2>/dev/null || true
           echo "=== Build log size: $(wc -c < "$LOG" 2>/dev/null || echo 0) bytes ==="
           if [ -f "$LOG" ]; then
