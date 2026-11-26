@@ -62,7 +62,10 @@ env:
 jobs:
   build-iso:
     name: Build ISO (${{ inputs.edition || 'home' }} / ${{ inputs.distro || 'trixie' }})
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
+    container:
+      image: debian:trixie
+      options: --privileged   # live-build needs chroot/mount; runner containers support --privileged
     timeout-minutes: 360
     outputs:
       iso_name: ${{ steps.build.outputs.iso_name }}
@@ -98,21 +101,24 @@ jobs:
         run: |
           set -eu
           echo "Before: $(df -h / | tail -1 | awk '{print $4}')"
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache \
-                    /usr/local/share/boost /usr/lib/jvm /usr/local/.ghcup 2>/dev/null || true
-          sudo apt-get clean
-          sudo rm -rf /var/lib/apt/lists/*
+          # In Debian container, remove unnecessary docs/cache to free space
+          rm -rf /usr/share/doc/* /usr/share/man/* /var/cache/apt/archives/*.deb 2>/dev/null || true
+          apt-get clean
           echo "After:  $(df -h / | tail -1 | awk '{print $4}')"
 
       - name: Install live-build and build dependencies
         run: |
           set -eux
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update -qq
+          # In Debian Trixie container, no sudo needed. Install all build deps.
+          apt-get install -y --no-install-recommends \
             live-build debootstrap debian-archive-keyring squashfs-tools xorriso \
             isolinux syslinux-common syslinux-efi mtools dosfstools genisoimage \
             grub-pc-bin grub-efi-amd64-bin grub-efi-amd64-signed shim-signed grub-common \
-            file coreutils cpio qemu-utils qemu-system-x86 ovmf
+            file coreutils cpio qemu-utils qemu-system-x86 ovmf procps \
+            python3 python3-pip ca-certificates wget curl git sudo \
+            numfmt util-linux gdisk kmod debian-keyring
           lb --version
           for t in lb debootstrap mksquashfs xorriso isoinfo file grub-mkstandalone unsquashfs; do
             command -v "$t" >/dev/null || { echo "::error::missing tool: $t"; exit 1; }
@@ -156,16 +162,12 @@ jobs:
           echo "Key package versions:"
           dpkg-query -W -f='${Package}=${Version}\n' live-build debian-archive-keyring \
             grub-pc-bin grub-efi-amd64-bin isolinux syslinux-common syslinux-efi shim-signed 2>&1 || true
-          # lb build needs root for chroot/mount operations; runner has
-          # passwordless sudo. Use -E to preserve BRIGHT_* env vars.
+          # Running as root in Debian container; chroot/mount operations work directly.
           # Run with bash -x for verbose trace so failures are visible in CI log.
-          sudo -E bash -x build/scripts/build.sh \
+          bash -x build/scripts/build.sh \
             --version "$BRIGHT_VERSION" \
             --distro "$BRIGHT_DEBIAN_CODENAME" \
             "$BRIGHT_EDITION" 2>&1 | tee "$ISO_DIR/build.log"
-          # Fix ownership of build artifacts so subsequent steps (running as
-          # runner user) can read them.
-          sudo chown -R "$(id -u):$(id -g)" "${GITHUB_WORKSPACE}/build"
           ISO_NAME="bright-os-${BRIGHT_VERSION}-${BRIGHT_EDITION}-amd64.iso"
           ISO_PATH="$ISO_DIR/$ISO_NAME"
           test -s "$ISO_PATH" || { echo "::error::ISO not produced at $ISO_PATH"; ls -la "$ISO_DIR"; exit 1; }
@@ -185,8 +187,6 @@ jobs:
         if: always()
         run: |
           LOG="build/output/${BRIGHT_EDITION}/build.log"
-          # Fix ownership in case build failed mid-way (sudo leaves files as root)
-          sudo chown -R "$(id -u):$(id -g)" "${GITHUB_WORKSPACE}/build" 2>/dev/null || true
           echo "=== Build log size: $(wc -c < "$LOG" 2>/dev/null || echo 0) bytes ==="
           if [ -f "$LOG" ]; then
             echo "--- Last 150 lines of build.log ---"
