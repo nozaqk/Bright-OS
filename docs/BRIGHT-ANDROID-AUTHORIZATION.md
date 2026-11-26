@@ -81,13 +81,28 @@ path that root cannot use over D-Bus.
 - The `bright-android --launch` and `--install-apk` CLI paths also use
   `waydroid_manager` directly, not D-Bus.
 
-## 5. Known gaps (not closed by this change)
+## 5. Polkit check limits
+
+- **Timeout:** each Polkit check waits at most `POLKIT_CHECK_TIMEOUT_SECONDS`
+  (60 s). After that the request is denied.
+- **Concurrency cap:** at most `POLKIT_MAX_IN_FLIGHT` (4) checks run at once. A
+  slot is acquired without blocking. When no slot is free, the request is denied
+  at once with a "busy" reason, so the service stays responsive.
+- **Hung checks are not cancelled.** Python cannot stop a thread blocked inside
+  a native Polkit call. A timed-out check keeps its thread and its slot until
+  the call returns, and its result is discarded. A hung Polkit daemon can
+  therefore hold all slots, and state-changing calls are denied until a check
+  returns. This is fail-closed, but it is a denial of service while Polkit is
+  hung.
+- **Late results are discarded.** Each request has its own state. A result that
+  arrives after the timeout is never used, so it cannot authorize a request that
+  was already denied.
+
+## 6. Known gaps (not closed by this change)
 
 - **SetConfig accepts any `section/key`.** No allowlist exists. Any caller that
   passes authorization (including root) can write any key in the Bright Android
   config file. Needs an allowlist of settable keys.
-- **LaunchApp package name is not validated** before it is passed to
-  `waydroid app launch`. UninstallApp validates it. See the fix in the next commit.
 - **Polkit call uses the deprecated `Polkit.Authority.get()`** in AURA
   (`aura/core/aura_core_service.py`). It works, but the replacement is
   `get_sync`. Migration is a low-priority cleanup.

@@ -1014,6 +1014,20 @@ def _try_import(mod):
 
 
 
+def _polkit_thread_count():
+    import threading as _t
+    return sum(1 for th in _t.enumerate() if th.name == "polkit-check" and th.is_alive())
+
+
+def _wait_for_polkit_threads(expected=0, timeout=5.0):
+    """Wait until hung polkit-check threads have finished (test isolation)."""
+    import time as _time
+    end = _time.monotonic() + timeout
+    while _polkit_thread_count() > expected and _time.monotonic() < end:
+        _time.sleep(0.01)
+    return _polkit_thread_count()
+
+
 class PolkitResponseTests(unittest.TestCase):
     """Polkit decision handling: timeout, invalid responses, and failures.
 
@@ -1033,6 +1047,7 @@ class PolkitResponseTests(unittest.TestCase):
 
     def tearDown(self):
         self._release.set()  # unblock any hung fake authority thread
+        _wait_for_polkit_threads()
         svc.HAS_DBUS = self._hd
         svc.HAS_POLKIT = self._hp
         svc.SERVICE_UID = self._suid
@@ -1369,6 +1384,165 @@ class LaunchPackageValidationTests(unittest.TestCase):
              mock.patch.object(wm, "is_installed", return_value=True):
             wm.launch_app("org.fdroid.fdroid")
         run.assert_called()
+
+
+class PolkitResourceTests(unittest.TestCase):
+    """Bounded Polkit checks: repeated timeouts, late results, concurrency."""
+
+    def setUp(self):
+        self._saved = {k: getattr(svc, k) for k in
+                       ("HAS_DBUS", "HAS_POLKIT", "SERVICE_UID", "POLKIT_CHECK_TIMEOUT_SECONDS", "_POLKIT_SLOTS")}
+        self._polkit_before = getattr(svc, "Polkit", None)
+        svc.HAS_DBUS = True
+        svc.HAS_POLKIT = True
+        svc.SERVICE_UID = TEST_SERVICE_UID
+        svc.POLKIT_CHECK_TIMEOUT_SECONDS = 0.1
+        svc._POLKIT_SLOTS = threading.BoundedSemaphore(2)
+        self._release = threading.Event()
+
+    def tearDown(self):
+        self._release.set()
+        _wait_for_polkit_threads()
+        for k, v in self._saved.items():
+            setattr(svc, k, v)
+        if self._polkit_before is None:
+            if hasattr(svc, "Polkit"):
+                del svc.Polkit
+        else:
+            svc.Polkit = self._polkit_before
+
+    def _bus(self, pid=4242):
+        bus = mock.MagicMock()
+        bus.get_connection_unix_process_id.return_value = pid
+        bus.get_connection_unix_user.return_value = TEST_SERVICE_UID
+        return bus
+
+    def _install(self, check_fn):
+        polkit_mod = mock.MagicMock()
+        authority = mock.MagicMock()
+        authority.check_authorization_sync.side_effect = check_fn
+        polkit_mod.Authority.get_sync.return_value = authority
+        polkit_mod.UnixProcess.new.side_effect = lambda pid: mock.Mock(pid=pid)
+        svc.Polkit = polkit_mod
+
+    @staticmethod
+    def _result(authorized, challenge=False):
+        r = mock.MagicMock()
+        r.get_is_authorized.return_value = authorized
+        r.get_is_challenge.return_value = challenge
+        return r
+
+    def _call(self, pid=4242):
+        return svc._check_authorization(":1.9", svc.POLKIT_ACTION_INIT, bus=self._bus(pid))
+
+    def _hang(self, *_a, **_k):
+        self._release.wait(10)
+        return self._result(True)
+
+    def test_repeated_timeouts_do_not_accumulate_threads(self):
+        self._install(self._hang)
+        for _ in range(2):  # fill both slots with hung checks
+            ok, reason = self._call()
+            self.assertFalse(ok)
+            self.assertIn("timed out", reason)
+        self.assertEqual(_polkit_thread_count(), 2)
+        for _ in range(10):  # further requests are denied, and no thread is added
+            ok, reason = self._call()
+            self.assertFalse(ok)
+            self.assertIn("busy", reason)
+            self.assertLessEqual(_polkit_thread_count(), 2)
+
+    def test_saturated_pool_responds_immediately(self):
+        import time as _time
+        svc.POLKIT_CHECK_TIMEOUT_SECONDS = 5.0  # a blocking wait would take 5 s
+        self._install(self._hang)
+        svc.POLKIT_CHECK_TIMEOUT_SECONDS = 0.1
+        self._call()
+        self._call()  # two timeouts hold both slots
+        start = _time.monotonic()
+        ok, reason = self._call()
+        elapsed = _time.monotonic() - start
+        self.assertFalse(ok)
+        self.assertIn("busy", reason)
+        self.assertLess(elapsed, 0.5, "a saturated pool must deny without waiting")
+
+    def test_slots_recover_after_hung_checks_finish(self):
+        self._install(self._hang)
+        self._call()
+        self._call()
+        self._release.set()
+        self.assertEqual(_wait_for_polkit_threads(), 0, "hung threads should finish")
+        self._install(lambda *a, **k: self._result(True))
+        ok, reason = self._call()
+        self.assertTrue(ok, f"slot should be free again: {reason}")
+
+    def test_late_authorization_cannot_authorize_expired_request(self):
+        import time as _time
+        def late_allow(*_a, **_k):
+            _time.sleep(0.3)  # answers "authorized" only after the caller gave up
+            return self._result(True)
+        self._install(late_allow)
+        ok, reason = self._call(pid=1111)
+        self.assertFalse(ok)
+        self.assertIn("timed out", reason)
+        # Let the late worker finish; it must not change the already-returned denial.
+        self.assertEqual(_wait_for_polkit_threads(), 0)
+        self.assertFalse(ok)
+        # A new request is independent and gets its own answer.
+        self._install(lambda *a, **k: self._result(False))
+        ok2, reason2 = self._call(pid=2222)
+        self.assertFalse(ok2)
+        self.assertEqual(reason2, "not authorized")
+
+    def test_concurrent_requests_do_not_cross_results(self):
+        import time as _time
+        svc._POLKIT_SLOTS = threading.BoundedSemaphore(16)  # room for all 16 requests
+        svc.POLKIT_CHECK_TIMEOUT_SECONDS = 5.0
+        def check(subject, *_a, **_k):
+            _time.sleep(0.02)
+            return self._result(subject.pid % 2 == 0)  # authorized iff pid is even
+        self._install(check)
+        results = {}
+        def run(pid):
+            results[pid] = self._call(pid=pid)
+        threads = [threading.Thread(target=run, args=(pid,)) for pid in range(100, 116)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(10)
+        self.assertEqual(len(results), 16)
+        for pid, (ok, reason) in results.items():
+            self.assertEqual(ok, pid % 2 == 0, f"pid {pid} got {ok} ({reason})")
+
+    def test_in_flight_checks_never_exceed_cap(self):
+        import time as _time
+        cap = 3
+        svc._POLKIT_SLOTS = threading.BoundedSemaphore(cap)
+        svc.POLKIT_CHECK_TIMEOUT_SECONDS = 5.0
+        lock = threading.Lock()
+        state = {"now": 0, "max": 0}
+        def check(*_a, **_k):
+            with lock:
+                state["now"] += 1
+                state["max"] = max(state["max"], state["now"])
+            _time.sleep(0.05)
+            with lock:
+                state["now"] -= 1
+            return self._result(True)
+        self._install(check)
+        outcomes = []
+        def run():
+            outcomes.append(self._call())
+        threads = [threading.Thread(target=run) for _ in range(20)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(10)
+        self.assertEqual(len(outcomes), 20)
+        self.assertLessEqual(state["max"], cap)
+        for ok, reason in outcomes:
+            if not ok:
+                self.assertIn("busy", reason)  # denied only because the pool was full
 
 
 if __name__ == "__main__":

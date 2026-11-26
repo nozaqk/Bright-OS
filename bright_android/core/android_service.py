@@ -146,9 +146,15 @@ def _get_caller_credentials(sender, bus) -> tuple:
 
 
 # Maximum time to wait for a Polkit decision. ALLOW_USER_INTERACTION may show
-# an authentication prompt, so this must be generous; it bounds a hung
-# authority so the D-Bus service cannot stall indefinitely.
+# an authentication prompt, so this must be generous.
 POLKIT_CHECK_TIMEOUT_SECONDS = 60
+
+# Maximum Polkit checks in flight at once, including checks that have timed
+# out but whose thread is still blocked. A slot is released only when the
+# worker thread actually finishes, so hung threads cannot accumulate without
+# bound. When every slot is taken, new requests are denied immediately.
+POLKIT_MAX_IN_FLIGHT = 4
+_POLKIT_SLOTS = threading.BoundedSemaphore(POLKIT_MAX_IN_FLIGHT)
 
 
 def _polkit_consult(action_id: str, pid: int, uid: int,
@@ -156,51 +162,91 @@ def _polkit_consult(action_id: str, pid: int, uid: int,
     """Ask Polkit whether process `pid` may perform `action_id`.
 
     Returns (allowed: bool, reason: str). Fails closed: a missing authority,
-    an exception, a timeout, or a response that is not exactly True/False
-    is a denial. Only an explicit is_authorized() == True allows.
+    an exception, a timeout, a saturated pool, or a response that is not
+    exactly True/False is a denial. Only an explicit is_authorized() == True
+    allows.
 
-    The blocking Polkit calls run in a worker thread so a hung authority
-    cannot block the service beyond `timeout`. A thread that outlives its
-    timeout is abandoned; its result is ignored.
+    Resource limits:
+    - At most POLKIT_MAX_IN_FLIGHT checks run at once. The slot is acquired
+      without blocking, so a saturated pool denies at once and the D-Bus
+      service stays responsive.
+    - Python cannot cancel a thread blocked inside a C call. A timed-out check
+      keeps its thread and its slot until the call returns. The thread is not
+      killed, and no result from it is ever used.
+    - Each request has its own state. The caller marks it abandoned on
+      timeout, and the worker discards any result that arrives after that.
+      A late "authorized" therefore cannot authorize a request that already
+      returned a denial.
     """
     if timeout is None:
         timeout = POLKIT_CHECK_TIMEOUT_SECONDS
-    outcome = {}
+
+    if not _POLKIT_SLOTS.acquire(blocking=False):
+        return False, (
+            f"Polkit authorization busy (too many checks in flight); denied {action_id}"
+        )
+
+    lock = threading.Lock()
+    req = {"status": "pending", "result": None, "error": None, "stage": None}
+
+    def _settle(**fields):
+        # Store the outcome only if the caller has not already given up.
+        with lock:
+            if req["status"] != "pending":
+                return False
+            req.update(fields)
+            req["status"] = "done"
+            return True
 
     def _worker():
         try:
-            authority = Polkit.Authority.get_sync(None)
-        except Exception as e:
-            outcome["stage"] = "authority"
-            outcome["error"] = e
-            return
-        try:
-            subject = Polkit.UnixProcess.new(pid)
-            outcome["result"] = authority.check_authorization_sync(
-                subject,
-                action_id,
-                None,
-                Polkit.CheckAuthorizationFlags.ALLOW_USER_INTERACTION,
-                None,
-            )
-        except Exception as e:
-            outcome["stage"] = "check"
-            outcome["error"] = e
+            try:
+                authority = Polkit.Authority.get_sync(None)
+            except Exception as e:
+                _settle(stage="authority", error=e)
+                return
+            try:
+                subject = Polkit.UnixProcess.new(pid)
+                result = authority.check_authorization_sync(
+                    subject,
+                    action_id,
+                    None,
+                    Polkit.CheckAuthorizationFlags.ALLOW_USER_INTERACTION,
+                    None,
+                )
+            except Exception as e:
+                _settle(stage="check", error=e)
+                return
+            _settle(result=result)
+        finally:
+            _POLKIT_SLOTS.release()
 
     worker = threading.Thread(target=_worker, name="polkit-check", daemon=True)
-    worker.start()
+    try:
+        worker.start()
+    except Exception:
+        _POLKIT_SLOTS.release()
+        return False, "Polkit check could not start; denied"
     worker.join(timeout)
 
-    if worker.is_alive():
+    with lock:
+        if req["status"] == "pending":
+            req["status"] = "abandoned"  # any late result is now discarded
+            timed_out = True
+        else:
+            timed_out = False
+        snapshot = dict(req)
+
+    if timed_out:
         return False, (
             f"Polkit check timed out after {timeout}s for {action_id}; denied"
         )
-    if "error" in outcome:
-        if outcome.get("stage") == "authority":
-            return False, f"Polkit authority unavailable: {outcome['error']}"
-        return False, f"Polkit authorization check failed: {outcome['error']}"
+    if snapshot["error"] is not None:
+        if snapshot["stage"] == "authority":
+            return False, f"Polkit authority unavailable: {snapshot['error']}"
+        return False, f"Polkit authorization check failed: {snapshot['error']}"
 
-    result = outcome.get("result")
+    result = snapshot["result"]
     try:
         authorized = result.get_is_authorized()
         challenge = result.get_is_challenge()
