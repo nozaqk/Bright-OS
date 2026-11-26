@@ -139,9 +139,13 @@ jobs:
           echo "Free disk in project root: $(df -h "${GITHUB_WORKSPACE}" | tail -1)"
           echo "lb version: $(lb --version 2>&1 | head -1)"
           echo "debootstrap version: $(debootstrap --version 2>&1 | head -1)"
+          echo "Key package versions:"
+          dpkg-query -W -f='${Package}=${Version}\n' live-build debian-archive-keyring \
+            grub-pc-bin grub-efi-amd64-bin isolinux syslinux-common syslinux-efi shim-signed 2>&1 || true
           # lb build needs root for chroot/mount operations; runner has
           # passwordless sudo. Use -E to preserve BRIGHT_* env vars.
-          sudo -E bash build/scripts/build.sh \
+          # Run with bash -x for verbose trace so failures are visible in CI log.
+          sudo -E bash -x build/scripts/build.sh \
             --version "$BRIGHT_VERSION" \
             --distro "$BRIGHT_DEBIAN_CODENAME" \
             "$BRIGHT_EDITION" 2>&1 | tee "$ISO_DIR/build.log"
@@ -162,6 +166,26 @@ jobs:
           echo "iso_sha256=$ISO_SHA"          >> "$GITHUB_OUTPUT"
           echo "Built: $ISO_PATH ($ISO_SIZE_HUMAN)"
           echo "SHA256: $ISO_SHA"
+
+      - name: Dump tail of build log (for debugging)
+        if: always()
+        run: |
+          LOG="build/output/${BRIGHT_EDITION}/build.log"
+          # Fix ownership in case build failed mid-way (sudo leaves files as root)
+          sudo chown -R "$(id -u):$(id -g)" "${GITHUB_WORKSPACE}/build" 2>/dev/null || true
+          echo "=== Build log size: $(wc -c < "$LOG" 2>/dev/null || echo 0) bytes ==="
+          if [ -f "$LOG" ]; then
+            echo "--- Last 150 lines of build.log ---"
+            tail -150 "$LOG"
+            echo "--- End of build.log ---"
+            # Also search for explicit errors
+            echo "--- Lines containing E: or ERROR or FAIL ---"
+            grep -E "E: |ERROR|FAIL|error:|failed" "$LOG" | tail -50 || echo "(no error lines found)"
+          else
+            echo "(no build.log found)"
+            echo "Contents of build dir:"
+            ls -la "build/output/${BRIGHT_EDITION}/" 2>/dev/null || echo "(build dir does not exist)"
+          fi
 
       - name: Run extended ISO validation
         run: |
