@@ -127,6 +127,20 @@ jobs:
               && echo "OK: $opt supported" \
               || { echo "::error::live-build missing $opt"; exit 1; }
           done
+          # Also log all options we plan to use so we can see if any are missing
+          echo "Checking planned options..."
+          for opt in --mirror-bootstrap --mirror-binary --archive-areas \
+                     --apt-recommends --binary-image --binary-images \
+                     --checksums --iso-application --iso-publisher --iso-volume \
+                     --memtest --firmware-binary --firmware-chroot --initsystem \
+                     --win32-loader --zsync --debian-installer --hdd-label \
+                     --uefi-secure-boot --keyring-packages --parent-archive-areas; do
+            if echo "$LB_HELP" | grep -qE -- "^  $opt( |=|$)"; then
+              echo "  HAVE: $opt"
+            else
+              echo "  MISS: $opt"
+            fi
+          done
 
       - name: Build ISO
         id: build

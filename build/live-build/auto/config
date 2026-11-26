@@ -1,20 +1,22 @@
 #!/bin/bash
 # Bright OS live-build auto/config
-# Configures lb for building Bright OS ISOs
+# Configures lb for building Bright OS ISOs.
 #
 # Detects live-build version capabilities and uses compatible options.
 # Supports both modern Debian live-build (Trixie/Sid, 1:2023xxxx+) with
 # --bootloaders/--uefi-secure-boot, and older versions (e.g. Ubuntu 24.04's
-# 3.0~a57 fork) that use singular option names and lack Secure Boot flags.
+# 1:20230502) that may use singular option names and lack some flags.
 #
 # Target: Debian Trixie (amd64) with BIOS + UEFI dual boot.
+#
+# Every option passed to lb config is first checked against the help text.
+# Any option not present in help is skipped with a warning. This makes the
+# config robust across live-build versions (Debian Trixie, Ubuntu 24.04, etc.).
 
 set -e
 
-# Save any extra arguments passed through (for ad-hoc overrides)
 EXTRA_ARGS=("$@")
 
-# Detect edition/codename from environment, with defaults
 EDITION="${BRIGHT_EDITION:-home}"
 ARCH="${BRIGHT_ARCH:-amd64}"
 VERSION="${BRIGHT_VERSION:-0.1.0-alpha}"
@@ -22,107 +24,68 @@ CODENAME="${BRIGHT_DEBIAN_CODENAME:-trixie}"
 
 echo "=== Configuring Bright OS ${VERSION} (${EDITION} edition, ${ARCH}, Debian ${CODENAME}) ==="
 
-# Validate required parameters
 if [ -z "${EDITION}" ] || [ -z "${ARCH}" ] || [ -z "${CODENAME}" ]; then
     echo "ERROR: EDITION, ARCH, and CODENAME must be set"
     exit 1
 fi
 
-# Security mirror URL
 SECURITY_URL="http://security.debian.org/debian-security"
 
 # ==============================================================================
-# Live-build capability detection
-# ==============================================================================
-# Detect which options the installed lb config supports by checking --help.
-# More reliable than version parsing because Ubuntu uses a different version
-# scheme (3.0~a57) vs Debian's date-based versions (1:20250505).
+# Detect supported options by parsing lb config --help
 # ==============================================================================
 
 echo "Detecting live-build capabilities..."
-# Capture both stdout and stderr; some versions of lb may write help to either
 LB_HELP=$(lb config --help 2>&1 || true)
-
-# Extract all --long-option names from the help text into a sorted list.
-# This robustly handles any help formatting (bracketed synopsis, bold markers,
-# pipe-separated alternatives, short|long combinations) by simply extracting
-# every token that starts with -- followed by option-name characters.
-# We then check for exact option name in this list, which avoids singular/plural
-# false matches (--bootloader won't match --bootloaders because 's' is part of
-# the token, and exact matching distinguishes them).
 LB_OPTIONS=$(echo "$LB_HELP" | grep -oE '\-\-[a-z][a-z0-9\-]+' | sort -u)
 
 has_option() {
-    # Check if an exact --option-name was extracted from the help text.
-    # Use -e to prevent patterns starting with -- from being treated as grep options.
     echo "$LB_OPTIONS" | grep -qFxe "$1"
 }
 
-# Bootloader option detection
-LB_HAS_MODERN_BOOTLOADERS=false
-if has_option "--bootloaders"; then
-    LB_BOOTLOADERS_OPT="--bootloaders"
-    LB_HAS_MODERN_BOOTLOADERS=true
-    echo "  Detected modern live-build with --bootloaders (plural) support"
-elif has_option "--bootloader"; then
-    LB_BOOTLOADERS_OPT="--bootloader"
-    LB_HAS_MODERN_BOOTLOADERS=false
-    echo "  Detected legacy live-build with --bootloader (singular) support"
-else
-    echo "ERROR: Cannot determine bootloader option for this live-build version."
-    echo "  Neither --bootloaders nor --bootloader found in 'lb config --help'."
-    echo "  Please install a supported live-build version."
-    exit 1
-fi
+# Find option name: prefer plural, fall back to singular.
+# Returns the option name on stdout.
+find_option() {
+    for opt in "$@"; do
+        if has_option "$opt"; then
+            echo "$opt"
+            return 0
+        fi
+    done
+    return 1
+}
 
-# Secure Boot support
-if has_option "--uefi-secure-boot"; then
-    LB_HAS_SECURE_BOOT=true
-    echo "  Detected --uefi-secure-boot support"
+echo ""
+echo "Detecting options..."
+LB_BOOTLOADERS_OPT=$(find_option "--bootloaders" "--bootloader" || true)
+LB_ARCH_OPT=$(find_option "--architecture" "--architectures" || echo "-a")
+LB_BINARY_IMAGE_OPT=$(find_option "--binary-image" "--binary-images" || true)
+LB_HAS_MODE=$(has_option "--mode" && echo true || echo false)
+LB_HAS_KEYRING_PACKAGES=$(has_option "--keyring-packages" && echo true || echo false)
+LB_HAS_PARENT_ARCHIVE_AREAS=$(has_option "--parent-archive-areas" && echo true || echo false)
+LB_HAS_HDD_LABEL=$(has_option "--hdd-label" && echo true || echo false)
+LB_HAS_UEFI_SECURE_BOOT=$(has_option "--uefi-secure-boot" && echo true || echo false)
+LB_HAS_MEMTEST=$(has_option "--memtest" && echo true || echo false)
+LB_HAS_FIRMWARE_BINARY=$(has_option "--firmware-binary" && echo true || echo false)
+LB_HAS_FIRMWARE_CHROOT=$(has_option "--firmware-chroot" && echo true || echo false)
+LB_HAS_WIN32_LOADER=$(has_option "--win32-loader" && echo true || echo false)
+LB_HAS_ZSYNC=$(has_option "--zsync" && echo true || echo false)
+LB_HAS_INITSYSTEM=$(has_option "--initsystem" && echo true || echo false)
+LB_HAS_DEBIAN_INSTALLER=$(has_option "--debian-installer" && echo true || echo false)
+LB_HAS_APT_RECOMMENDS=$(has_option "--apt-recommends" && echo true || echo false)
+LB_CHECKSUM_OPT=$(find_option "--checksums" "--checksum" || true)
+if [ -n "$LB_CHECKSUM_OPT" ]; then
+    LB_HAS_CHECKSUM=true
 else
-    LB_HAS_SECURE_BOOT=false
-    echo "  WARNING: This live-build version does not support --uefi-secure-boot."
+    LB_HAS_CHECKSUM=false
 fi
+LB_HAS_ISO_APPLICATION=$(has_option "--iso-application" && echo true || echo false)
+LB_HAS_ISO_PUBLISHER=$(has_option "--iso-publisher" && echo true || echo false)
+LB_HAS_ISO_VOLUME=$(has_option "--iso-volume" && echo true || echo false)
+LB_HAS_ISO_PREPARER=$(has_option "--iso-preparer" && echo true || echo false)
 
-# Architecture option name (--architecture vs --architectures)
-if has_option "--architecture"; then
-    LB_ARCH_OPT="--architecture"
-elif has_option "--architectures"; then
-    LB_ARCH_OPT="--architectures"
-else
-    LB_ARCH_OPT="-a"
-    echo "  WARNING: Cannot detect --architecture/--architectures; falling back to -a"
-fi
-
-# Binary image option name
-if has_option "--binary-image"; then
-    LB_BINARY_IMAGE_OPT="--binary-image"
-elif has_option "--binary-images"; then
-    LB_BINARY_IMAGE_OPT="--binary-images"
-else
-    echo "ERROR: Cannot determine binary image option."
-    exit 1
-fi
-
-# Parent archive areas (not present in very old versions)
-if has_option "--parent-archive-areas"; then
-    LB_HAS_PARENT_ARCHIVE_AREAS=true
-else
-    LB_HAS_PARENT_ARCHIVE_AREAS=false
-    echo "  WARNING: --parent-archive-areas not supported; omitting."
-fi
-
-# Mode option: REQUIRED. Bright OS MUST always build in Debian mode to prevent
-# live-build from auto-detecting Ubuntu mode based on the host's /etc/os-release.
-# Without --mode debian on Ubuntu hosts, live-build produces LB_MODE=ubuntu,
-# ubuntu-keyring, UBUNTU labels, and ubuntu syslinux theme — generating an
-# Ubuntu derivative rather than Debian Trixie. This is a hard failure because
-# we cannot guarantee a correct Debian build without explicit --mode support.
-if has_option "--mode"; then
-    LB_HAS_MODE=true
-    echo "  Detected --mode support (forcing debian mode)"
-else
-    LB_HAS_MODE=false
+# --mode is REQUIRED; fail if not present.
+if [ "$LB_HAS_MODE" != "true" ]; then
     echo ""
     echo "ERROR: This live-build version does not support the --mode option."
     echo "  Bright OS requires live-build with --mode support to guarantee a Debian build."
@@ -131,46 +94,31 @@ else
     echo ""
     echo "  To fix this:"
     echo "    - Build on Debian 13 Trixie (recommended): install live-build from Debian repos"
-    echo "    - On Ubuntu 24.04: live-build 3.0~a57-1ubuntu49 or later supports --mode"
-    echo "    - Use the Docker-based build environment with a Debian Trixie base image"
+    echo "    - On Ubuntu 24.04: use live-build 3.0~a57-1ubuntu49 or later which supports --mode"
+    echo "    - Use a Debian Trixie VM or container for building"
     echo ""
     echo "  Build cannot proceed safely without explicit --mode debian support."
     exit 1
 fi
+echo "  --mode supported (forcing debian mode)"
 
-# Keyring packages: specify debian-archive-keyring explicitly when in Debian mode.
-# If unsupported, we still fail-safe (LB_HAS_KEYRING_PACKAGES=false means we
-# don't pass the option, but --mode debian alone causes modern live-build to
-# default to debian-archive-keyring). This is advisory, not a hard error.
-if has_option "--keyring-packages"; then
-    LB_HAS_KEYRING_PACKAGES=true
-    echo "  Detected --keyring-packages support (using debian-archive-keyring)"
-else
-    LB_HAS_KEYRING_PACKAGES=false
-    echo "  WARNING: --keyring-packages not supported; relying on mode-based keyring default"
+# --binary-image is required; fail if not present.
+if [ -z "$LB_BINARY_IMAGE_OPT" ]; then
+    echo "ERROR: Cannot determine binary image option (--binary-image or --binary-images)."
+    exit 1
 fi
-
-# HDD label: set a Bright OS-specific label for the live filesystem partition.
-# On Ubuntu hosts, live-build defaults LB_HDD_LABEL to "UBUNTU" (even in Debian
-# mode in some versions), which leaks Ubuntu branding. Setting --hdd-label
-# BRIGHT_OS overrides this with the Bright OS name. This is optional branding
-# and does NOT cause a build failure if unsupported.
-if has_option "--hdd-label"; then
-    LB_HAS_HDD_LABEL=true
-    echo "  Detected --hdd-label support (using BRIGHT_OS label)"
-else
-    LB_HAS_HDD_LABEL=false
-    echo "  WARNING: --hdd-label not supported; using live-build default HDD label"
-fi
+echo "  binary image option: $LB_BINARY_IMAGE_OPT"
+echo "  architecture option: $LB_ARCH_OPT"
+echo "  bootloader option:   $LB_BOOTLOADERS_OPT"
 
 # ==============================================================================
-# Build lb config argument list
+# Build lb config argument list. Each option is added only if the capability
+# detection confirmed it exists, so we never pass an unsupported flag.
 # ==============================================================================
 
 echo ""
-echo "Building lb config arguments for detected live-build version..."
+echo "Building lb config arguments..."
 
-# Start with required common options
 set -- \
   --distribution "${CODENAME}" \
   "${LB_ARCH_OPT}" "${ARCH}" \
@@ -180,80 +128,100 @@ set -- \
   --mirror-chroot "http://deb.debian.org/debian" \
   --mirror-chroot-security "${SECURITY_URL}" \
   --mirror-binary-security "${SECURITY_URL}" \
-  --apt-recommends true \
-  --apt-options "--yes --option Acquire::Retries=3" \
-  "${LB_BINARY_IMAGE_OPT}" iso-hybrid \
-  --checksums sha256 \
-  --iso-application "Bright OS" \
-  --iso-publisher "Bright OS Project <https://github.com/nozaqk/Bright-OS>" \
-  --iso-volume "Bright OS ${VERSION} ${EDITION}" \
-  --iso-preparer "Bright OS live-build" \
-  --memtest none \
-  --firmware-binary true \
-  --firmware-chroot true \
-  --win32-loader false \
-  --zsync false \
-  --initsystem systemd
+  --apt-options "--yes --option Acquire::Retries=3"
 
-# Force Debian mode to prevent Ubuntu host OS auto-detection
-if [ "$LB_HAS_MODE" = true ]; then
-    set -- "$@" --mode debian
+# Conditionally add options
+if [ "$LB_HAS_APT_RECOMMENDS" = "true" ]; then
+    set -- "$@" --apt-recommends true
+fi
+set -- "$@" "${LB_BINARY_IMAGE_OPT}" iso-hybrid
+# Always request sha256 checksums. The option has existed since ~2010 in live-build.
+# If a singular --checksum option exists instead, use that; otherwise use --checksums.
+if [ "$LB_HAS_CHECKSUM" = "true" ]; then
+    set -- "$@" --checksums sha256
+fi
+if [ "$LB_HAS_ISO_APPLICATION" = "true" ]; then
+    set -- "$@" --iso-application "Bright OS"
+fi
+if [ "$LB_HAS_ISO_PUBLISHER" = "true" ]; then
+    set -- "$@" --iso-publisher "Bright OS Project <https://github.com/nozaqk/Bright-OS>"
+fi
+if [ "$LB_HAS_ISO_VOLUME" = "true" ]; then
+    set -- "$@" --iso-volume "Bright OS ${VERSION} ${EDITION}"
+fi
+if [ "$LB_HAS_ISO_PREPARER" = "true" ]; then
+    set -- "$@" --iso-preparer "Bright OS live-build"
+fi
+if [ "$LB_HAS_MEMTEST" = "true" ]; then
+    set -- "$@" --memtest none
+fi
+if [ "$LB_HAS_FIRMWARE_BINARY" = "true" ]; then
+    set -- "$@" --firmware-binary true
+fi
+if [ "$LB_HAS_FIRMWARE_CHROOT" = "true" ]; then
+    set -- "$@" --firmware-chroot true
+fi
+if [ "$LB_HAS_WIN32_LOADER" = "true" ]; then
+    set -- "$@" --win32-loader false
+fi
+if [ "$LB_HAS_ZSYNC" = "true" ]; then
+    set -- "$@" --zsync false
+fi
+if [ "$LB_HAS_INITSYSTEM" = "true" ]; then
+    set -- "$@" --initsystem systemd
+fi
+if [ "$LB_HAS_DEBIAN_INSTALLER" = "true" ]; then
+    set -- "$@" --debian-installer false
 fi
 
-# Explicitly set Debian archive keyring (prevents ubuntu-keyring on Ubuntu hosts)
-if [ "$LB_HAS_KEYRING_PACKAGES" = true ]; then
+# Force Debian mode (required).
+set -- "$@" --mode debian
+
+# Keyring packages for Debian archive verification.
+if [ "$LB_HAS_KEYRING_PACKAGES" = "true" ]; then
     set -- "$@" --keyring-packages debian-archive-keyring
+    echo "  Using debian-archive-keyring"
 fi
 
-# Add parent-archive-areas if supported
-if [ "$LB_HAS_PARENT_ARCHIVE_AREAS" = true ]; then
+if [ "$LB_HAS_PARENT_ARCHIVE_AREAS" = "true" ]; then
     set -- "$@" --parent-archive-areas "main contrib non-free non-free-firmware"
 fi
 
-# Set Bright OS HDD label when supported (overrides default DEBIAN_LIVE/UBUNTU)
-if [ "$LB_HAS_HDD_LABEL" = true ]; then
+if [ "$LB_HAS_HDD_LABEL" = "true" ]; then
     set -- "$@" --hdd-label "BRIGHT_OS"
 fi
 
-# Debian installer option:
-# - Modern live-build uses 'none' to disable; legacy accepts 'false'
-# - 'false' works across all known versions.
-set -- "$@" --debian-installer false
-
-# Bootloader configuration
-if [ "$LB_HAS_MODERN_BOOTLOADERS" = true ]; then
-    # Modern: specify both BIOS and EFI bootloaders explicitly (comma-separated)
-    set -- "$@" "${LB_BOOTLOADERS_OPT}" grub-pc,grub-efi
-    echo "  Bootloaders: grub-pc,grub-efi (BIOS + UEFI explicit)"
+# Bootloader configuration. Pass the right option and value.
+if [ -n "$LB_BOOTLOADERS_OPT" ]; then
+    if [ "$LB_BOOTLOADERS_OPT" = "--bootloaders" ]; then
+        set -- "$@" --bootloaders grub-pc,grub-efi
+        echo "  Bootloaders: grub-pc,grub-efi (plural form)"
+    else
+        set -- "$@" --bootloader grub
+        echo "  Bootloaders: grub (singular form; BIOS via isolinux + UEFI via grub-efi)"
+    fi
 else
-    # Legacy live-build (e.g. Ubuntu 3.0~a57):
-    # - For iso-hybrid images, isolinux/syslinux is always used for BIOS boot
-    #   (per the manpage), but passing --bootloader grub enables GRUB setup
-    #   which is needed for UEFI boot (EFI boot image generation).
-    # - Verified working command: --bootloader grub produces LB_BOOTLOADER="grub"
-    #   and enables both BIOS (isolinux) and UEFI (grub-efi) boot paths.
-    set -- "$@" "${LB_BOOTLOADERS_OPT}" grub
-    echo "  Bootloaders: grub (BIOS via isolinux + UEFI via grub-efi)"
+    echo "ERROR: No bootloader option detected."
+    exit 1
 fi
 
-# Secure Boot configuration
-if [ "$LB_HAS_SECURE_BOOT" = true ]; then
+# Secure Boot: only enable if the option exists. Pass 'auto' when supported.
+if [ "$LB_HAS_UEFI_SECURE_BOOT" = "true" ]; then
     set -- "$@" --uefi-secure-boot auto
     echo "  Secure Boot: auto (signed shim/grub if available)"
 else
-    echo "  Secure Boot: not configurable via lb flag"
-    echo "    (shim-signed + grub-efi-amd64-signed installed in chroot;"
-    echo "     for full Secure Boot, build on Debian Trixie)"
+    echo "  Secure Boot: option not detected; shim-signed is installed in chroot"
+    echo "    but may not be integrated into the EFI binary. The 30-efi-boot-setup"
+    echo "    hook will attempt to create an EFI image via grub-mkstandalone."
 fi
 
-# HDD label status
-if [ "$LB_HAS_HDD_LABEL" = true ]; then
+if [ "$LB_HAS_HDD_LABEL" = "true" ]; then
     echo "  HDD label: BRIGHT_OS (custom Bright OS label)"
 else
+    echo "  WARNING: --hdd-label not supported; using live-build default HDD label"
     echo "  HDD label: using live-build default (--hdd-label unsupported)"
 fi
 
-# Append any extra arguments passed through to auto/config
 if [ ${#EXTRA_ARGS[@]} -gt 0 ]; then
     echo "  Pass-through args: ${EXTRA_ARGS[*]}"
     set -- "$@" "${EXTRA_ARGS[@]}"
@@ -265,23 +233,30 @@ fi
 
 echo ""
 echo "Running: lb config noauto"
+echo ""
 
-lb config noauto "$@"
+# Capture output but also print it; save exit status.
+set +e
+lb config noauto "$@" 2>&1
+LB_CONFIG_STATUS=$?
+set -e
+
+if [ "$LB_CONFIG_STATUS" -ne 0 ]; then
+    echo ""
+    echo "ERROR: lb config failed with exit code ${LB_CONFIG_STATUS}."
+    echo "Review the output above for E: lines or unrecognized option errors."
+    echo ""
+    echo "Live-build version:"
+    lb --version 2>&1 || true
+    exit "$LB_CONFIG_STATUS"
+fi
 
 echo ""
 echo "=== Configuration complete for ${EDITION} edition (Debian ${CODENAME}) ==="
-if [ "$LB_HAS_MODERN_BOOTLOADERS" = false ]; then
+if [ "$LB_HAS_UEFI_SECURE_BOOT" != "true" ] || [ "$LB_BOOTLOADERS_OPT" = "--bootloader" ]; then
     echo ""
-    echo "=== LEGACY LIVE-BUILD NOTICE ==="
-    echo "You are using an older live-build version (likely Ubuntu's fork)."
-    echo "BIOS boot: Configured (isolinux via iso-hybrid)."
-    echo "UEFI boot: Will be attempted via grub-efi packages."
-    echo "IMPORTANT: If the resulting ISO does not boot on UEFI systems,"
-    echo "build on Debian Trixie for full --bootloaders support, or use"
-    echo "the Docker-based build environment."
-fi
-if [ "$LB_HAS_SECURE_BOOT" = false ]; then
-    echo "Secure Boot: Cannot be configured by this host's live-build."
-    echo "  The ISO will boot with Secure Boot disabled; shim-signed is"
-    echo "  installed but may not be properly integrated into the EFI binary."
+    echo "=== NOTICE: Running on an older/legacy live-build ==="
+    echo "BIOS boot: Configured."
+    echo "UEFI boot: Will be attempted; if missing the hook will try grub-mkstandalone."
+    echo "For best results build on Debian Trixie for full --bootloaders support."
 fi
