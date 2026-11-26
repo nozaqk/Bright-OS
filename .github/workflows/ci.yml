@@ -1,9 +1,10 @@
 # =============================================================================
-# Bright OS — CI Workflow (Sub-phase 6.0)
-# Runs static checks, Python unit tests, shell test suites, and records a
-# static baseline measurement on every pull request and push to main.
+# Bright OS — CI Workflow
+# Runs static checks, Python unit tests, shell test suites (including the
+# Phase 6.1 labwc-PoC static tests), and records a static baseline
+# measurement on every pull request and push to main.
 #
-# NOTE: This workflow does NOT build an ISO or boot QEMU in sub-phase 6.0.
+# NOTE: This workflow does NOT build an ISO or boot QEMU yet.
 # ISO build + QEMU boot tests are added in sub-phase 6.7. The scaffolding
 # below is structured so those steps drop in cleanly.
 # =============================================================================

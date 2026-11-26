@@ -1,0 +1,114 @@
+#!/bin/sh
+# Bright OS labwc session autostart (Phase 6.1 PoC)
+# Runs after the labwc compositor has initialised.
+# All commands are guarded with `command -v` so missing optional packages
+# do not break session startup.
+
+# --- Essential session infrastructure -------------------------------------
+
+# D-Bus session bus should already be started by the display manager /
+# systemd user session; if not, start one as a safety net.
+if ! dbus-send --session --dest=org.freedesktop.DBus \
+     --print-reply /org/freedesktop/DBus org.freedesktop.DBus.ListNames \
+     >/dev/null 2>&1; then
+    command -v dbus-run-session >/dev/null 2>&1 && \
+        echo "Warning: no session bus detected; labwc should be started from a D-Bus session."
+fi
+
+# PipeWire / WirePlumber (audio) - systemd units normally start these; if
+# running outside of systemd user session, start them manually.
+if command -v pipewire >/dev/null 2>&1 && ! pgrep -x pipewire >/dev/null 2>&1; then
+    pipewire &
+fi
+if command -v wireplumber >/dev/null 2>&1 && ! pgrep -x wireplumber >/dev/null 2>&1; then
+    wireplumber &
+fi
+if command -v pipewire-pulse >/dev/null 2>&1 && ! pgrep -x pipewire-pulse >/dev/null 2>&1; then
+    pipewire-pulse &
+fi
+
+# XDG desktop portal(s): wlr handles screencopy/screenshots under wlroots;
+# gtk handles file pickers; they should already be started by systemd
+# user units but guard against absence.
+if command -v /usr/libexec/xdg-desktop-portal >/dev/null 2>&1; then
+    /usr/libexec/xdg-desktop-portal &
+fi
+if command -v /usr/libexec/xdg-desktop-portal-wlr >/dev/null 2>&1; then
+    /usr/libexec/xdg-desktop-portal-wlr &
+elif command -v /usr/lib/xdg-desktop-portal-wlr >/dev/null 2>&1; then
+    /usr/lib/xdg-desktop-portal-wlr &
+fi
+if command -v /usr/libexec/xdg-desktop-portal-gtk >/dev/null 2>&1; then
+    /usr/libexec/xdg-desktop-portal-gtk &
+elif command -v /usr/lib/xdg-desktop-portal-gtk >/dev/null 2>&1; then
+    /usr/lib/xdg-desktop-portal-gtk &
+fi
+
+# Polkit authentication agent (exactly one) - prefer policykit-1-gnome
+# (GTK3, Wayland-compatible). Fall back to lxpolkit/lxqt-policykit.
+if command -v polkit-gnome-authentication-agent-1 >/dev/null 2>&1; then
+    polkit-gnome-authentication-agent-1 &
+elif command -v lxpolkit >/dev/null 2>&1; then
+    lxpolkit &
+elif command -v lxqt-policykit-agent >/dev/null 2>&1; then
+    lxqt-policykit-agent &
+fi
+
+# --- Screen locker / idle daemon (optional; graceful if missing) ---------
+# swayidle + swaylock provide screen locking. These are not dependencies
+# of the current core package list; when absent, Super-L falls back to
+# loginctl lock-session.
+if command -v swayidle >/dev/null 2>&1 && command -v swaylock >/dev/null 2>&1; then
+    swayidle -w \
+        timeout 600 "swaylock -f -c 0f172a" \
+        lock "swaylock -f -c 0f172a" \
+        before-sleep "swaylock -f -c 0f172a" &
+fi
+
+# Notifications: mako is the standard lightweight wlroots notification
+# daemon. If not installed, desktop notifications silently fall back.
+if command -v mako >/dev/null 2>&1; then
+    mako &
+fi
+
+# Output management: kanshi applies output profiles (HiDPI, rotation)
+# based on connected displays. Optional; labwc handles basic outputs
+# without it.
+if command -v kanshi >/dev/null 2>&1; then
+    mkdir -p "$XDG_CONFIG_HOME/kanshi" "$HOME/.config/kanshi"
+    [ -f "$XDG_CONFIG_HOME/kanshi/config" ] || [ -f "$HOME/.config/kanshi/config" ] || true
+    kanshi &
+fi
+
+# Network manager applet (nm-applet) if present.
+if command -v nm-applet >/dev/null 2>&1; then
+    nm-applet --indicator &
+fi
+
+# Blueman applet (Bluetooth).
+if command -v blueman-applet >/dev/null 2>&1; then
+    blueman-applet &
+fi
+
+# Power management applet.
+if command -v xfce4-power-manager >/dev/null 2>&1; then
+    xfce4-power-manager &
+elif command -v lxqt-powermanagement >/dev/null 2>&1; then
+    lxqt-powermanagement &
+fi
+
+# Update user directories (idempotent).
+if command -v xdg-user-dirs-update >/dev/null 2>&1; then
+    xdg-user-dirs-update --force
+fi
+
+# --- Bright Desktop shell itself ------------------------------------------
+# Set the QML file path to the labwc variant if it exists (Phase 6.1 PoC
+# ships with the same Shell.qml used by KWin; the LayerShell variant
+# path is reserved for Phase 6.3).
+BRIGHT_QML_SHELL="/usr/share/bright-os/Shell.qml"
+if [ -f "/usr/share/bright-os/Shell-labwc.qml" ]; then
+    BRIGHT_QML_SHELL="/usr/share/bright-os/Shell-labwc.qml"
+fi
+
+exec /usr/share/bright-os/bright-desktop-shell.py --qml "$BRIGHT_QML_SHELL"

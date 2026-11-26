@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  labwc configuration for Bright OS (experimental Phase 6.1 proof-of-concept).
+
+  This is a conservative default config:
+    - Loads labwc's built-in default key/mouse bindings.
+    - Adds Bright-specific keybinds (terminal, file manager, launcher).
+    - Defines a minimal root menu (see menu.xml).
+    - Sets a simple visual theme (see themerc).
+    - Uses window rules to hide server-side decorations for the Bright
+      shell's own surfaces (panel/dock/launcher/wallpaper), identified by
+      app_id "bright-os-shell".
+
+  Users who wish to customise should copy this file to
+  ~/.config/labwc/rc.xml and edit that copy (labwc honours XDG_CONFIG_HOME).
+
+  The KWin session (bright.desktop) remains unchanged and is the default.
+  Select "Bright Desktop (labwc experimental)" from the session list to
+  try this compositor.
+-->
+<labwc_config>
+
+  <theme>
+    <name>bright-labwc</name>
+    <cornerRadius>8</cornerRadius>
+    <font name="sans" size="10" />
+  </theme>
+
+  <keyboard>
+    <default />
+
+    <!-- Key repeat -->
+    <repeatRate>25</repeatRate>
+    <repeatDelay>500</repeatDelay>
+
+    <!-- Default US keyboard; users override in their own rc.xml -->
+    <keyboardLayout>
+      <layout>us</layout>
+    </keyboardLayout>
+
+    <!-- Bright-specific bindings (Super/Meta is 'W' in labwc notation) -->
+    <keybind key="W-Return">
+      <action name="Execute"><command>bright-terminal</command></action>
+    </keybind>
+    <keybind key="W-e">
+      <action name="Execute"><command>bright-files</command></action>
+    </keybind>
+    <keybind key="W-d">
+      <!-- Hide all windows / show desktop; forwarded to the shell via SIGUSR1.
+           For the Phase 6.1 PoC we do nothing; the shell handles this via QML. -->
+      <action name="None" />
+    </keybind>
+    <keybind key="W-l">
+      <action name="Execute"><command>loginctl lock-session</command></action>
+    </keybind>
+    <keybind key="A-L">
+      <action name="Execute"><command>loginctl lock-session</command></action>
+    </keybind>
+    <!-- Exit the compositor (logout to greeter) -->
+    <keybind key="C-A-Delete">
+      <action name="Exit" />
+    </keybind>
+    <!-- Screenshot via grim if available -->
+    <keybind key="Print">
+      <action name="Execute"><command>sh -c 'command -v grim &gt;/dev/null &amp;&amp; mkdir -p ~/Pictures &amp;&amp; grim ~/Pictures/Screenshot-$(date +%Y%m%d-%H%M%S).png'</command></action>
+    </keybind>
+    <keybind key="S-Print">
+      <action name="Execute"><command>sh -c 'command -v grim &gt;/dev/null &amp;&amp; mkdir -p ~/Pictures &amp;&amp; grim -g "$(command -v slurp &gt;/dev/null &amp;&amp; slurp)" ~/Pictures/Screenshot-$(date +%Y%m%d-%H%M%S).png'</command></action>
+    </keybind>
+  </keyboard>
+
+  <mouse>
+    <default />
+    <!-- Right-click on the desktop background opens the root menu. -->
+    <context name="Root">
+      <mousebind button="Right" action="Press">
+        <action name="ShowMenu"><menu>root-menu</menu></action>
+      </mousebind>
+    </context>
+  </mouse>
+
+  <windowRules>
+    <!-- Bright shell surfaces (panel, dock, launcher, notifications,
+         wallpaper) are tagged with app_id "bright-os-shell" by
+         bright-desktop-shell.py when running under labwc. Hide SSDs,
+         skip taskbar/switcher so they are not treated like regular
+         application windows. -->
+    <windowRule identifier="bright-os-shell*">
+      <serverDecoration>no</serverDecoration>
+      <skipTaskbar>yes</skipTaskbar>
+      <skipWindowSwitcher>yes</skipWindowSwitcher>
+      <fixedPosition>yes</fixedPosition>
+      <alwaysOnTop>no</alwaysOnTop>
+      <alwaysOnBottom>no</alwaysOnBottom>
+    </windowRule>
+  </windowRules>
+
+</labwc_config>
