@@ -296,3 +296,28 @@ packages.debian.org: greetd 0.10.3-4, gtkgreet 0.8-1+b1, cage 0.2.0-2, labwc
 xdg-desktop-portal-wlr 0.7.1-2, mako-notifier, swaylock 1.8.2-1, swayidle
 1.8.0-1, kanshi, grim, slurp, brightnessctl 0.5.1-31, wl-clipboard 2.2.1-2,
 polkit-kde-agent-1 4:6.3.6-1, breeze-gtk-theme 6.3.4-1, sddm, kwin-wayland.
+
+### CI ISO build status (2026-11-26)
+
+All static tests pass on this branch (18 shell suites, AURA 247/247, Bright
+Android 345/345 with 49 environment-skips). The GitHub Actions ISO build
+workflow fails at the debootstrap/bootstrap stage (~3-4 min in, before any
+Bright OS package lists are processed) on the ubuntu-24.04 runner:
+
+    ERROR 404: Not Found.   (build.log line 965)
+
+This failure also reproduces on the pre-corrective base (PR #50's own ISO
+check failed identically at 4m31s with exit code 100, line 894/965). The
+ubuntu-24.04 runner ships live-build 1:20230502 and debootstrap 1.0.132ubuntu,
+which generate legacy `<codename>/updates` paths for the Debian security
+pocket that 404 on Debian >=12. A `--security false` + manual
+config/archives workaround was added (commit 99d6d87), but the runner's
+debootstrap still fails at a later 404 during Packages file fetch — likely
+because debootstrap scripts on Ubuntu 24.04 do not correctly handle
+bootstrapping the now-stable Debian 13 Trixie suite.
+
+**Recommendation:** build the ISO on a Debian 13 Trixie host or container
+(`pbuilder`/`docker run -it debian:trixie`), or install debootstrap +
+live-build from Debian Trixie on the CI runner. The iso-build.yml workflow
+should be updated (in a follow-up PR) to use a `debian:trixie` container
+for the build job, matching standard Debian Live build practice.
