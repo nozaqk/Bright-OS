@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  labwc openbox-format root menu for Bright OS experimental labwc session.
+  Shown on desktop right-click. Keep this minimal; the Bright shell
+  provides its own launcher overlay (Super key or panel button).
+-->
+<openbox_menu>
+  <menu id="root-menu" label="Bright OS">
+    <item label="Terminal">
+      <action name="Execute"><command>bright-terminal</command></action>
+    </item>
+    <item label="Files">
+      <action name="Execute"><command>bright-files</command></action>
+    </item>
+    <item label="Settings">
+      <action name="Execute"><command>bright-settings</command></action>
+    </item>
+    <separator />
+    <item label="Reconfigure labwc">
+      <action name="Reconfigure" />
+    </item>
+    <separator />
+    <item label="Logout">
+      <action name="Exit" />
+    </item>
+  </menu>
+</openbox_menu>

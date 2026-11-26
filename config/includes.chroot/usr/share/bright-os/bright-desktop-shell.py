@@ -465,14 +465,32 @@ class ShellBackend(QObject):
 
 
 def main():
+    # --- Parse command line ------------------------------------------------
+    import argparse
+    parser = argparse.ArgumentParser(description=APP_NAME)
+    parser.add_argument("--qml", default=None,
+                        help="Path to an alternate Shell.qml (used by the "
+                             "labwc session to select Shell-labwc.qml).")
+    parser.add_argument("--shell-only", action="store_true",
+                        help="Used by the wrapper when already launched "
+                             "inside kwin_wayland (no-op now, kept for "
+                             "compatibility with existing /usr/bin/bright-desktop-shell).")
+    args, _qt_args = parser.parse_known_args()
+
     # Handle SIGTERM gracefully
     signal.signal(signal.SIGTERM, lambda *_: QApplication.quit())
 
+    # Detect whether we're running under labwc (used to tag windows so
+    # labwc's rc.xml window rules can match the shell).
+    compositor = os.environ.get("BRIGHT_SHELL_COMPOSITOR", "").lower()
+    shell_app_id = "bright-os-shell" if compositor == "labwc" else "bright-desktop-shell"
+
     # Set application metadata
-    QApplication.setApplicationName("bright-desktop-shell")
+    QApplication.setApplicationName(shell_app_id)
     QApplication.setApplicationDisplayName("Bright Desktop")
     QApplication.setOrganizationName("BrightOS")
     QApplication.setApplicationVersion(APP_VERSION)
+    QApplication.setDesktopFileName("bright-launcher")
 
     # Force Wayland if possible
     if not os.environ.get("QT_QPA_PLATFORM"):
@@ -519,8 +537,12 @@ def main():
     qml_dir = os.path.dirname(os.path.abspath(__file__))
     engine.addImportPath(qml_dir)
 
-    # Search for Shell.qml in multiple locations
-    qml_candidates = [
+    # Search for Shell.qml in multiple locations; --qml CLI arg takes
+    # precedence (used by the labwc session to select an alternate QML).
+    qml_candidates = []
+    if args.qml:
+        qml_candidates.append(args.qml)
+    qml_candidates += [
         os.path.join(qml_dir, "Shell.qml"),
         "/usr/share/bright-os/Shell.qml",
         "/usr/share/bright-os/shell/Shell.qml",
@@ -528,7 +550,7 @@ def main():
     ]
     qml_path = None
     for candidate in qml_candidates:
-        if os.path.exists(candidate):
+        if candidate and os.path.exists(candidate):
             qml_path = candidate
             break
 
@@ -550,7 +572,24 @@ def main():
             subprocess.Popen(["plasmashell"])
         return -1
 
-    print(f"Bright Desktop Shell {APP_VERSION} started (edition: {edition})", file=sys.stderr)
+    # When running under labwc, tag every shell window with the
+    # "bright-os-shell" app_id so labwc window rules (rc.xml) can
+    # suppress server-side decorations and skip taskbar entries.
+    # QQmlApplicationEngine.rootObjects() returns the Window items;
+    # their underlying QWindow is accessible via .window().
+    if compositor == "labwc":
+        for obj in engine.rootObjects():
+            try:
+                win = obj.window()
+                if win is not None:
+                    # setDesktopFileName sets the Wayland XDG app_id
+                    win.setDesktopFileName(shell_app_id)
+            except Exception as e:
+                print(f"Warning: could not set app_id on a shell window: {e}",
+                      file=sys.stderr)
+
+    print(f"Bright Desktop Shell {APP_VERSION} started (edition: {edition}, compositor: {compositor or 'kwin'})",
+          file=sys.stderr)
     return app.exec()
 
 

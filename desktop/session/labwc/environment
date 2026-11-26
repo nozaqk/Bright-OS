@@ -1,0 +1,40 @@
+# Bright OS labwc session environment (Phase 6.1 PoC)
+# See labwc-environment(5). These are exported before the compositor
+# and autostart run. They deliberately mirror the variables set in
+# bright-desktop-session.sh where applicable, but with additions for
+# wlroots-based compositors.
+
+# Identity
+XDG_CURRENT_DESKTOP=Bright:labwc
+XDG_SESSION_TYPE=wayland
+DESKTOP_SESSION=bright-labwc
+
+# Qt on Wayland
+QT_QPA_PLATFORM=wayland;xcb
+QT_WAYLAND_DISABLE_WINDOWDECORATION=1
+QT_QPA_PLATFORMTHEME=qt6ct
+QT_STYLE_OVERRIDE=Fusion
+QT_AUTO_SCREEN_SCALE_FACTOR=1
+
+# GTK
+GDK_BACKEND=wayland,x11
+GTK_THEME=Breeze
+XCURSOR_THEME=breeze_cursors
+XCURSOR_SIZE=24
+
+# XDG portal (use wlr for screencopy/screenshots under labwc; gtk for file dialogs)
+XDG_CURRENT_DESKTOP=Bright:labwc
+
+# Sound server latency (matches KWin session)
+PIPEWIRE_LATENCY=128/48000
+
+# Tell the Bright shell that it is running under labwc so it can:
+#   - Set appropriate app_id prefix for window rules.
+#   - Avoid KWin-specific calls / window flags.
+# (The shell reads this on startup; does not affect the KWin session.)
+BRIGHT_SHELL_COMPOSITOR=labwc
+
+# SDL / Wine prefer Wayland; fallback to X11 for apps that need it.
+SDL_VIDEODRIVER=wayland,x11
+# _JAVA_AWT_WM_NONREPARENTING=1 helps Java apps on non-reparenting WMs
+_JAVA_AWT_WM_NONREPARENTING=1
