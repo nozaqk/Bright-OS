@@ -83,13 +83,31 @@ path that root cannot use over D-Bus.
 
 ## 4. Non-D-Bus callers
 
-- **The desktop GUI** (`bright_android/gui.py`) does not call the D-Bus service.
-  It imports `waydroid_manager` and runs as the logged-in user, so it bypasses
-  this authorization layer entirely. It has the same privileges as that user, not
-  as root. Changing this requires moving GUI actions behind the D-Bus service;
-  that is a design decision and is not done here.
-- The `bright-android --launch` and `--install-apk` CLI paths also use
-  `waydroid_manager` directly, not D-Bus.
+- **The desktop GUI** (`bright_android/gui.py`) performs every state change
+  through the D-Bus service, using `bright_android/core/service_client.py`. It
+  reads status and settings directly, through read-only `waydroid_manager`
+  functions and `config.get_*` accessors. It never calls a state-changing
+  `waydroid_manager` function, and never writes config. So the service's
+  authorization covers every GUI state change, and the GUI runs without root.
+  - Settings saves send only changed values. Each `SetConfig` is an
+    `auth_admin_keep` Polkit action, so a change can prompt for admin auth. A
+    failed save reports how many changes were applied.
+  - Init, start, stop, restart, install, and uninstall run in a worker thread.
+    The service runs `StartRuntime` and `StopRuntime` synchronously, so the
+    service's main loop blocks for up to about 120 s while they run. Other D-Bus
+    calls wait during that time.
+  - `OperationProgress` is emitted only for `InitializeRuntime`. Other GUI
+    operations show the operation name, not step-by-step progress.
+  - Init waits for `OperationComplete`. That signal had a bad argument order
+    (fixed in `f8fb510`), so before the fix no client received completion.
+  - Tests: `bright_android/tests/test_gui_authorization.py` (static AST checks)
+    and `bright_android/tests/test_service_client.py` (fake connections). Live
+    D-Bus behavior and the GUI at runtime are not tested here. They need PyQt6
+    and python3-dbus with the service running.
+- The `bright-android --launch` and `--install-apk` CLI paths still use
+  `waydroid_manager` directly, not D-Bus. They run as the invoking user, and they
+  remain outside this authorization layer. Routing them through the service is
+  open work.
 
 ## 5. Polkit check limits
 
@@ -110,9 +128,13 @@ path that root cannot use over D-Bus.
 
 ## 6. Known gaps (not closed by this change)
 
-- **Polkit call uses the deprecated `Polkit.Authority.get()`** in AURA
-  (`aura/core/aura_core_service.py`). It works, but the replacement is
-  `get_sync`. Migration is a low-priority cleanup.
+- **AURA uses `Polkit.Authority.get_sync(None)`** (migrated from the deprecated
+  `get()`). Failures still deny. Not verified against a live polkitd here.
 - **Root authorization relies on Polkit's own default for UID 0.** This is my
   understanding of Polkit's behavior and is not verified in this sandbox.
+- **Live D-Bus paths are untested in this environment:** the GUI client's
+  signal wait for `InitializeRuntime`, the session-bus activation, and real
+  Polkit prompts. Their tests use fakes.
+- **The CLI paths (`--launch`, `--install-apk`) bypass D-Bus** (section 4).
+- **Hung Polkit checks can deny service** (section 5).
 
