@@ -1,0 +1,32 @@
+#!/bin/sh
+# 00-bright-os-session-files.hook.chroot
+#
+# Phase 6.3: Conditionally generate the KWin recovery session .desktop file
+# only if kwin_wayland is actually installed in the chroot. This ensures:
+#   - Lite/editions without recovery-kwin get NO KWin session entry.
+#   - Home/Developer with WITH_RECOVERY_KWIN=on get a "Bright Desktop (KWin recovery)"
+#     session so users can fall back if labwc fails.
+#
+# The default labwc session (bright.desktop) is installed as a static file
+# in config/includes.chroot/ and is always present.
+
+set -eu
+
+SESSIONS_DIR=/usr/share/wayland-sessions
+KWIN_DESKTOP="$SESSIONS_DIR/bright-kwin.desktop"
+
+if [ -x /usr/bin/kwin_wayland ]; then
+    echo "Session hook: kwin_wayland found -> installing bright-kwin.desktop (recovery session)"
+    cat > "$KWIN_DESKTOP" <<'EOF'
+[Desktop Entry]
+Name=Bright Desktop (KWin recovery)
+Comment=Bright OS fallback using KWin Wayland
+Exec=env BRIGHT_COMPOSITOR=kwin /usr/bin/bright-desktop-shell
+TryExec=kwin_wayland
+Type=Application
+DesktopNames=Bright
+EOF
+else
+    echo "Session hook: kwin_wayland NOT found -> ensuring no bright-kwin.desktop exists"
+    rm -f "$KWIN_DESKTOP"
+fi

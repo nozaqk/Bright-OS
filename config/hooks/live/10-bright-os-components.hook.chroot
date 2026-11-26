@@ -118,13 +118,50 @@ if [ -x /usr/sbin/greetd ]; then
     systemctl enable greetd.service 2>/dev/null || true
 fi
 
-# Enable bluetooth/cups ONLY for editions that include them (they are NOT
-# in core.list.chroot in Phase 6.3, so check whether the binaries exist).
+# --- Optional services ----------------------------------------------------
+# build.sh masked services whose feature was OFF by symlinking the unit
+# file to /dev/null in config/includes.chroot/etc/systemd/system/. If a
+# service was enabled (feature ON), no mask was placed, but we still need
+# to explicitly enable the service here. We unmask first (defensive), then
+# enable — but only enable when the corresponding binary is actually
+# installed (i.e. the optional package list was included in this build).
+#
+# Using systemctl unmask before enable is harmless if there is no mask; it
+# ensures enable+start work correctly.
+enable_optional_svc() {
+    local svc="$1"; local binary="$2"
+    if [ -n "$binary" ] && ! command -v "$binary" >/dev/null 2>&1; then
+        # Feature package list was NOT included; ensure service stays masked.
+        return 0
+    fi
+    systemctl unmask "$svc" 2>/dev/null || true
+    systemctl enable "$svc" 2>/dev/null || true
+}
+
 if command -v bluetoothd >/dev/null 2>&1; then
-    systemctl enable bluetooth.service 2>/dev/null || true
+    # Check that we did NOT mask bluetooth (i.e. feature is enabled for this build).
+    if [ ! -L /etc/systemd/system/bluetooth.service ] || \
+       [ "$(readlink -f /etc/systemd/system/bluetooth.service 2>/dev/null)" != "/dev/null" ]; then
+        enable_optional_svc bluetooth.service bluetoothd
+    fi
 fi
 if [ -x /usr/sbin/cupsd ]; then
-    systemctl enable cups.service 2>/dev/null || true
+    if [ ! -L /etc/systemd/system/cups.service ] || \
+       [ "$(readlink -f /etc/systemd/system/cups.service 2>/dev/null)" != "/dev/null" ]; then
+        enable_optional_svc cups.service cupsd
+    fi
+fi
+if [ -x /usr/sbin/ModemManager ] || [ -f /usr/sbin/ModemManager ]; then
+    if [ ! -L /etc/systemd/system/ModemManager.service ] || \
+       [ "$(readlink -f /etc/systemd/system/ModemManager.service 2>/dev/null)" != "/dev/null" ]; then
+        enable_optional_svc ModemManager.service ModemManager
+    fi
+fi
+if [ -x /usr/sbin/avahi-daemon ]; then
+    if [ ! -L /etc/systemd/system/avahi-daemon.service ] || \
+       [ "$(readlink -f /etc/systemd/system/avahi-daemon.service 2>/dev/null)" != "/dev/null" ]; then
+        enable_optional_svc avahi-daemon.service avahi-daemon
+    fi
 fi
 
 systemctl set-default graphical.target 2>/dev/null || true

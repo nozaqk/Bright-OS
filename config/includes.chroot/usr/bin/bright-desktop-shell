@@ -1,71 +1,89 @@
 #!/bin/bash
-# =============================================================================
-# Bright Desktop Shell entry point (Phase 6.3)
+# Bright Desktop session wrapper
 #
-# Default: labwc Wayland compositor with the Bright PyQt6/QML shell.
-# Fallback: kwin_wayland (if installed via optional-recovery-kwin) or X11.
+# Default entry point for both Wayland (bright.desktop in wayland-sessions)
+# and X11 (bright.desktop in xsessions). Sets up environment and dispatches
+# to the correct compositor/session based on what's available and the
+# XDG_SESSION_TYPE.
 #
-# Usage:
-#   bright-desktop-shell              # auto-detect best compositor
-#   bright-desktop-shell --labwc      # force labwc
-#   bright-desktop-shell --kwin       # force kwin_wayland
-#   bright-desktop-shell --shell-only # run the Python shell directly
-#                                     (used inside an already-running
-#                                     compositor, e.g. kwin_wayland's
-#                                     --exit-with-session)
-# =============================================================================
+# Phase 6.3 default compositor is labwc (lightweight wlroots). KWin is
+# kept as a selectable recovery session via bright-kwin.desktop, which
+# sets BRIGHT_COMPOSITOR=kwin to force KWin.
+#
+# Session dispatch priority:
+#   1. BRIGHT_COMPOSITOR=kwin  -> KWin recovery (bright-kwin.desktop)
+#   2. Wayland + labwc         -> labwc (default)
+#   3. Wayland + kwin_wayland  -> KWin fallback (if labwc missing)
+#   4. X11 + openbox           -> Openbox + shell directly (lite/X11 fallback)
+#   5. Anything else           -> Bright shell directly on existing display
 
-set -e
-
-# Update XDG user dirs early
-if [ -x /usr/bin/xdg-user-dirs-update ]; then
-    xdg-user-dirs-update --force >/dev/null 2>&1 || true
+# --- Session identity -----------------------------------------------------
+if [ -z "${XDG_SESSION_TYPE:-}" ]; then
+    if [ -n "${WAYLAND_DISPLAY:-}" ]; then
+        export XDG_SESSION_TYPE=wayland
+    elif [ -n "${DISPLAY:-}" ]; then
+        export XDG_SESSION_TYPE=x11
+    else
+        export XDG_SESSION_TYPE=wayland
+    fi
 fi
 
-export XDG_CURRENT_DESKTOP=Bright:labwc
-export XDG_SESSION_TYPE="${XDG_SESSION_TYPE:-wayland}"
+export XDG_CURRENT_DESKTOP=Bright
+export DESKTOP_SESSION=bright
+
+# --- Qt / GTK / cursor / audio common env --------------------------------
 export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-wayland;xcb}"
+export QT_WAYLAND_DISABLE_WINDOWDECORATION=1
 export QT_QPA_PLATFORMTHEME=qt6ct
 export QT_STYLE_OVERRIDE=Fusion
 export QT_AUTO_SCREEN_SCALE_FACTOR=1
-export QT_WAYLAND_DISABLE_WINDOWDECORATION=1
+export GTK_THEME=Breeze-Dark
 export XCURSOR_THEME=breeze_cursors
 export XCURSOR_SIZE=24
-export DESKTOP_SESSION=bright
+export PIPEWIRE_LATENCY=128/48000
 
-# Ensure XDG_RUNTIME_DIR exists
-: "${XDG_RUNTIME_DIR:=/run/user/$(id -u)}"
-export XDG_RUNTIME_DIR
-mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null || true
-
-# If we're being called with --shell-only, exec the Python shell directly
-# (kwin_wayland --exit-with-session and labwc autostart use this mode).
-if [ "$1" = "--shell-only" ]; then
-    exec python3 /usr/share/bright-os/bright-desktop-shell.py "$@"
+# Detect edition
+EDITION=$(cat /etc/bright-os/edition 2>/dev/null || echo "home")
+if [ "$EDITION" = "lite" ]; then
+    export QT_QUICK_CONTROLS_STYLE=Basic
+    export QSG_RENDER_LOOP=basic
+    export QT_AUTO_SCREEN_SCALE_FACTOR=0
+    export XCURSOR_SIZE=16
 fi
 
-# Force-selection flags
-if [ "$1" = "--labwc" ]; then
-    export BRIGHT_SHELL_COMPOSITOR=labwc
-    exec /usr/share/bright-os/bright-desktop-session-labwc.sh
-fi
-if [ "$1" = "--kwin" ]; then
-    export BRIGHT_SHELL_COMPOSITOR=kwin
-    exec /usr/share/bright-os/bright-desktop-session.sh
+# User directories
+[ -x /usr/bin/xdg-user-dirs-update ] && xdg-user-dirs-update --force
+
+# Keyring
+if command -v gnome-keyring-daemon &>/dev/null; then
+    eval "$(gnome-keyring-daemon --start --components=secrets,ssh,pkcs11)"
+    export SSH_AUTH_SOCK
 fi
 
-# Auto-detect: prefer labwc if available, fall back to kwin_wayland, then
-# fall back to running the shell bare (on an existing compositor / X11).
-if command -v labwc >/dev/null 2>&1 && [ "${XDG_SESSION_TYPE}" = "wayland" ] \
-   && [ -z "${BRIGHT_COMPOSITOR_STARTED}" ]; then
-    export BRIGHT_COMPOSITOR_STARTED=1
-    exec /usr/share/bright-os/bright-desktop-session-labwc.sh
-elif command -v kwin_wayland >/dev/null 2>&1 && [ "${XDG_SESSION_TYPE}" = "wayland" ] \
-     && [ -z "${BRIGHT_COMPOSITOR_STARTED}" ]; then
-    export BRIGHT_COMPOSITOR_STARTED=1
+# --- Dispatch -------------------------------------------------------------
+if [ "${BRIGHT_COMPOSITOR:-}" = "kwin" ] && command -v kwin_wayland &>/dev/null \
+   && [ "$XDG_SESSION_TYPE" = "wayland" ]; then
+    # Forced KWin recovery session
     export XDG_CURRENT_DESKTOP=Bright:KDE
-    exec kwin_wayland --no-lockscreen --exit-with-session="/usr/bin/bright-desktop-shell --shell-only"
+    exec /usr/share/bright-os/bright-desktop-session.sh
+
+elif [ "$XDG_SESSION_TYPE" = "wayland" ] && command -v labwc &>/dev/null; then
+    # Default labwc session
+    exec /usr/share/bright-os/bright-desktop-session-labwc.sh
+
+elif [ "$XDG_SESSION_TYPE" = "wayland" ] && command -v kwin_wayland &>/dev/null; then
+    # Fallback KWin if labwc missing
+    export XDG_CURRENT_DESKTOP=Bright:KDE
+    exec /usr/share/bright-os/bright-desktop-session.sh
+
+elif [ "$XDG_SESSION_TYPE" = "x11" ] && command -v openbox &>/dev/null; then
+    # X11 fallback (lite)
+    if [ "$EDITION" = "lite" ]; then
+        openbox --replace &
+    fi
+    exec /usr/share/bright-os/bright-desktop-shell.py
+
 else
-    # Already inside a compositor, or running on X11: just launch the shell.
-    exec python3 /usr/share/bright-os/bright-desktop-shell.py "$@"
+    # Last resort: run shell directly on whatever display exists
+    exec /usr/share/bright-os/bright-desktop-shell.py
 fi

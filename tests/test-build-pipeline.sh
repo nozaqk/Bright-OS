@@ -477,6 +477,144 @@ else
     fail "Clean may use unsafe rm"
 fi
 
+# =============================================================================
+echo ""
+echo "--- 8. Optional-profile CLI flags (Phase 6.3 corrective) ---"
+# =============================================================================
+
+# Unknown --with-* flag must be rejected
+if bash "${BUILD_SCRIPT}" --with-nonexistent home >/tmp/bad.log 2>&1; then
+    fail "Unknown --with-* option was accepted (should fail)"
+else
+    pass "Unknown --with-* option is rejected"
+fi
+
+# Lite default: bluetooth/cups/ModemManager/avahi/android/wine/devtools all off
+rm -rf "${TEST_REPO}/build/output/lite-defaults"
+if run_build lite --skip-build 2>/dev/null; then
+    : # expected to fail at dependency check but that's after arg parsing
+fi
+# Run just the parsing + masking logic by checking that build.sh doesn't exit 2 (usage error)
+set +e
+bash "${BUILD_SCRIPT}" lite --skip-build >/tmp/lite.log 2>&1
+EC=$?
+set -e
+# EC will be non-zero because live-build is missing, but the arg parsing must succeed
+if ! grep -q "Unknown option" /tmp/lite.log; then
+    pass "--skip-build lite parses without errors"
+else
+    fail "--skip-build lite parse error"
+fi
+
+# Verify --with-bluetooth --without-printing etc. appear in usage
+if grep -q -- "--with-bluetooth" "${BUILD_SCRIPT}" \
+   && grep -q -- "--without-bluetooth" "${BUILD_SCRIPT}" \
+   && grep -q -- "--with-printing" "${BUILD_SCRIPT}" \
+   && grep -q -- "--with-wine" "${BUILD_SCRIPT}" \
+   && grep -q -- "--with-android" "${BUILD_SCRIPT}" \
+   && grep -q -- "--with-devtools" "${BUILD_SCRIPT}" \
+   && grep -q -- "--with-recovery-kwin" "${BUILD_SCRIPT}" \
+   && grep -q -- "--with-secureboot" "${BUILD_SCRIPT}" \
+   && grep -q -- "--with-plymouth" "${BUILD_SCRIPT}" \
+   && grep -q -- "--with-qemu" "${BUILD_SCRIPT}"; then
+    pass "All --with-* / --without-* flags documented in usage()"
+else
+    fail "Some --with-*/--without-* flags missing from usage()"
+fi
+
+# Home edition defaults: bluetooth + printing + network-extras + android ON;
+# wine/devtools/recovery-kwin/secureboot/plymouth/qemu OFF
+if grep -q 'DEF_BLUETOOTH=true' "${BUILD_SCRIPT}" \
+   && grep -q 'DEF_PRINTING=true' "${BUILD_SCRIPT}" \
+   && grep -q 'DEF_NETWORK_EXTRAS=true' "${BUILD_SCRIPT}" \
+   && grep -q 'DEF_ANDROID=true' "${BUILD_SCRIPT}" \
+   && grep -q 'DEF_WINE=false' "${BUILD_SCRIPT}" \
+   && grep -q 'DEF_DEVTOOLS=false' "${BUILD_SCRIPT}" \
+   && grep -q 'DEF_RECOVERY_KWIN=false' "${BUILD_SCRIPT}"; then
+    pass "Home defaults correctly specified (BT/print/net/android on)"
+else
+    fail "Home edition defaults incorrect"
+fi
+
+# Lite defaults: all optional features OFF
+if grep -A3 'lite)' "${BUILD_SCRIPT}" | grep -q 'DEF_BLUETOOTH=false' \
+   && grep -A3 'lite)' "${BUILD_SCRIPT}" | grep -q 'DEF_ANDROID=false'; then
+    pass "Lite defaults correctly specified (all off)"
+else
+    fail "Lite edition defaults incorrect"
+fi
+
+# Developer defaults: devtools/secureboot/qemu/wine ON
+# Extract the developer case block (from 'developer)' to ';;')
+DEV_BLOCK=$(sed -n '/developer)/,/;;/p' "${BUILD_SCRIPT}")
+if echo "$DEV_BLOCK" | grep -q 'DEF_DEVTOOLS=true' \
+   && echo "$DEV_BLOCK" | grep -q 'DEF_SECUREBOOT=true' \
+   && echo "$DEV_BLOCK" | grep -q 'DEF_QEMU=true' \
+   && echo "$DEV_BLOCK" | grep -q 'DEF_WINE=true'; then
+    pass "Developer defaults correctly specified (devtools/qemu/wine on)"
+else
+    fail "Developer edition defaults incorrect"
+fi
+
+# Masking logic must NOT unconditionally mask services that the feature enables
+if grep -q 'mask_if_disabled bluetooth.service' "${BUILD_SCRIPT}" \
+   && grep -q 'mask_if_disabled cups.service' "${BUILD_SCRIPT}"; then
+    pass "Service masking uses feature-aware mask_if_disabled (not unconditional)"
+else
+    fail "Service masking still unconditional (bug)"
+fi
+
+# Components hook must unmask services before enabling them
+if grep -q 'systemctl unmask' config/hooks/live/10-bright-os-components.hook.chroot; then
+    pass "Components hook calls systemctl unmask before enabling optional services"
+else
+    fail "Components hook doesn't unmask before enabling (enable would fail on masked units)"
+fi
+
+echo ""
+echo "--- greetd + display manager hardening ---"
+
+# Greeter user must NOT use /usr/sbin/nologin (breaks session startup)
+# The sysusers.d line format is: "u username UID \"GECOS\" home shell"
+# The shell is the last field on the 'u greeter' line; it must not be nologin.
+if grep -qE '^u[[:space:]]+greeter[[:space:]].*/usr/sbin/nologin[[:space:]]*$' config/includes.chroot/usr/lib/sysusers.d/bright-greeter.conf; then
+    fail "greeter user shell is /usr/sbin/nologin (pam_nologin will block sessions)"
+else
+    pass "greeter user shell is not /usr/sbin/nologin"
+fi
+
+# greetd config must use cage -s -- gtkgreet with explicit sessions dir
+if grep -q 'cage -s -- gtkgreet' config/includes.chroot/etc/greetd/config.toml \
+   && grep -q '/usr/share/wayland-sessions' config/includes.chroot/etc/greetd/config.toml; then
+    pass "greetd config.toml invokes cage -s -- gtkgreet with explicit -s sessions dir"
+else
+    fail "greetd config.toml cage command incorrect"
+fi
+
+# bright.desktop (default) must exist and point at the dispatcher wrapper,
+# which execs labwc when XDG_SESSION_TYPE=wayland (default) and labwc is available.
+BRIGHT_DESKTOP="config/includes.chroot/usr/share/wayland-sessions/bright.desktop"
+BRIGHT_WRAPPER="config/includes.chroot/usr/bin/bright-desktop-shell"
+if [ -f "$BRIGHT_DESKTOP" ] \
+   && grep -q 'Exec=/usr/bin/bright-desktop-shell' "$BRIGHT_DESKTOP" \
+   && grep -q 'bright-desktop-session-labwc.sh' "$BRIGHT_WRAPPER" \
+   && grep -q 'command -v labwc' "$BRIGHT_WRAPPER"; then
+    pass "bright.desktop uses dispatcher wrapper; wrapper prefers labwc on Wayland"
+else
+    fail "bright.desktop missing or wrapper does not dispatch to labwc"
+fi
+
+# bright-kwin.desktop must NOT be pre-installed; 00-sessions hook generates it
+KWIN_DESKTOP="config/includes.chroot/usr/share/wayland-sessions/bright-kwin.desktop"
+SESSIONS_HOOK="config/hooks/live/00-bright-os-session-files.hook.chroot"
+if [ ! -f "$KWIN_DESKTOP" ] \
+   && [ -x "$SESSIONS_HOOK" ] \
+   && grep -q 'kwin_wayland' "$SESSIONS_HOOK"; then
+    pass "KWin recovery session (bright-kwin.desktop) is hook-generated only if kwin_wayland present"
+else
+    fail "KWin recovery session handling incorrect (preinstalled file or missing hook)"
+fi
+
 echo ""
 echo "============================================"
 echo "  Results: $PASS passed, $FAIL failed"

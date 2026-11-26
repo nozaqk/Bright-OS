@@ -42,6 +42,19 @@ VERBOSE=false
 DEBIAN_CODENAME="${BRIGHT_DEBIAN_CODENAME:-trixie}"
 EDITION_SET=false
 
+# Optional-profile flags: "" means "use edition default"; "true" means force enable;
+# "false" means force disable.
+WITH_BLUETOOTH=""
+WITH_PRINTING=""
+WITH_NETWORK_EXTRAS=""
+WITH_WINE=""
+WITH_DEVTOOLS=""
+WITH_RECOVERY_KWIN=""
+WITH_SECUREBOOT=""
+WITH_PLYMOUTH=""
+WITH_QEMU=""
+WITH_ANDROID=""
+
 # Valid values
 VALID_EDITIONS="home developer lite"
 VALID_ARCHS="amd64"
@@ -73,6 +86,11 @@ Editions:
   developer   Bright OS Developer edition
   lite        Bright OS Lite edition
 
+Edition default features:
+  home:      bluetooth, printing, network-extras (VPN/WWAN/mDNS), android
+  developer: all home features + devtools, qemu, secureboot, wine
+  lite:      none (minimal; user can add any --with-* flag)
+
 Options:
   -h, --help            Show this help message
   -v, --version VER     Set version string (default: ${VERSION})
@@ -81,6 +99,28 @@ Options:
   --clean               Clean build directory only (no build deps needed)
   --skip-build          Configure only, do not build
   --verbose             Verbose build output
+
+Optional profiles (override edition defaults):
+  --with-bluetooth         Include Bluetooth support (bluez + blueman)
+  --without-bluetooth      Exclude Bluetooth
+  --with-printing          Include printing (CUPS)
+  --without-printing       Exclude printing
+  --with-network-extras    Include VPN/WWAN/mDNS (openvpn, ModemManager, avahi)
+  --without-network-extras Exclude VPN/WWAN/mDNS
+  --with-wine              Include Wine/Proton compatibility
+  --without-wine           Exclude Wine
+  --with-android           Include Bright Android (Waydroid)
+  --without-android        Exclude Bright Android
+  --with-devtools          Include developer tools
+  --without-devtools       Exclude developer tools
+  --with-recovery-kwin     Include KWin + SDDM recovery session
+  --without-recovery-kwin  Exclude KWin recovery
+  --with-secureboot        Include Secure Boot shim
+  --without-secureboot     Exclude Secure Boot shim
+  --with-plymouth          Include Plymouth boot splash
+  --without-plymouth       Exclude Plymouth
+  --with-qemu              Include QEMU/OVMF
+  --without-qemu           Exclude QEMU
 EOF
     exit "$ec"
 }
@@ -136,6 +176,26 @@ while [[ $# -gt 0 ]]; do
             VERBOSE=true
             shift
             ;;
+        --with-bluetooth) WITH_BLUETOOTH=true; shift ;;
+        --without-bluetooth) WITH_BLUETOOTH=false; shift ;;
+        --with-printing) WITH_PRINTING=true; shift ;;
+        --without-printing) WITH_PRINTING=false; shift ;;
+        --with-network-extras) WITH_NETWORK_EXTRAS=true; shift ;;
+        --without-network-extras) WITH_NETWORK_EXTRAS=false; shift ;;
+        --with-wine) WITH_WINE=true; shift ;;
+        --without-wine) WITH_WINE=false; shift ;;
+        --with-android) WITH_ANDROID=true; shift ;;
+        --without-android) WITH_ANDROID=false; shift ;;
+        --with-devtools) WITH_DEVTOOLS=true; shift ;;
+        --without-devtools) WITH_DEVTOOLS=false; shift ;;
+        --with-recovery-kwin) WITH_RECOVERY_KWIN=true; shift ;;
+        --without-recovery-kwin) WITH_RECOVERY_KWIN=false; shift ;;
+        --with-secureboot) WITH_SECUREBOOT=true; shift ;;
+        --without-secureboot) WITH_SECUREBOOT=false; shift ;;
+        --with-plymouth) WITH_PLYMOUTH=true; shift ;;
+        --without-plymouth) WITH_PLYMOUTH=false; shift ;;
+        --with-qemu) WITH_QEMU=true; shift ;;
+        --without-qemu) WITH_QEMU=false; shift ;;
         --*)
             log_error "Unknown option: $1"
             usage 1
@@ -180,6 +240,53 @@ if ! echo "$VERSION" | grep -qE "$VERSION_PATTERN"; then
     exit 1
 fi
 
+# ---------------------------------------------------------------------------
+# Resolve optional-profile flags
+# ---------------------------------------------------------------------------
+# A flag value of "" means "use edition default"; "true"/"false" are explicit.
+# Edition defaults:
+#   home:      bluetooth, printing, network-extras, android = true;
+#              wine, devtools, recovery-kwin, secureboot, plymouth, qemu = false
+#   developer: bluetooth, printing, network-extras, android, devtools,
+#              secureboot, qemu, wine = true; recovery-kwin, plymouth = false
+#   lite:      all optional features default false (minimal)
+resolve_flag() {
+    # $1 = current flag value (""/true/false), $2 = edition default (true/false)
+    if [ -z "$1" ]; then
+        echo "$2"
+    else
+        echo "$1"
+    fi
+}
+case "$EDITION" in
+    home)
+        DEF_BLUETOOTH=true; DEF_PRINTING=true; DEF_NETWORK_EXTRAS=true
+        DEF_WINE=false; DEF_ANDROID=true; DEF_DEVTOOLS=false
+        DEF_RECOVERY_KWIN=false; DEF_SECUREBOOT=false
+        DEF_PLYMOUTH=false; DEF_QEMU=false ;;
+    developer)
+        DEF_BLUETOOTH=true; DEF_PRINTING=true; DEF_NETWORK_EXTRAS=true
+        DEF_WINE=true; DEF_ANDROID=true; DEF_DEVTOOLS=true
+        DEF_RECOVERY_KWIN=false; DEF_SECUREBOOT=true
+        DEF_PLYMOUTH=false; DEF_QEMU=true ;;
+    lite)
+        DEF_BLUETOOTH=false; DEF_PRINTING=false; DEF_NETWORK_EXTRAS=false
+        DEF_WINE=false; DEF_ANDROID=false; DEF_DEVTOOLS=false
+        DEF_RECOVERY_KWIN=false; DEF_SECUREBOOT=false
+        DEF_PLYMOUTH=false; DEF_QEMU=false ;;
+esac
+
+FEAT_BLUETOOTH=$(resolve_flag "$WITH_BLUETOOTH" "$DEF_BLUETOOTH")
+FEAT_PRINTING=$(resolve_flag "$WITH_PRINTING" "$DEF_PRINTING")
+FEAT_NETWORK_EXTRAS=$(resolve_flag "$WITH_NETWORK_EXTRAS" "$DEF_NETWORK_EXTRAS")
+FEAT_WINE=$(resolve_flag "$WITH_WINE" "$DEF_WINE")
+FEAT_ANDROID=$(resolve_flag "$WITH_ANDROID" "$DEF_ANDROID")
+FEAT_DEVTOOLS=$(resolve_flag "$WITH_DEVTOOLS" "$DEF_DEVTOOLS")
+FEAT_RECOVERY_KWIN=$(resolve_flag "$WITH_RECOVERY_KWIN" "$DEF_RECOVERY_KWIN")
+FEAT_SECUREBOOT=$(resolve_flag "$WITH_SECUREBOOT" "$DEF_SECUREBOOT")
+FEAT_PLYMOUTH=$(resolve_flag "$WITH_PLYMOUTH" "$DEF_PLYMOUTH")
+FEAT_QEMU=$(resolve_flag "$WITH_QEMU" "$DEF_QEMU")
+
 log_info "========================================"
 log_info "  Bright OS Build System"
 log_info "  Edition:    ${EDITION}"
@@ -187,6 +294,18 @@ log_info "  Version:    ${VERSION}"
 log_info "  Arch:       ${ARCH}"
 log_info "  Distro:     Debian ${DEBIAN_CODENAME}"
 log_info "  Project:    ${PROJECT_ROOT}"
+log_info "----------------------------------------"
+log_info "  Optional profiles:"
+log_info "    bluetooth:        ${FEAT_BLUETOOTH}"
+log_info "    printing:         ${FEAT_PRINTING}"
+log_info "    network-extras:   ${FEAT_NETWORK_EXTRAS}"
+log_info "    wine:             ${FEAT_WINE}"
+log_info "    android:          ${FEAT_ANDROID}"
+log_info "    devtools:         ${FEAT_DEVTOOLS}"
+log_info "    recovery-kwin:    ${FEAT_RECOVERY_KWIN}"
+log_info "    secureboot:       ${FEAT_SECUREBOOT}"
+log_info "    plymouth:         ${FEAT_PLYMOUTH}"
+log_info "    qemu:             ${FEAT_QEMU}"
 log_info "========================================"
 
 # --- Set up build directory (needed early for clean) ---
@@ -428,34 +547,94 @@ if [ -f "${PROJECT_ROOT}/applications/bright-android/bright-android.desktop" ]; 
        config/includes.chroot/usr/share/applications/
 fi
 
-# --- Android package list: included for Home/Developer, optional for Lite ---
-ANDROID_PKGS="${CONFIG_DIR}/package-lists/android.list.chroot"
-if [ "${EDITION}" = "lite" ]; then
-    # Lite: Android is optional; do not include the package list by default
-    log_info "Lite edition: Android support optional (not installed by default)"
-else
-    if [ -f "${ANDROID_PKGS}" ]; then
-        cp "${ANDROID_PKGS}" "config/package-lists/android-packages.list.chroot"
-        log_info "Android packages: included (Home/Developer edition)"
+# ---------------------------------------------------------------------------
+# Copy optional-profile package lists based on resolved feature flags
+# ---------------------------------------------------------------------------
+copy_opt_list() {
+    local flag="$1"; local name="$2"; local src="$3"; local dst="$4"
+    if [ "$flag" = "true" ]; then
+        if [ -f "$src" ]; then
+            cp "$src" "$dst"
+            log_info "Optional profile: ${name} (included)"
+        else
+            log_error "Optional profile source missing: $src"
+            exit 1
+        fi
+    else
+        rm -f "$dst"
+        log_info "Optional profile: ${name} (excluded)"
     fi
+}
+
+copy_opt_list "$FEAT_BLUETOOTH"      "bluetooth"       "${CONFIG_DIR}/package-lists/optional-bluetooth.list.chroot"      "config/package-lists/opt-bluetooth.list.chroot"
+copy_opt_list "$FEAT_PRINTING"       "printing"        "${CONFIG_DIR}/package-lists/optional-printing.list.chroot"       "config/package-lists/opt-printing.list.chroot"
+copy_opt_list "$FEAT_NETWORK_EXTRAS" "network-extras"  "${CONFIG_DIR}/package-lists/optional-network-extras.list.chroot" "config/package-lists/opt-network-extras.list.chroot"
+copy_opt_list "$FEAT_WINE"           "wine"            "${CONFIG_DIR}/package-lists/optional-wine.list.chroot"          "config/package-lists/opt-wine.list.chroot"
+copy_opt_list "$FEAT_DEVTOOLS"       "devtools"        "${CONFIG_DIR}/package-lists/optional-devtools-core.list.chroot"  "config/package-lists/opt-devtools.list.chroot"
+copy_opt_list "$FEAT_RECOVERY_KWIN"  "recovery-kwin"   "${CONFIG_DIR}/package-lists/optional-recovery-kwin.list.chroot" "config/package-lists/opt-recovery-kwin.list.chroot"
+copy_opt_list "$FEAT_SECUREBOOT"     "secureboot"      "${CONFIG_DIR}/package-lists/optional-secureboot.list.chroot"    "config/package-lists/opt-secureboot.list.chroot"
+copy_opt_list "$FEAT_PLYMOUTH"       "plymouth"        "${CONFIG_DIR}/package-lists/optional-plymouth.list.chroot"      "config/package-lists/opt-plymouth.list.chroot"
+copy_opt_list "$FEAT_QEMU"           "qemu"            "${CONFIG_DIR}/package-lists/optional-qemu.list.chroot"          "config/package-lists/opt-qemu.list.chroot"
+
+# Android is handled separately (it has its own source tree copy earlier,
+# and we must conditionally include its package list here).
+#
+# Lite edition defaults to NO Android ("${EDITION}" = "lite" -> DEF_ANDROID=false).
+# Android support optional (not installed by default) unless the feature flag
+# resolves to true (home/developer default on; lite default off; --with-android
+# or --without-android override).
+if [ "$FEAT_ANDROID" = "true" ]; then
+    ANDROID_PKGS="${CONFIG_DIR}/package-lists/android.list.chroot"
+    if [ -f "$ANDROID_PKGS" ]; then
+        cp "$ANDROID_PKGS" "config/package-lists/android-packages.list.chroot"
+        log_info "Android packages: included"
+    fi
+else
+    rm -f "config/package-lists/android-packages.list.chroot"
+    log_info "Android packages: excluded"
 fi
 
 # --- Apply edition-specific configuration ---
 mkdir -p config/includes.chroot/etc/bright-os
 echo "${EDITION}" > config/includes.chroot/etc/bright-os/edition
 
-# Mask services that are not part of core.list.chroot (Phase 6.3):
-# We do this preemptively in case apt recommends pull them in. The 10-
-# components hook will re-enable the ones that ARE installed (by checking
-# binary presence). This avoids unnecessary boot-time RAM use by services
-# the user didn't ask for.
+# ---------------------------------------------------------------------------
+# Service masking (correct behavior, Phase 6.3 corrective pass):
+#
+# For EVERY optional service, we:
+#   1. If the feature IS enabled:  do NOT mask (so systemctl enable works).
+#   2. If the feature is DISABLED: mask it to /dev/null so apt-recommends
+#      or accidental installs don't start unwanted services.
+#
+# This replaces the prior buggy approach where all four services were
+# masked unconditionally and then the hook tried to "enable" them (systemctl
+# enable on a masked unit fails silently because the mask takes precedence).
+# ---------------------------------------------------------------------------
 mkdir -p config/includes.chroot/etc/systemd/system
-for svc in bluetooth.service cups.service ModemManager.service avahi-daemon.service; do
-    ln -sf /dev/null "config/includes.chroot/etc/systemd/system/${svc}" 2>/dev/null || true
-done
 
-if [ "${EDITION}" = "lite" ]; then
-    log_info "Lite edition: will not enable bluetooth/cups/ModemManager/avahi (services masked if present)"
+mask_if_disabled() {
+    local svc="$1"; local enabled="$2"
+    local target="config/includes.chroot/etc/systemd/system/${svc}"
+    if [ "$enabled" = "true" ]; then
+        rm -f "$target"
+        log_info "Service ${svc}: will be enabled (feature on)"
+    else
+        ln -sf /dev/null "$target"
+        log_info "Service ${svc}: masked (feature off)"
+    fi
+}
+
+mask_if_disabled bluetooth.service       "$FEAT_BLUETOOTH"
+mask_if_disabled cups.service            "$FEAT_PRINTING"
+# Network-extras controls ModemManager + avahi
+if [ "$FEAT_NETWORK_EXTRAS" = "true" ]; then
+    rm -f "config/includes.chroot/etc/systemd/system/ModemManager.service"
+    rm -f "config/includes.chroot/etc/systemd/system/avahi-daemon.service"
+    log_info "Service ModemManager + avahi-daemon: will be enabled (network-extras on)"
+else
+    ln -sf /dev/null "config/includes.chroot/etc/systemd/system/ModemManager.service"
+    ln -sf /dev/null "config/includes.chroot/etc/systemd/system/avahi-daemon.service"
+    log_info "Service ModemManager + avahi-daemon: masked (network-extras off)"
 fi
 
 # --- Export environment for auto/config ---

@@ -130,6 +130,37 @@ set -- \
   --mirror-binary-security "${SECURITY_URL}" \
   --apt-options "--yes --option Acquire::Retries=3"
 
+# ==============================================================================
+# Work around Debian Trixie security suite naming on older live-build
+#
+# live-build versions before 1:20240420 (including the 3.0~a57 shipped on
+# Ubuntu 24.04 GitHub runners) hardcode the legacy "<codename>/updates"
+# suite path for the security pocket. Since Debian 12 Bookworm the correct
+# security suite is "<codename>-security" (e.g. "trixie-security"); the
+# old "trixie/updates" path returns 404.
+#
+# Fix: when live-build supports --security/--updates toggles, disable the
+# auto-generated security entry and supply our own with the correct suite
+# name via config/archives/. The archives file is written BEFORE lb config
+# runs so live-build picks it up.
+# ==============================================================================
+LB_HAS_SECURITY_TOGGLE=false
+if has_option "--security"; then
+    LB_HAS_SECURITY_TOGGLE=true
+fi
+
+if [ "$LB_HAS_SECURITY_TOGGLE" = "true" ] && [ "${CODENAME}" != "bullseye" ] && [ "${CODENAME}" != "buster" ]; then
+    set -- "$@" --security false
+    echo "  (--security false: writing manual trixie-security source via config/archives/)"
+    mkdir -p config/archives
+    cat > config/archives/bright-security.list.chroot <<EOF
+deb ${SECURITY_URL} ${CODENAME}-security main contrib non-free non-free-firmware
+EOF
+    cp config/archives/bright-security.list.chroot config/archives/bright-security.list.binary
+else
+    echo "  (security: using live-build default)"
+fi
+
 # Conditionally add options
 if [ "$LB_HAS_APT_RECOMMENDS" = "true" ]; then
     set -- "$@" --apt-recommends true
