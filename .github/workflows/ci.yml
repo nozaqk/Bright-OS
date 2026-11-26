@@ -129,6 +129,11 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install Python dependencies for shell tests
+        run: |
+          python3 -m pip install --quiet --upgrade pip
+          python3 -m pip install --quiet pyyaml
+
       - name: Run all shell test suites
         run: |
           set -uo pipefail
