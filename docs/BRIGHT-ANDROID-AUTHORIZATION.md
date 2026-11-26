@@ -34,9 +34,10 @@ credential validation.**
 | GetVersion, GetCompatibilityReport, GetStatus, GetConfig | read | yes | `SYNC` |
 | ListApps, ValidateApk, GetDiagnostics | read | yes | `SYNC` |
 | SetConfig | state change | no | `SET_CONFIG` |
-| InitializeRuntime | state change | no | `INIT` |
-| StartRuntime | state change | no | `START` |
-| StopRuntime | state change | no | `STOP` |
+| SetConfigs | state change (batch) | no | `SET_CONFIG` (one check per batch) |
+| InitializeRuntime | state change, async | no | `INIT` |
+| StartRuntime | state change, async | no | `START` |
+| StopRuntime | state change, async | no | `STOP` |
 | InstallApk | state change | no | `INSTALL` |
 | UninstallApp | state change | no | `UNINSTALL` |
 | LaunchApp | session action | no | `LAUNCH` |
@@ -44,6 +45,37 @@ credential validation.**
 
 The five signals (`OperationProgress`, `OperationComplete`, `AppInstalled`,
 `AppRemoved`, `RuntimeStateChanged`) have no caller and are not gated.
+
+### Asynchronous runtime operations
+
+`InitializeRuntime`, `StartRuntime` and `StopRuntime` authorize the caller,
+then return at once. The work runs in a background worker. Only one runtime
+operation runs at a time. A second request while one is running is refused
+with `org.bright_os.BrightAndroid.Busy`, and the running operation is not
+disturbed.
+
+- `OperationProgress(s operation, s message)` is emitted during the work.
+- `OperationComplete(s operation, s message, b success)` is emitted when the
+  work ends. `current_operation` is cleared before this signal, so a client
+  that starts a new operation from its completion handler is not refused.
+- `RuntimeStateChanged(b running)` is emitted after a successful start.
+
+`InstallApk` is still synchronous. It blocks the main loop for up to 300 s.
+Status queries wait during that time.
+
+### Batch settings
+
+`SetConfigs(a(ss) changes)` validates the whole batch before any write:
+
+- Every key must be on the allowlist. Values are validated per key.
+- Empty batches, batches over `MAX_BATCH` (32), malformed entries, and
+  duplicate keys are rejected.
+- Any invalid entry rejects the whole batch with `InvalidArgument`, and the
+  error names the entry (`setting N: ...`). Nothing is written.
+- One Polkit check covers the batch.
+- The write is atomic: the temporary file is fsynced and then
+  `os.replace`d over the config. The write is serialized by a lock. On any
+  failure the previous config is kept and the call returns `WriteFailed`.
 
 ## 3. Root policy (decided)
 
@@ -92,22 +124,26 @@ path that root cannot use over D-Bus.
   - Settings saves send only changed values. Each `SetConfig` is an
     `auth_admin_keep` Polkit action, so a change can prompt for admin auth. A
     failed save reports how many changes were applied.
-  - Init, start, stop, restart, install, and uninstall run in a worker thread.
-    The service runs `StartRuntime` and `StopRuntime` synchronously, so the
-    service's main loop blocks for up to about 120 s while they run. Other D-Bus
-    calls wait during that time.
-  - `OperationProgress` is emitted only for `InitializeRuntime`. Other GUI
-    operations show the operation name, not step-by-step progress.
-  - Init waits for `OperationComplete`. That signal had a bad argument order
-    (fixed in `f8fb510`), so before the fix no client received completion.
-  - Tests: `bright_android/tests/test_gui_authorization.py` (static AST checks)
-    and `bright_android/tests/test_service_client.py` (fake connections). Live
-    D-Bus behavior and the GUI at runtime are not tested here. They need PyQt6
-    and python3-dbus with the service running.
-- The `bright-android --launch` and `--install-apk` CLI paths still use
-  `waydroid_manager` directly, not D-Bus. They run as the invoking user, and they
-  remain outside this authorization layer. Routing them through the service is
-  open work.
+  - Init, start, stop, restart, install, uninstall and launch run through
+    `BrightAndroidClient`. Start, stop and init wait for `OperationComplete`
+    (argument order `ssb`, see section 2). A `Busy` refusal is shown as a
+    message, not a crash.
+  - Restart is a client stop followed by a client start, in one worker.
+  - Settings saves send one `SetConfigs` call with only the changed values.
+    One admin prompt covers the batch. A refused batch changes nothing.
+  - Each page keeps a reference to its worker thread until the thread has
+    finished (`_release_worker`, which waits up to 5 s). Destroying a running
+    `QThread` aborts the process.
+  - Tests: `test_gui_authorization.py` (static AST checks) runs everywhere.
+    `test_gui_runtime.py` runs the real PyQt6 pages (offscreen) against the
+    real service over a session bus, under python3.12. The `_release_worker`
+    change has no test that fails without it. The race it guards against did
+    not reproduce in the test harness.
+- The `bright-android --launch`, `--install-apk` and the wrapper's other
+  state-changing paths go through the same D-Bus service as the GUI, via
+  `bright_android/core/cli.py`. The CLI has no direct `waydroid_manager`
+  state-changing calls (checked by AST tests in `test_cli.py`). Exit codes:
+  0 ok, 1 failed, 3 denied, 4 service unavailable, 5 busy.
 
 ## 5. Polkit check limits
 
@@ -135,6 +171,17 @@ path that root cannot use over D-Bus.
 - **Live D-Bus paths are untested in this environment:** the GUI client's
   signal wait for `InitializeRuntime`, the session-bus activation, and real
   Polkit prompts. Their tests use fakes.
-- **The CLI paths (`--launch`, `--install-apk`) bypass D-Bus** (section 4).
 - **Hung Polkit checks can deny service** (section 5).
+- **Start, stop and init cannot be cancelled.** Python threads cannot be
+  stopped, and there is no cancel method. A hung operation keeps the runtime
+  busy until it returns, and later start or stop calls get `Busy`.
+- **`InstallApk` is synchronous.** It blocks the service main loop for up to
+  300 s, and status queries wait during that time.
+- **AURA fails open without a bus.** `aura_core_service.py` returns allowed
+  when `HAS_DBUS` is false or no bus is passed. Real service paths always pass
+  a bus, but this is not fail-closed and is open for review.
+- **Shell suites that byte-compile Python fail for non-root users.** The
+  check in `tests/test-apps.sh` and related suites uses `py_compile` without
+  a `cfile`, which writes into the source tree. Under a user who cannot write
+  there, it reports "syntax error" for valid files.
 

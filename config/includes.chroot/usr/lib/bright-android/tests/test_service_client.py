@@ -58,7 +58,7 @@ def client_with(iface, waiter=None):
     bus = object()
     return sc.BrightAndroidClient(
         connection_factory=lambda: (iface, bus),
-        waiter_factory=(lambda b, op: waiter) if waiter else None,
+        waiter_factory=lambda b, op: waiter or FakeWaiter(),
     )
 
 
@@ -77,6 +77,14 @@ class FakeWaiter:
 
     def close(self):
         self.closed = True
+
+
+class ClientForTest(sc.BrightAndroidClient):
+    """Client with a default successful waiter, so no real D-Bus is needed."""
+
+    def __init__(self, connection_factory=None):
+        super().__init__(connection_factory=connection_factory,
+                         waiter_factory=lambda b, op: FakeWaiter())
 
 
 class ConstantsTests(unittest.TestCase):
@@ -131,7 +139,7 @@ class ErrorMappingTests(unittest.TestCase):
     def test_missing_dbus_is_service_unavailable(self):
         def no_dbus():
             raise sc.ServiceUnavailable("python3-dbus is not installed")
-        client = sc.BrightAndroidClient(connection_factory=no_dbus)
+        client = ClientForTest(connection_factory=no_dbus)
         with self.assertRaises(sc.ServiceUnavailable):
             client.start_runtime()
 
@@ -143,14 +151,15 @@ class TimeoutTests(unittest.TestCase):
         self.assertEqual(len(iface.calls), 1)
         return iface.calls[0]
 
-    def test_start_and_stop_use_long_timeout(self):
-        self.assertEqual(self._timeout_for(lambda c: c.start_runtime())[2]["timeout"], sc.TIMEOUT_START)
-        self.assertEqual(self._timeout_for(lambda c: c.stop_runtime())[2]["timeout"], sc.TIMEOUT_START)
+    def test_start_and_stop_queue_quickly_and_wait_separately(self):
+        # The D-Bus call only queues the operation, so it uses the default timeout.
+        # The long wait for completion is covered by AsyncOperationTests.
+        self.assertEqual(self._timeout_for(lambda c: c.start_runtime())[2]["timeout"], sc.TIMEOUT_DEFAULT)
+        self.assertEqual(self._timeout_for(lambda c: c.stop_runtime())[2]["timeout"], sc.TIMEOUT_DEFAULT)
 
     def test_install_uses_install_timeout(self):
-        # install_apk is now async: it makes a short (TIMEOUT_DEFAULT) D-Bus
-        # call to kick off the worker, then waits for OperationComplete via
-        # the waiter using TIMEOUT_INSTALL.
+        # InstallApk is now async (Phase 5): the D-Bus kick-off call uses
+        # TIMEOUT_DEFAULT; the waiter uses TIMEOUT_INSTALL for completion.
         iface = FakeIface()
         waiter = FakeWaiter(outcome=(True, ""))
         client_with(iface, waiter).install_apk("/tmp/a.apk")
@@ -212,7 +221,7 @@ class ConnectionTests(unittest.TestCase):
         ifaces = [FakeIface({"StartRuntime": FakeDBusError("org.freedesktop.DBus.Error.ServiceUnknown")}),
                   FakeIface()]
         factory = mock.Mock(side_effect=[(i, object()) for i in ifaces])
-        client = sc.BrightAndroidClient(connection_factory=factory)
+        client = ClientForTest(connection_factory=factory)
         with self.assertRaises(sc.ServiceUnavailable):
             client.start_runtime()
         client.start_runtime()  # reconnects
@@ -220,7 +229,7 @@ class ConnectionTests(unittest.TestCase):
 
     def test_proxy_is_reused_between_successful_calls(self):
         factory = mock.Mock(return_value=(FakeIface(), object()))
-        client = sc.BrightAndroidClient(connection_factory=factory)
+        client = ClientForTest(connection_factory=factory)
         client.stop_runtime()
         client.stop_runtime()
         self.assertEqual(factory.call_count, 1)
@@ -274,6 +283,128 @@ class ClientIsolationTests(unittest.TestCase):
     def test_client_contains_no_shell_or_pkexec_text(self):
         self.assertNotIn("pkexec", CLIENT_SOURCE)
         self.assertNotIn("os.system", CLIENT_SOURCE)
+
+
+class AsyncOperationTests(unittest.TestCase):
+    """StartRuntime, StopRuntime, InitializeRuntime, and InstallApk wait for OperationComplete."""
+
+    def _client(self, iface, waiter):
+        names = []
+        bus = object()
+
+        def waiter_factory(b, op):
+            names.append(op)
+            return waiter
+
+        client = sc.BrightAndroidClient(connection_factory=lambda: (iface, bus),
+                                        waiter_factory=waiter_factory)
+        return client, names
+
+    def test_start_uses_start_operation_and_waits(self):
+        iface = FakeIface()
+        waiter = FakeWaiter(outcome=(True, ""))
+        client, names = self._client(iface, waiter)
+        client.start_runtime()
+        self.assertEqual(names, ["start"])
+        self.assertEqual(iface.calls[0][0], "StartRuntime")
+        self.assertEqual(waiter.waited_with[0], sc.TIMEOUT_START)
+        self.assertTrue(waiter.closed)
+
+    def test_stop_uses_stop_operation(self):
+        iface = FakeIface()
+        client, names = self._client(iface, FakeWaiter())
+        client.stop_runtime()
+        self.assertEqual(names, ["stop"])
+        self.assertEqual(iface.calls[0][0], "StopRuntime")
+
+    def test_failed_start_completion_raises_with_message(self):
+        waiter = FakeWaiter(outcome=(False, "waydroid exploded"))
+        client, _ = self._client(FakeIface(), waiter)
+        with self.assertRaises(sc.OperationFailed) as ctx:
+            client.start_runtime()
+        self.assertIn("waydroid exploded", str(ctx.exception))
+        self.assertTrue(waiter.closed)
+
+    def test_progress_is_forwarded_to_caller(self):
+        seen = []
+
+        class ProgressWaiter(FakeWaiter):
+            def wait(self, timeout, progress_cb=None):
+                progress_cb("Starting container")
+                return (True, "")
+
+        client, _ = self._client(FakeIface(), ProgressWaiter())
+        client.start_runtime(progress_cb=seen.append)
+        self.assertEqual(seen, ["Starting container"])
+
+    def test_busy_refusal_is_reported_and_waiter_closed(self):
+        iface = FakeIface({"StartRuntime": FakeDBusError(sc.ERR_BUSY, "init is already in progress")})
+        waiter = FakeWaiter()
+        client, _ = self._client(iface, waiter)
+        with self.assertRaises(sc.ServiceBusy) as ctx:
+            client.start_runtime()
+        self.assertIn("init is already in progress", str(ctx.exception))
+        self.assertTrue(waiter.closed)
+
+    def test_completion_timeout_is_operation_failed(self):
+        waiter = FakeWaiter(raises=sc.OperationFailed("no completion"))
+        client, _ = self._client(FakeIface(), waiter)
+        with self.assertRaises(sc.OperationFailed):
+            client.stop_runtime()
+        self.assertTrue(waiter.closed)
+
+    def test_install_apk_uses_install_apk_operation_and_passes_path(self):
+        """Phase 5: install_apk is async, uses the waiter for 'install-apk'
+        and forwards the path argument to the D-Bus method."""
+        iface = FakeIface()
+        waiter = FakeWaiter(outcome=(True, ""))
+        client, names = self._client(iface, waiter)
+        client.install_apk("/tmp/a.apk")
+        self.assertEqual(names, ["install-apk"])
+        self.assertEqual(iface.calls[0][0], "InstallApk")
+        self.assertEqual(iface.calls[0][1], ("/tmp/a.apk",))
+        self.assertEqual(waiter.waited_with[0], sc.TIMEOUT_INSTALL)
+        self.assertTrue(waiter.closed)
+
+    def test_install_apk_failed_completion_raises(self):
+        waiter = FakeWaiter(outcome=(False, "INSTALL_FAILED_ABORTED"))
+        client, _ = self._client(FakeIface(), waiter)
+        with self.assertRaises(sc.OperationFailed) as ctx:
+            client.install_apk("/tmp/a.apk")
+        self.assertIn("INSTALL_FAILED_ABORTED", str(ctx.exception))
+
+
+class BatchSettingsClientTests(unittest.TestCase):
+    def test_set_configs_sends_one_call_with_pairs(self):
+        iface = FakeIface({"SetConfigs": 2})
+        count = ClientForTest(connection_factory=lambda: (iface, object())).set_configs(
+            [("runtime/auto_start", True), ("storage/shared_pictures", False)])
+        self.assertEqual(count, 2)
+        self.assertEqual(len(iface.calls), 1)
+        name, args, kwargs = iface.calls[0]
+        self.assertEqual(name, "SetConfigs")
+        self.assertEqual(args[0], [("runtime/auto_start", "true"),
+                                   ("storage/shared_pictures", "false")])
+        self.assertEqual(kwargs["timeout"], sc.TIMEOUT_ADMIN)
+
+    def test_set_configs_rejection_is_request_rejected(self):
+        iface = FakeIface({"SetConfigs": FakeDBusError(sc.ERR_INVALID_ARGUMENT, "setting 2: unknown section")})
+        with self.assertRaises(sc.RequestRejected):
+            ClientForTest(connection_factory=lambda: (iface, object())).set_configs(
+                [("runtime/auto_start", True), ("evil/x", True)])
+
+    def test_set_configs_write_failure_is_operation_failed_with_kept_message(self):
+        iface = FakeIface({"SetConfigs": FakeDBusError(sc.ERR_WRITE_FAILED, "previous settings kept")})
+        with self.assertRaises(sc.OperationFailed) as ctx:
+            ClientForTest(connection_factory=lambda: (iface, object())).set_configs(
+                [("runtime/auto_start", True)])
+        self.assertIn("previous settings kept", str(ctx.exception))
+
+    def test_set_configs_denial_is_authorization_denied(self):
+        iface = FakeIface({"SetConfigs": FakeDBusError(sc.ERR_NOT_AUTHORIZED, "admin auth denied")})
+        with self.assertRaises(sc.AuthorizationDenied):
+            ClientForTest(connection_factory=lambda: (iface, object())).set_configs(
+                [("runtime/auto_start", True)])
 
 
 if __name__ == "__main__":

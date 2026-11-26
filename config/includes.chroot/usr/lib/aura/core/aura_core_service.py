@@ -51,6 +51,24 @@ except ImportError:
     logger.info("Polkit gir bindings unavailable; privileged methods require root")
 
 
+_DBUS_ERROR_CLASSES = {}
+
+
+def _dbus_error(name: str, message: str):
+    """Build a D-Bus error that clients receive under error name `name`.
+
+    dbus-python takes the error name from the exception class. A plain
+    DBusException(name, message) reaches clients wrapped, so clients cannot
+    map it. This makes one subclass per error name.
+    """
+    cls = _DBUS_ERROR_CLASSES.get(name)
+    if cls is None:
+        cls = type("AuraDBusError", (dbus.exceptions.DBusException,),
+                   {"_dbus_error_name": name})
+        _DBUS_ERROR_CLASSES[name] = cls
+    return cls(message)
+
+
 def _get_caller_credentials(sender, bus):
     """Extract and validate caller PID and UID from D-Bus.
 
@@ -60,6 +78,10 @@ def _get_caller_credentials(sender, bus):
     Production invariant: when HAS_DBUS is True and the call was dispatched
     by dbus-python, `bus` is always the service's Connection object and
     `sender` is always a non-None unique bus name.
+
+    Uses the bus-daemon object (org.freedesktop.DBus) directly via
+    GetConnectionUnixProcessID / GetConnectionUnixUser — this is the
+    canonical dbus-python API for peer credential lookup.
     """
     if not HAS_DBUS:
         # dbus-python not importable: headless/test mode only. There is no
@@ -81,14 +103,12 @@ def _get_caller_credentials(sender, bus):
         return False, 0, 0, "no sender identity provided"
 
     try:
-        # Correct dbus-python API for peer credentials:
-        #   get_connection_unix_process_id(name) -> int PID
-        #   get_connection_unix_user(name)        -> int UID
-        # (Earlier buggy code used get_unix_user which is not a valid method;
-        # that caused AttributeError and a denial, but we must use the
-        # correct API so that legitimate callers are identified.)
-        pid = bus.get_connection_unix_process_id(sender)
-        uid = bus.get_connection_unix_user(sender)
+        # The bus daemon answers credential queries for a unique name.
+        daemon = bus.get_object("org.freedesktop.DBus", "/org/freedesktop/DBus")
+        pid = daemon.GetConnectionUnixProcessID(
+            sender, dbus_interface="org.freedesktop.DBus")
+        uid = daemon.GetConnectionUnixUser(
+            sender, dbus_interface="org.freedesktop.DBus")
     except Exception as e:
         # Catches dbus.DBusException (unknown sender), AttributeError (bad
         # bus), and any other lookup failure. Broad Exception catch is
@@ -115,14 +135,14 @@ def _check_polkit(sender, action_id, bus=None):
       1. If HAS_DBUS=True and bus is None (caller error): DENY. This prevents
          a method invoked without self._bus from being silently treated as
          trusted.
-      2. Credentials must be obtainable (PID/UID via the CORRECT dbus API) →
+      2. Credentials must be obtainable (PID/UID via the bus daemon API) →
          fail closed on any error.
       3. PID/UID must be positive ints.
       4. Root (UID 0) is always authorized.
       5. Polkit is consulted for all other callers.
          - Polkit unavailable (HAS_POLKIT=False): DENY with clear message.
          - Polkit authority initialization raises: DENY.
-         - Polkit check_authorization_sync raises: DENY (with timeout note).
+         - Polkit check_authorization_sync raises: DENY.
          - is_authorized=True → allow
          - is_challenge=True → deny ("authentication required")
          - otherwise → deny ("not authorized")
@@ -330,7 +350,7 @@ if HAS_DBUS:
                 bus=self._bus if hasattr(self, "_bus") else None)
             if not ok:
                 logger.warning("Shutdown denied for %s: %s", sender, reason)
-                raise dbus.exceptions.DBusException(
+                raise _dbus_error(
                     "org.bright_os.AURA.NotAuthorized",
                     f"Shutdown not authorized: {reason}")
             logger.info("Shutdown requested via D-Bus by %s", sender)
@@ -460,7 +480,7 @@ if HAS_DBUS:
                 if not ok:
                     logger.warning("GrantCloudConsent denied for %s: %s",
                                    sender, reason)
-                    raise dbus.exceptions.DBusException(
+                    raise _dbus_error(
                         "org.bright_os.AURA.NotAuthorized",
                         f"Cloud consent not authorized: {reason}")
             eng = self._engine()

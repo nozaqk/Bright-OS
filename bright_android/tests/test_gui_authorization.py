@@ -33,7 +33,7 @@ READ_ONLY_CONFIG = frozenset({"get_bool", "get_value", "get_int"})
 # Client methods the GUI must use for state changes.
 CLIENT_METHODS_USED = frozenset({
     "start_runtime", "stop_runtime", "initialize_runtime", "install_apk",
-    "launch_app", "uninstall_app", "set_config",
+    "launch_app", "uninstall_app", "set_configs",
 })
 
 

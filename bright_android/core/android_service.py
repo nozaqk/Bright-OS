@@ -48,6 +48,25 @@ try:
 except ImportError:
     HAS_DBUS = False
 
+_DBUS_ERROR_CLASSES = {}
+
+
+def _dbus_error(name: str, message: str):
+    """Build a D-Bus error that clients receive under error name `name`.
+
+    dbus-python takes the error name from the exception class. A plain
+    DBusException(name, message) reaches clients as a generic Python exception
+    with the name and message packed into the text, so clients cannot map it.
+    This helper makes one subclass per error name, with _dbus_error_name set.
+    """
+    cls = _DBUS_ERROR_CLASSES.get(name)
+    if cls is None:
+        cls = type("BrightAndroidDBusError", (dbus.exceptions.DBusException,),
+                   {"_dbus_error_name": name})
+        _DBUS_ERROR_CLASSES[name] = cls
+    return cls(message)
+
+
 try:
     from gi.repository import GLib
     HAS_GLIB = True
@@ -89,6 +108,14 @@ POLKIT_ACTION_SYNC = "org.bright_os.BrightAndroid.sync-apps"
 SERVICE_UID = os.getuid()
 
 
+def _peer_credentials(bus, sender):
+    """Return (pid, uid) of the bus connection named sender, from the bus daemon."""
+    daemon = bus.get_object("org.freedesktop.DBus", "/org/freedesktop/DBus")
+    pid = daemon.GetConnectionUnixProcessID(sender, dbus_interface="org.freedesktop.DBus")
+    uid = daemon.GetConnectionUnixUser(sender, dbus_interface="org.freedesktop.DBus")
+    return pid, uid
+
+
 def _get_caller_credentials(sender, bus) -> tuple:
     """Extract and validate caller PID and UID from D-Bus.
 
@@ -122,14 +149,11 @@ def _get_caller_credentials(sender, bus) -> tuple:
         return False, 0, 0, "no sender identity provided"
 
     try:
-        # Correct dbus-python API for peer credentials:
-        #   get_connection_unix_process_id(name) -> int PID
-        #   get_connection_unix_user(name)        -> int UID
-        # (Note: get_unix_process_id / get_unix_user_id are NOT valid methods;
-        # they were a bug in earlier revisions that caused AttributeError and
-        # fell through to the old implicit-trust bypass.)
-        pid = bus.get_connection_unix_process_id(sender)
-        uid = bus.get_connection_unix_user(sender)
+        # Ask the bus daemon for the sender's credentials. The daemon answers
+        # GetConnectionUnixProcessID and GetConnectionUnixUser for the unique
+        # name. (dbus-python's bus objects have no per-connection credential
+        # methods, so the daemon call is the only reliable path.)
+        pid, uid = _peer_credentials(bus, sender)
     except Exception as e:
         # Catches dbus.DBusException (unknown sender), AttributeError (bad bus),
         # and any other lookup failure. Broad Exception catch is deliberate:
@@ -376,38 +400,88 @@ _check_polkit = _check_authorization
 # ---------------------------------------------------------------------------
 # Background worker for long-running operations
 # ---------------------------------------------------------------------------
-class BackgroundWorker:
-    """Run operations on a background thread and emit status via signals."""
-    def __init__(self, service):
-        self.service = service
-        self._thread: Optional[threading.Thread] = None
-        self._lock = threading.Lock()
+class OperationBusy(RuntimeError):
+    """Another long-running runtime operation is already in progress."""
 
-    def _run(self, func, op_name: str, *args, **kwargs):
+
+def _on_main_loop(fn, *args):
+    """Call fn(*args) on the GLib main loop, where D-Bus signals are emitted.
+
+    dbus-python connections are not safe to use from worker threads, so worker
+    threads hand signal emission to the main loop. Without GLib (headless
+    tests), the call runs directly.
+    """
+    if not HAS_GLIB:
+        fn(*args)
+        return
+
+    def _once():
+        fn(*args)
+        return False  # run once, then remove the idle source
+
+    GLib.idle_add(_once)
+
+
+class BackgroundWorker:
+    """Run one long-running operation at a time on a worker thread.
+
+    Each operation reports OperationProgress(operation, message) while it
+    runs and exactly one OperationComplete(operation, message, success) when
+    it ends. The worker is marked idle before completion is published, so a
+    client that starts the next operation as soon as it sees completion is not
+    refused. A second start while an operation runs raises OperationBusy.
+
+    Python threads cannot be cancelled, so there is no cancel operation. A
+    stuck operation keeps the worker busy until it returns.
+
+    `dispatch(fn, *args)` runs signal emission. By default it is scheduled on
+    the GLib main loop. Tests pass a direct call.
+    """
+
+    def __init__(self, service, dispatch=None):
+        self.service = service
+        self._dispatch = dispatch or _on_main_loop
+        self._lock = threading.Lock()
+        self._thread: Optional[threading.Thread] = None
+        self.current_operation: Optional[str] = None
+
+    def _emit(self, signal: str, *args):
+        if HAS_DBUS:
+            self._dispatch(getattr(self.service, signal), *args)
+
+    def _run(self, func, op_name: str, args, kwargs):
+        def progress(msg: str):
+            logger.info("[%s] %s", op_name, msg)
+            self._emit("OperationProgress", op_name, str(msg))
+
+        error = None
         try:
-            def progress(msg: str):
-                logger.info("[%s] %s", op_name, msg)
-                if HAS_DBUS:
-                    self.service.OperationProgress(op_name, msg)
-            kwargs["progress_cb"] = progress
-            func(*args, **kwargs)
-            # Arguments follow the declared signature (operation, message, success).
-            if HAS_DBUS:
-                self.service.OperationComplete(op_name, "", True)
+            call_kwargs = dict(kwargs)
+            call_kwargs["progress_cb"] = progress
+            func(*args, **call_kwargs)
         except Exception as e:
             logger.error("[%s] failed: %s", op_name, e)
-            if HAS_DBUS:
-                self.service.OperationComplete(op_name, str(e), False)
+            error = str(e) or e.__class__.__name__
+
+        with self._lock:
+            self.current_operation = None
+        # Signature order: (operation, message, success).
+        self._emit("OperationComplete", op_name, "" if error is None else error,
+                   error is None)
 
     def start(self, func, op_name: str, *args, **kwargs):
         with self._lock:
-            if self._thread and self._thread.is_alive():
-                raise RuntimeError(f"Another operation is in progress")
+            if self.current_operation is not None:
+                raise OperationBusy(
+                    f"{self.current_operation} is already in progress")
+            self.current_operation = op_name
             self._thread = threading.Thread(
-                target=self._run, args=(func, op_name) + args, kwargs=kwargs,
-                daemon=True,
-            )
-            self._thread.start()
+                target=self._run, args=(func, op_name, args, kwargs), daemon=True)
+            try:
+                self._thread.start()
+            except Exception:
+                self.current_operation = None
+                raise
 
 
 # ---------------------------------------------------------------------------
@@ -451,7 +525,7 @@ if HAS_DBUS:
             ok, reason = _check_authorization(sender, POLKIT_ACTION_SYNC,
                                               bus=self._bus, allow_same_user=True)
             if not ok:
-                raise dbus.exceptions.DBusException(
+                raise _dbus_error(
                     "org.bright_os.BrightAndroid.NotAuthorized",
                     f"Not authorized: {reason}"
                 )
@@ -463,7 +537,7 @@ if HAS_DBUS:
             ok, reason = _check_authorization(sender, POLKIT_ACTION_SYNC,
                                               bus=self._bus, allow_same_user=True)
             if not ok:
-                raise dbus.exceptions.DBusException(
+                raise _dbus_error(
                     "org.bright_os.BrightAndroid.NotAuthorized",
                     f"Not authorized: {reason}"
                 )
@@ -488,7 +562,7 @@ if HAS_DBUS:
             ok, reason = _check_authorization(sender, POLKIT_ACTION_SYNC,
                                               bus=self._bus, allow_same_user=True)
             if not ok:
-                raise dbus.exceptions.DBusException(
+                raise _dbus_error(
                     "org.bright_os.BrightAndroid.NotAuthorized",
                     f"Not authorized: {reason}"
                 )
@@ -512,7 +586,7 @@ if HAS_DBUS:
             ok, reason = _check_authorization(sender, POLKIT_ACTION_SYNC,
                                               bus=self._bus, allow_same_user=True)
             if not ok:
-                raise dbus.exceptions.DBusException(
+                raise _dbus_error(
                     "org.bright_os.BrightAndroid.NotAuthorized",
                     f"Not authorized: {reason}"
                 )
@@ -529,7 +603,7 @@ if HAS_DBUS:
             ok, reason = _check_authorization(sender, POLKIT_ACTION_SET_CONFIG,
                                               bus=self._bus)
             if not ok:
-                raise dbus.exceptions.DBusException(
+                raise _dbus_error(
                     "org.bright_os.BrightAndroid.NotAuthorized",
                     f"Cannot set config: {reason}"
                 )
@@ -538,17 +612,49 @@ if HAS_DBUS:
             try:
                 config_policy.set_setting(key, value)
             except config_policy.ConfigPolicyError as e:
-                raise dbus.exceptions.DBusException(
+                raise _dbus_error(
                     "org.bright_os.BrightAndroid.InvalidArgument",
                     f"Rejected config change: {e}"
                 )
+
+        @method(INTERFACE, in_signature="a(ss)", out_signature="u", sender_keyword="sender")
+        def SetConfigs(self, changes, sender=None):
+            """Apply several settings with one authorization and one atomic write.
+
+            Authorization runs once for the whole batch. Every entry is validated
+            before anything is written. A rejected entry rejects the whole batch,
+            and a failed write leaves the previous configuration in place.
+            Returns the number of settings written.
+            """
+            ok, reason = _check_authorization(sender, POLKIT_ACTION_SET_CONFIG,
+                                              bus=self._bus)
+            if not ok:
+                raise _dbus_error(
+                    "org.bright_os.BrightAndroid.NotAuthorized",
+                    f"Cannot set config: {reason}"
+                )
+            try:
+                count = config_policy.set_settings(changes)
+            except config_policy.ConfigPolicyError as e:
+                raise _dbus_error(
+                    "org.bright_os.BrightAndroid.InvalidArgument",
+                    f"Rejected config change: {e}"
+                )
+            except OSError as e:
+                logger.error("Config write failed; previous settings kept: %s", e)
+                raise _dbus_error(
+                    "org.bright_os.BrightAndroid.WriteFailed",
+                    f"Settings not saved; previous settings kept: {e}"
+                )
+            logger.info("Config batch applied: %d setting(s)", count)
+            return dbus.UInt32(count)
 
         @method(INTERFACE, in_signature="", out_signature="aa{sv}", sender_keyword="sender")
         def ListApps(self, sender=None):
             ok, reason = _check_authorization(sender, POLKIT_ACTION_SYNC,
                                               bus=self._bus, allow_same_user=True)
             if not ok:
-                raise dbus.exceptions.DBusException(
+                raise _dbus_error(
                     "org.bright_os.BrightAndroid.NotAuthorized",
                     f"Not authorized: {reason}"
                 )
@@ -573,7 +679,7 @@ if HAS_DBUS:
             ok, reason = _check_authorization(sender, POLKIT_ACTION_SYNC,
                                               bus=self._bus, allow_same_user=True)
             if not ok:
-                raise dbus.exceptions.DBusException(
+                raise _dbus_error(
                     "org.bright_os.BrightAndroid.NotAuthorized",
                     f"Not authorized: {reason}"
                 )
@@ -601,7 +707,7 @@ if HAS_DBUS:
             ok, reason = _check_authorization(sender, POLKIT_ACTION_SYNC,
                                               bus=self._bus, allow_same_user=True)
             if not ok:
-                raise dbus.exceptions.DBusException(
+                raise _dbus_error(
                     "org.bright_os.BrightAndroid.NotAuthorized",
                     f"Not authorized: {reason}"
                 )
@@ -626,104 +732,129 @@ if HAS_DBUS:
             ok, reason = _check_authorization(sender, POLKIT_ACTION_INIT,
                                               bus=self._bus)
             if not ok:
-                raise dbus.exceptions.DBusException(
+                raise _dbus_error(
                     "org.bright_os.BrightAndroid.NotAuthorized",
                     f"Initialization requires admin auth: {reason}"
                 )
-            self._worker.start(waydroid_manager.init, "init", mode="auto")
+            self._begin_operation("init", self._job_init)
 
         @method(INTERFACE, in_signature="", out_signature="", sender_keyword="sender")
         def StartRuntime(self, sender=None):
+            """Start the Android runtime in the background.
+
+            Returns as soon as the operation is queued. Progress arrives as
+            OperationProgress("start", ...). The result arrives as
+            OperationComplete("start", message, success). Failures are reported
+            there, not as a D-Bus error. Refused with Busy if another runtime
+            operation is running.
+            """
             # Session action: Polkit enforces active-session (allow_active=yes
             # auto-allows local console; SSH/inactive sessions are challenged).
             ok, reason = _check_authorization(sender, POLKIT_ACTION_START,
                                               bus=self._bus)
             if not ok:
-                raise dbus.exceptions.DBusException(
+                raise _dbus_error(
                     "org.bright_os.BrightAndroid.NotAuthorized",
                     f"Start requires auth: {reason}"
                 )
-            try:
-                waydroid_manager.start_session()
-                launcher_integration.sync_apps(waydroid_manager.list_apps())
-                self.RuntimeStateChanged(True)
-            except Exception as e:
-                raise dbus.exceptions.DBusException(
-                    "org.bright_os.BrightAndroid.StartFailed", str(e)
-                )
+            self._begin_operation("start", self._job_start)
 
         @method(INTERFACE, in_signature="", out_signature="", sender_keyword="sender")
         def StopRuntime(self, sender=None):
+            """Stop the Android runtime in the background. Same signals as StartRuntime,
+            with operation "stop". Refused with Busy while another runtime operation runs.
+            """
             # Session action: consult Polkit for active-session verification.
             ok, reason = _check_authorization(sender, POLKIT_ACTION_STOP,
                                               bus=self._bus)
             if not ok:
-                raise dbus.exceptions.DBusException(
+                raise _dbus_error(
                     "org.bright_os.BrightAndroid.NotAuthorized",
                     f"Stop requires auth: {reason}"
                 )
+            self._begin_operation("stop", self._job_stop)
+
+        def _begin_operation(self, op_name: str, job, *args, **kwargs):
             try:
-                waydroid_manager.stop_session()
-                self.RuntimeStateChanged(False)
-            except Exception as e:
-                raise dbus.exceptions.DBusException(
-                    "org.bright_os.BrightAndroid.StopFailed", str(e)
+                self._worker.start(job, op_name, *args, **kwargs)
+            except OperationBusy as e:
+                raise _dbus_error(
+                    "org.bright_os.BrightAndroid.Busy", str(e)
                 )
+
+        # Jobs run on the worker thread, never in a D-Bus handler. Signal
+        # emission is scheduled on the main loop by _on_main_loop.
+
+        def _job_init(self, progress_cb=None):
+            waydroid_manager.init(mode="auto", progress_cb=progress_cb)
+
+        def _job_start(self, progress_cb=None):
+            waydroid_manager.start_session(progress_cb=progress_cb)
+            launcher_integration.sync_apps(waydroid_manager.list_apps())
+            _on_main_loop(self.RuntimeStateChanged, True)
+
+        def _job_stop(self, progress_cb=None):
+            waydroid_manager.stop_session(progress_cb=progress_cb)
+            _on_main_loop(self.RuntimeStateChanged, False)
+
+        def _job_install_apk(self, apk_path, progress_cb=None):
+            """Worker job: install an APK and notify on success.
+
+            Runs on the worker thread. AppInstalled is scheduled on the main
+            loop because D-Bus signal emission must happen there. Failures
+            propagate to BackgroundWorker._run which emits
+            OperationComplete("install-apk", error, False).
+            """
+            result = waydroid_manager.install_apk(apk_path, progress_cb=progress_cb)
+            launcher_integration.sync_apps(waydroid_manager.list_apps())
+            _on_main_loop(
+                self.AppInstalled,
+                result["package"],
+                dbus.Dictionary({
+                    "label": result.get("label", ""),
+                    "path": result.get("path", ""),
+                }, signature="sv"),
+            )
 
         @method(INTERFACE, in_signature="s", out_signature="", sender_keyword="sender")
         def InstallApk(self, path: str, sender=None):
-            """Install APK async; returns immediately. Emits
-            OperationProgress/OperationComplete on "install-apk" and AppInstalled
-            on success. Status queries remain responsive during install."""
-            # Synchronous pre-flight (fail fast).
+            """Install an APK asynchronously.
+
+            Returns as soon as authorization, path validation and the runtime
+            check pass. Progress arrives as
+            OperationProgress("install-apk", ...); completion as
+            OperationComplete("install-apk", message, success). On success,
+            AppInstalled is also emitted on the main loop. Status queries
+            remain responsive because the install runs on the worker.
+            Refused with Busy if another long-running operation is in progress.
+            """
             ok, reason = _check_authorization(sender, POLKIT_ACTION_INSTALL,
                                               bus=self._bus)
             if not ok:
-                raise dbus.exceptions.DBusException(
+                raise _dbus_error(
                     "org.bright_os.BrightAndroid.NotAuthorized",
                     f"APK install requires auth: {reason}"
                 )
 
-            # Validate APK path synchronously before spawning worker. This
-            # rejects obvious garbage (non-existent file, wrong extension,
-            # directory traversal) before we've committed to the operation.
+            # Synchronous pre-flight (fail fast).
             from .apk_validator import validate_apk_path
             err = validate_apk_path(path)
             if err:
-                raise dbus.exceptions.DBusException(
+                raise _dbus_error(
                     "org.bright_os.BrightAndroid.InvalidArgument",
                     f"Invalid APK path: {err}"
                 )
 
             if not waydroid_manager.is_running():
-                raise dbus.exceptions.DBusException(
+                raise _dbus_error(
                     "org.bright_os.BrightAndroid.NotRunning",
                     "Android runtime is not running. Start it before installing apps."
                 )
 
-            # ---- Launch async install ----
-            def _do_install(apk_path, progress_cb=None):
-                # progress_cb is injected by BackgroundWorker._run to emit
-                # OperationProgress signals.
-                result = waydroid_manager.install_apk(apk_path, progress_cb=progress_cb)
-                # Sync launcher integration and emit AppInstalled from the
-                # worker thread (dbus-python signal emission is thread-safe
-                # for signals originating from the service object).
-                launcher_integration.sync_apps(waydroid_manager.list_apps())
-                self.AppInstalled(result["package"], dbus.Dictionary({
-                    "label": result.get("label", ""),
-                    "path": result.get("path", ""),
-                }, signature="sv"))
-
-            try:
-                self._worker.start(_do_install, "install-apk", path)
-            except RuntimeError as e:
-                # Another state-changing operation is running — reject so the
-                # caller knows to retry later rather than blocking.
-                raise dbus.exceptions.DBusException(
-                    "org.bright_os.BrightAndroid.Busy",
-                    f"Another operation is in progress: {e}"
-                )
+            # Launch the worker. The worker's _run catches exceptions and
+            # reports them via OperationComplete — we never raise
+            # InstallFailed synchronously from this method.
+            self._begin_operation("install-apk", self._job_install_apk, path)
 
         @method(INTERFACE, in_signature="s", out_signature="", sender_keyword="sender")
         def UninstallApp(self, package: str, sender=None):
@@ -731,7 +862,7 @@ if HAS_DBUS:
             ok, reason = _check_authorization(sender, POLKIT_ACTION_UNINSTALL,
                                               bus=self._bus)
             if not ok:
-                raise dbus.exceptions.DBusException(
+                raise _dbus_error(
                     "org.bright_os.BrightAndroid.NotAuthorized",
                     f"Uninstall requires auth: {reason}"
                 )
@@ -740,7 +871,7 @@ if HAS_DBUS:
                 launcher_integration.remove_app_desktop_entry(package)
                 self.AppRemoved(package)
             except Exception as e:
-                raise dbus.exceptions.DBusException(
+                raise _dbus_error(
                     "org.bright_os.BrightAndroid.UninstallFailed", str(e)
                 )
 
@@ -751,7 +882,7 @@ if HAS_DBUS:
             ok, reason = _check_authorization(sender, POLKIT_ACTION_LAUNCH,
                                               bus=self._bus)
             if not ok:
-                raise dbus.exceptions.DBusException(
+                raise _dbus_error(
                     "org.bright_os.BrightAndroid.NotAuthorized",
                     f"Launch not authorized: {reason}"
                 )
@@ -768,7 +899,7 @@ if HAS_DBUS:
             ok, reason = _check_authorization(sender, POLKIT_ACTION_SYNC,
                                               bus=self._bus)
             if not ok:
-                raise dbus.exceptions.DBusException(
+                raise _dbus_error(
                     "org.bright_os.BrightAndroid.NotAuthorized",
                     f"Sync not authorized: {reason}"
                 )

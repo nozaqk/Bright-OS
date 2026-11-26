@@ -9,6 +9,8 @@ System defaults: /usr/share/bright-android/config.ini.default
 import configparser
 import os
 import logging
+import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Dict
 
@@ -95,14 +97,27 @@ def load_config() -> configparser.ConfigParser:
 
 
 def save_config(parser: configparser.ConfigParser):
-    """Save user configuration."""
+    """Save user configuration atomically.
+
+    The new content is written to a temporary file in the same directory,
+    flushed to disk, and then renamed over the config file. A failure at any
+    step leaves the previous file unchanged.
+    """
     _ensure_config_dir()
-    with open(CONFIG_FILE, "w") as f:
-        parser.write(f)
+    fd, tmp_path = tempfile.mkstemp(dir=CONFIG_DIR, prefix=".config-", suffix=".tmp")
     try:
-        os.chmod(CONFIG_FILE, 0o600)
-    except OSError:
-        pass
+        with os.fdopen(fd, "w") as f:
+            parser.write(f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(tmp_path, 0o600)
+        os.replace(tmp_path, CONFIG_FILE)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
     logger.info("Configuration saved to %s", CONFIG_FILE)
 
 
@@ -117,13 +132,29 @@ def get_value(section: str, key: str, fallback: Any = None) -> str:
         return str(DEFAULTS.get(section, {}).get(key, ""))
 
 
+_WRITE_LOCK = threading.RLock()
+
+
 def set_value(section: str, key: str, value: Any):
     """Set and persist a single config value."""
-    cfg = load_config()
-    if not cfg.has_section(section):
-        cfg.add_section(section)
-    cfg.set(section, key, str(value))
-    save_config(cfg)
+    set_values([(section, key, value)])
+
+
+def set_values(changes):
+    """Persist several values in one atomic write.
+
+    `changes` is an iterable of (section, key, value). Either every change is
+    written, or the file is left unchanged. Reads and writes are serialized
+    with a lock, so concurrent callers in this process do not lose updates.
+    """
+    changes = list(changes)
+    with _WRITE_LOCK:
+        cfg = load_config()
+        for section, key, value in changes:
+            if not cfg.has_section(section):
+                cfg.add_section(section)
+            cfg.set(section, key, str(value))
+        save_config(cfg)
 
 
 def get_bool(section: str, key: str, fallback: bool = False) -> bool:

@@ -1,16 +1,19 @@
 """Client for the Bright Android D-Bus service.
 
-The GUI performs every state-changing operation through this module. Each
-call is a D-Bus method call that the service authorizes (sender credentials,
-root policy, Polkit) and validates, so the GUI never needs root and never
-bypasses the service.
+The GUI and the CLI perform every state-changing operation through this
+module. Each call is a D-Bus method call that the service authorizes
+(sender credentials, root policy, Polkit) and validates, so callers never
+need root and never bypass the service.
 
 This module must not import waydroid_manager or run privileged commands.
-Read-only status queries stay in the GUI and read the same state directly.
+Read-only status queries stay in the GUI and CLI and read state directly.
 
-Timeouts are explicit because the D-Bus default reply timeout (25 s) is too
-short for runtime start and APK install. The service runs StartRuntime and
-StopRuntime synchronously, so those calls block the service while they run.
+Runtime start, stop, and init are asynchronous on the service. The client
+subscribes to the operation's signals before it makes the call, waits for
+OperationComplete, and forwards OperationProgress to the caller. Other
+operations are synchronous, so their D-Bus call timeouts are explicit: the
+D-Bus default reply timeout (25 s) is too short for APK install and for
+admin prompts.
 """
 
 import time
@@ -22,13 +25,15 @@ INTERFACE = "org.bright_os.BrightAndroid"
 
 ERR_NOT_AUTHORIZED = "org.bright_os.BrightAndroid.NotAuthorized"
 ERR_INVALID_ARGUMENT = "org.bright_os.BrightAndroid.InvalidArgument"
+ERR_BUSY = "org.bright_os.BrightAndroid.Busy"
+ERR_WRITE_FAILED = "org.bright_os.BrightAndroid.WriteFailed"
 
 # Seconds.
-TIMEOUT_DEFAULT = 30     # quick calls (launch, uninstall)
-TIMEOUT_ADMIN = 120      # SetConfig; may wait on a Polkit admin prompt
-TIMEOUT_START = 180      # StartRuntime / StopRuntime (service blocks while they run)
-TIMEOUT_INSTALL = 300    # InstallApk
-TIMEOUT_INIT = 1800      # InitializeRuntime completion (downloads 400-700 MB)
+TIMEOUT_DEFAULT = 30     # quick calls (launch, uninstall, queueing an async operation)
+TIMEOUT_ADMIN = 120      # SetConfig / SetConfigs; may wait on a Polkit admin prompt
+TIMEOUT_START = 180      # waiting for a runtime start or stop to complete
+TIMEOUT_INSTALL = 300    # InstallApk (synchronous on the service)
+TIMEOUT_INIT = 1800      # waiting for init to complete (downloads 400-700 MB)
 
 _UNAVAILABLE_ERRORS = frozenset({
     "org.freedesktop.DBus.Error.ServiceUnknown",
@@ -56,6 +61,10 @@ class RequestRejected(BrightAndroidClientError):
     """The service rejected the request's arguments (for example, a config key outside the allowlist)."""
 
 
+class ServiceBusy(BrightAndroidClientError):
+    """Another runtime operation is already running on the service."""
+
+
 class OperationFailed(BrightAndroidClientError):
     """The service accepted the request, but the operation failed or did not finish."""
 
@@ -66,6 +75,10 @@ def translate_error(name: str, message: str) -> BrightAndroidClientError:
         return AuthorizationDenied(message or "Not authorized")
     if name == ERR_INVALID_ARGUMENT:
         return RequestRejected(message or "Request rejected")
+    if name == ERR_BUSY:
+        return ServiceBusy(message or "Another runtime operation is in progress")
+    if name == ERR_WRITE_FAILED:
+        return OperationFailed(message or "Settings not saved; previous settings kept")
     if name in _UNAVAILABLE_ERRORS:
         return ServiceUnavailable(
             "The Bright Android service is not running or cannot be reached.")
@@ -85,28 +98,64 @@ def _from_exception(exc: Exception) -> BrightAndroidClientError:
     return OperationFailed(str(exc) or exc.__class__.__name__)
 
 
+def _as_text(value: Any) -> str:
+    """Settings travel as text. Booleans become "true" or "false"."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
+_shared_bus = None
+
+
 def _default_connection() -> Tuple[Any, Any]:
-    """Return (method interface, bus) for the real service on the session bus."""
+    """Return (method interface, bus) for the real service on the session bus.
+
+    The connection is attached to a GLib main loop. Signal receivers need one,
+    and the waiter dispatches messages through it. The connection is created
+    once per process and reused.
+    """
+    global _shared_bus
     try:
         import dbus
+        from dbus.mainloop.glib import DBusGMainLoop
     except ImportError as exc:
         raise ServiceUnavailable(
             "python3-dbus is not installed, so the Bright Android service cannot be reached."
         ) from exc
     try:
-        bus = dbus.SessionBus()
-        obj = bus.get_object(BUS_NAME, OBJECT_PATH)
+        if _shared_bus is None:
+            _shared_bus = dbus.SessionBus(mainloop=DBusGMainLoop(set_as_default=False))
+        obj = _shared_bus.get_object(BUS_NAME, OBJECT_PATH)
     except dbus.exceptions.DBusException as exc:
         raise _from_exception(exc) from exc
-    return dbus.Interface(obj, INTERFACE), bus
+    return dbus.Interface(obj, INTERFACE), _shared_bus
+
+
+def dispatch_pending(wait_seconds: float) -> None:
+    """Run the GLib default main context for up to wait_seconds.
+
+    dbus-python delivers messages and signals through GLib sources, so a thread
+    that waits for a signal must iterate that context. Requires the connection
+    to be attached to a GLib main loop.
+    """
+    from gi.repository import GLib
+    context = GLib.MainContext.default()
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        while context.pending():
+            context.iteration(False)
+        if time.monotonic() >= deadline:
+            return
+        time.sleep(0.01)
 
 
 class _CompletionWaiter:
     """Waits for OperationComplete for one operation name.
 
-    Signal receivers are registered before InitializeRuntime is called, so a
-    fast completion is not missed. This uses the connection's read/dispatch
-    loop, which runs in the caller's thread and needs no GLib main loop.
+    Signal receivers are registered before the operation is started, so a
+    fast completion is not missed. Waiting iterates the GLib main context in
+    the caller's thread (see dispatch_pending).
     """
 
     def __init__(self, bus, operation: str):
@@ -136,11 +185,11 @@ class _CompletionWaiter:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise OperationFailed(
-                    f"The Bright Android service did not report that "
-                    f"'{self._op}' finished within {timeout:.0f}s. "
-                    f"Check the logs before retrying.")
-            if not self._bus.read_write_dispatch(int(min(remaining, 1.0) * 1000)):
+                    "The Bright Android service did not report that the operation "
+                    "finished. Check the status and logs before retrying.")
+            if not self._bus.get_is_connected():
                 raise ServiceUnavailable("Lost the D-Bus connection while waiting.")
+            dispatch_pending(min(remaining, 0.1))
         return self._result
 
     def close(self):
@@ -160,12 +209,12 @@ class BrightAndroidClient:
     """Calls the service's state-changing methods.
 
     Every method accepts ``progress_cb`` so it can run under the GUI's
-    StatusWorker. The service emits progress only for InitializeRuntime, so
-    the other methods accept the callback and do not use it.
+    StatusWorker. Asynchronous operations forward progress to it. Synchronous
+    operations accept it and do not use it.
 
     ``connection_factory`` returns (method interface, bus). ``waiter_factory``
     returns an object with wait(timeout, progress_cb) and close(). Tests inject
-    both; the defaults use the real session bus.
+    both. The defaults use the real session bus.
     """
 
     def __init__(self, connection_factory: Optional[Callable[[], Tuple[Any, Any]]] = None,
@@ -190,30 +239,39 @@ class BrightAndroidClient:
             self._bus = None
             raise _from_exception(exc) from exc
 
-    def start_runtime(self, progress_cb=None) -> None:
-        self._call("StartRuntime", timeout=TIMEOUT_START)
-
-    def stop_runtime(self, progress_cb=None) -> None:
-        self._call("StopRuntime", timeout=TIMEOUT_START)
-
-    def install_apk(self, path: str, progress_cb=None) -> None:
-        """Install an APK asynchronously; blocks the caller until the
-        OperationComplete("install-apk", ...) signal arrives.
-
-        Pre-flight failures (auth, invalid path, runtime not running) raise
-        synchronously from the D-Bus call itself.
-        """
+    def _run_operation(self, method: str, op_name: str, progress_cb, wait_timeout: float,
+                       *method_args):
+        """Start an asynchronous service operation and wait for its completion signal."""
         self._interface()
-        waiter = self._waiter_factory(self._bus, "install-apk")
+        waiter = self._waiter_factory(self._bus, op_name)
         try:
-            self._call("InstallApk", path, timeout=TIMEOUT_DEFAULT)
-            success, message = waiter.wait(TIMEOUT_INSTALL, progress_cb)
+            self._call(method, *method_args, timeout=TIMEOUT_DEFAULT)
+            success, message = waiter.wait(wait_timeout, progress_cb)
         finally:
             waiter.close()
         if not success:
-            raise OperationFailed(
-                message or "APK installation failed. See the logs for details."
-            )
+            raise OperationFailed(message or f"{op_name} failed. See the logs for details.")
+
+    def start_runtime(self, progress_cb=None) -> None:
+        self._run_operation("StartRuntime", "start", progress_cb, TIMEOUT_START)
+
+    def stop_runtime(self, progress_cb=None) -> None:
+        self._run_operation("StopRuntime", "stop", progress_cb, TIMEOUT_START)
+
+    def initialize_runtime(self, progress_cb=None) -> None:
+        self._run_operation("InitializeRuntime", "init", progress_cb, TIMEOUT_INIT)
+
+    def install_apk(self, path: str, progress_cb=None) -> None:
+        """Install an APK asynchronously.
+
+        The InstallApk service method queues the install on the service's
+        background worker and returns immediately; this client waits for
+        OperationComplete("install-apk", ...). Pre-flight failures (auth,
+        invalid path, runtime not running, busy) raise synchronously from
+        the D-Bus call itself.
+        """
+        self._run_operation("InstallApk", "install-apk", progress_cb, TIMEOUT_INSTALL,
+                            path)
 
     def uninstall_app(self, package: str, progress_cb=None) -> None:
         self._call("UninstallApp", package, timeout=TIMEOUT_DEFAULT)
@@ -224,19 +282,15 @@ class BrightAndroidClient:
             raise OperationFailed(f"Could not launch {package}. See the logs for details.")
 
     def set_config(self, path: str, value: Any, progress_cb=None) -> None:
-        """Set one setting. ``path`` is "section/key"; booleans become "true"/"false"."""
-        if isinstance(value, bool):
-            value = "true" if value else "false"
-        self._call("SetConfig", path, str(value), timeout=TIMEOUT_ADMIN)
+        """Set one setting. ``path`` is "section/key"."""
+        self._call("SetConfig", path, _as_text(value), timeout=TIMEOUT_ADMIN)
 
-    def initialize_runtime(self, progress_cb=None) -> None:
-        """Start InitializeRuntime and wait for its OperationComplete signal."""
-        self._interface()
-        waiter = self._waiter_factory(self._bus, "init")
-        try:
-            self._call("InitializeRuntime", timeout=TIMEOUT_DEFAULT)
-            success, message = waiter.wait(TIMEOUT_INIT, progress_cb)
-        finally:
-            waiter.close()
-        if not success:
-            raise OperationFailed(message or "Initialization failed. See the logs for details.")
+    def set_configs(self, changes, progress_cb=None) -> int:
+        """Set several settings with one authorization and one atomic write.
+
+        ``changes`` is an iterable of ("section/key", value). Returns the number
+        of settings written. The service rejects the whole batch if any entry is
+        invalid, so a rejected call changes nothing.
+        """
+        pairs = [(str(path), _as_text(value)) for path, value in changes]
+        return int(self._call("SetConfigs", pairs, timeout=TIMEOUT_ADMIN))

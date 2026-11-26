@@ -92,6 +92,16 @@ class StatusWorker(QThread):
             self.finished.emit(False, str(e))
 
 
+def _release_worker(worker):
+    """Wait for a finished-or-finishing worker thread before dropping the reference.
+
+    Destroying a QThread that is still running aborts the process, so the page
+    must not forget a worker until its thread has returned.
+    """
+    if worker is not None:
+        worker.wait(5000)
+
+
 class StatusRefreshWorker(QThread):
     """Background worker for GUI status refreshes.
 
@@ -392,6 +402,7 @@ class HomePage(QWidget):
         # Force style refresh on status label
         self.status_label.style().unpolish(self.status_label)
         self.status_label.style().polish(self.status_label)
+        _release_worker(self._refresh_worker)
         self._refresh_worker = None
 
     def _run_worker(self, func, *args, op_name="Operation", **kwargs):
@@ -524,6 +535,7 @@ class ApplicationsPage(QWidget):
             self._apps_refresh_worker.start()
 
     def _apply_app_list(self, running, apps, error):
+        _release_worker(self._apps_refresh_worker)
         self._apps_refresh_worker = None
         if self._closed:
             return
@@ -889,19 +901,10 @@ class SettingsPage(QWidget):
         self.save_worker.start()
 
     def _apply_settings(self, changes, progress_cb=None):
-        from bright_android.core.service_client import (
-            BrightAndroidClient, BrightAndroidClientError,
-        )
-        client = BrightAndroidClient()
-        done = 0
-        for path, value in changes:
-            try:
-                client.set_config(path, value)
-            except BrightAndroidClientError as e:
-                raise BrightAndroidClientError(
-                    f"Saved {done} of {len(changes)} changes. "
-                    f"Failed on {path}: {e}") from e
-            done += 1
+        # One service call for the whole batch: one authorization, and all or
+        # nothing on disk.
+        from bright_android.core.service_client import BrightAndroidClient
+        BrightAndroidClient().set_configs(changes)
 
     def _on_settings_saved(self, success, error):
         if self._closed:
