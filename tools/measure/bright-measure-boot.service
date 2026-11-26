@@ -1,0 +1,42 @@
+[Unit]
+Description=Bright OS post-boot baseline measurement
+Documentation=man:bright-measure-boot(8)
+# Run after the graphical session is up so the measurement reflects
+# true idle-desktop memory, not an early boot snapshot.
+After=graphical-session.target multi-user.target
+Wants=multi-user.target
+# Do not block boot; this is a measurement-only auxiliary service.
+RefuseManualStart=no
+RefuseManualStop=yes
+
+[Service]
+Type=oneshot
+# Run as root so we can read all /proc/<pid>/smaps_rollup (some processes
+# run as other users and restrict smaps_rollup to owner).
+User=root
+Group=root
+# Wait 120 seconds after being triggered to allow the desktop to settle
+# (panel loaded, portals up, pipewire up, AURA idle, file indexers done).
+ExecStartPre=/bin/sleep 120
+ExecStart=/usr/share/bright-os/measure/run-baseline.sh
+# Write results to /var/log/bright-os/measurements/ and also to the
+# console/serial log so CI QEMU runs can harvest the JSON from the log.
+StandardOutput=journal+console
+StandardError=journal+console
+SyslogIdentifier=bright-measure
+# Hardening (measurement only; no privilege escalation needed beyond
+# reading /proc, which root already has).
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/log/bright-os/measurements /tmp
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+
+[Install]
+# Installed systems do NOT auto-run this by default (we don't want every
+# boot to sleep 120 s and write a measurement). CI / QEMU images enable
+# this unit explicitly via a kernel command-line snippet or a preset.
+WantedBy=multi-user.target

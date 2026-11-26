@@ -1,0 +1,523 @@
+{
+  "boot": {
+    "data": {
+      "has_systemd": true,
+      "hostname": "e2b.local",
+      "kernel": "6.1.158+",
+      "kernel_cmdline": "clocksource=kvm-clock i8042.noaux i8042.nokbd init=/sbin/init ip=169.254.0.21::169.254.0.22:255.255.255.252:instance:eth0:off:tap0 ipv6.autoconf=1 ipv6.disable=0 loglevel=1 panic=1 pci=off quiet random.trust_cpu=on reboot=k rootflags=discard pci=off virtio_mmio.device=4K@0xc0001000:6 root=/dev/vda rw virtio_mmio.device=4K@0xc0002000:7 virtio_mmio.device=4K@0xc0003000:8 virtio_mmio.device=4K@0xc0004000:9",
+      "notes": [
+        "systemd time data is only meaningful on a system that booted via systemd (not a container).",
+        "Boot time to desktop requires additional instrumentation (bright-session-ready marker); see sub-phase 6.3."
+      ],
+      "systemd_analyze_time": {
+        "raw": "Failed to connect to bus: No such file or directory"
+      },
+      "systemd_blame_top": null,
+      "timestamp_utc": "2026-11-26T16:11:01Z",
+      "uptime_seconds": 1974.36
+    },
+    "duration_seconds": 0.013,
+    "ok": true
+  },
+  "iso": {
+    "data": {
+      "hostname": "e2b.local",
+      "iso_found": false,
+      "iso_path": null,
+      "iso_size_bytes": null,
+      "iso_size_human": null,
+      "iso_size_mib": null,
+      "notes": [
+        "No ISO artifact found. This is expected in sub-phase 6.0 before the build pipeline produces ISOs.",
+        "ISO size target (<2 GiB / 2147483648 bytes) will be checked once artifacts exist in sub-phase 6.7."
+      ],
+      "sha256": null,
+      "target_max_bytes": 2147483648,
+      "timestamp_utc": "2026-11-26T16:11:01Z",
+      "volume_label": null,
+      "within_target": null
+    },
+    "duration_seconds": 0.0,
+    "ok": true
+  },
+  "memory": {
+    "data": {
+      "has_systemd": true,
+      "hostname": "e2b.local",
+      "kernel": "6.1.158+",
+      "kernel_working_set_kb": {
+        "kernel_stack_kb": 1256,
+        "kernel_working_set_kb": 13636,
+        "page_tables_kb": 844,
+        "slab_reclaimable_kb": 15768,
+        "slab_unreclaimable_kb": 11536,
+        "vmalloc_used_kb": 4336
+      },
+      "meminfo_kb": {
+        "Active": 113360,
+        "Active(anon)": 304,
+        "Active(file)": 113056,
+        "AnonHugePages": 0,
+        "AnonPages": 24592,
+        "Bounce": 0,
+        "Buffers": 44528,
+        "Cached": 112920,
+        "CommitLimit": 2017224,
+        "Committed_AS": 140064,
+        "DirectMap1G": 4194304,
+        "DirectMap2M": 2060288,
+        "DirectMap4k": 36864,
+        "Dirty": 292,
+        "FileHugePages": 0,
+        "FilePmdMapped": 0,
+        "HugePages_Free": 0,
+        "HugePages_Rsvd": 0,
+        "HugePages_Surp": 0,
+        "HugePages_Total": 0,
+        "Hugepagesize": 2048,
+        "Hugetlb": 0,
+        "Inactive": 68656,
+        "Inactive(anon)": 25324,
+        "Inactive(file)": 43332,
+        "KReclaimable": 15768,
+        "KernelStack": 1256,
+        "Mapped": 33400,
+        "MemAvailable": 3772600,
+        "MemFree": 3806668,
+        "MemTotal": 4034452,
+        "Mlocked": 4,
+        "NFS_Unstable": 0,
+        "PageTables": 844,
+        "Percpu": 592,
+        "SReclaimable": 15768,
+        "SUnreclaim": 11536,
+        "SecPageTables": 0,
+        "Shmem": 1056,
+        "ShmemHugePages": 0,
+        "ShmemPmdMapped": 0,
+        "Slab": 27304,
+        "SwapCached": 0,
+        "SwapFree": 0,
+        "SwapTotal": 0,
+        "Unevictable": 8,
+        "VmallocChunk": 0,
+        "VmallocTotal": 34359738367,
+        "VmallocUsed": 4336,
+        "Writeback": 0,
+        "WritebackTmp": 0,
+        "Zswap": 0,
+        "Zswapped": 0
+      },
+      "memory_perspective_kb": {
+        "buffers_kb": 44528,
+        "cached_kb": 112920,
+        "mem_available_kb": 3772600,
+        "mem_free_kb": 3806668,
+        "mem_total_kb": 4034452,
+        "reclaimable_cache_kb": 172160,
+        "shmem_kb": 1056,
+        "used_after_reclaim_kb": 261852,
+        "used_total_kb": 227784
+      },
+      "processes_total": 74,
+      "slices": {
+        "system.slice": {
+          "private_clean_kb": 0,
+          "private_dirty_kb": 0,
+          "process_count": 72,
+          "pss_available": false,
+          "pss_kb": 0,
+          "rss_kb": 70464,
+          "shared_clean_kb": 0,
+          "shared_dirty_kb": 0,
+          "swap_kb": 0
+        },
+        "user-1001.slice": {
+          "private_clean_kb": 5352,
+          "private_dirty_kb": 8168,
+          "process_count": 2,
+          "pss_available": true,
+          "pss_kb": 15188,
+          "rss_kb": 20664,
+          "shared_clean_kb": 7144,
+          "shared_dirty_kb": 0,
+          "swap_kb": 0
+        }
+      },
+      "swap": {
+        "swap_free_kb": 0,
+        "swap_total_kb": 0,
+        "swap_used_kb": 0
+      },
+      "timestamp_utc": "2026-11-26T16:11:01Z",
+      "top_processes_by_pss": [
+        {
+          "cmdline": "/usr/bin/envd",
+          "comm": "envd",
+          "pid": 1229,
+          "private_dirty_kb": null,
+          "pss_kb": null,
+          "rss_kb": 19316,
+          "slice": "system.slice",
+          "source": "statm",
+          "swap_kb": null,
+          "uid": 0
+        },
+        {
+          "cmdline": "python3 tools/measure/run_measurements.py --tag phase6-0-baseline-static --out build/measurements/phase6-0-baseline-static.json --pretty",
+          "comm": "python3",
+          "pid": 15576,
+          "private_dirty_kb": 7880,
+          "pss_kb": 13641,
+          "rss_kb": 17516,
+          "slice": "user-1001.slice",
+          "source": "smaps_rollup",
+          "swap_kb": 0,
+          "uid": 1001
+        },
+        {
+          "cmdline": "/sbin/init",
+          "comm": "systemd",
+          "pid": 1,
+          "private_dirty_kb": null,
+          "pss_kb": null,
+          "rss_kb": 11708,
+          "slice": "system.slice",
+          "source": "statm",
+          "swap_kb": null,
+          "uid": 0
+        },
+        {
+          "cmdline": "sshd: /usr/sbin/sshd -D [listener] 0 of 10-100 startups",
+          "comm": "sshd",
+          "pid": 318,
+          "private_dirty_kb": null,
+          "pss_kb": null,
+          "rss_kb": 8980,
+          "slice": "system.slice",
+          "source": "statm",
+          "swap_kb": null,
+          "uid": 0
+        },
+        {
+          "cmdline": "/lib/systemd/systemd-networkd",
+          "comm": "systemd-network",
+          "pid": 306,
+          "private_dirty_kb": null,
+          "pss_kb": null,
+          "rss_kb": 8764,
+          "slice": "system.slice",
+          "source": "statm",
+          "swap_kb": null,
+          "uid": 998
+        },
+        {
+          "cmdline": "/lib/systemd/systemd-journald",
+          "comm": "systemd-journal",
+          "pid": 284,
+          "private_dirty_kb": null,
+          "pss_kb": null,
+          "rss_kb": 7980,
+          "slice": "system.slice",
+          "source": "statm",
+          "swap_kb": null,
+          "uid": 0
+        },
+        {
+          "cmdline": "/sbin/rpcbind -f -w",
+          "comm": "rpcbind",
+          "pid": 304,
+          "private_dirty_kb": null,
+          "pss_kb": null,
+          "rss_kb": 3968,
+          "slice": "system.slice",
+          "source": "statm",
+          "swap_kb": null,
+          "uid": 102
+        },
+        {
+          "cmdline": "/usr/sbin/chronyd -F 1",
+          "comm": "chronyd",
+          "pid": 320,
+          "private_dirty_kb": null,
+          "pss_kb": null,
+          "rss_kb": 3048,
+          "slice": "system.slice",
+          "source": "statm",
+          "swap_kb": null,
+          "uid": 100
+        },
+        {
+          "cmdline": "/bin/bash -l -c cd /home/user/Bright-OS && mkdir -p build/measurements && python3 tools/measure/run_measurements.py --tag \"phase6-0-baseline-static\" --out build/measurements/phase6-0-baseline-static.json --pretty && echo \"===BASELINE SUMMARY===\" && python3 -c \"\nimport json\nd = json.load(open('build/measurements/phase6-0-baseline-static.json'))\nprint('Environment:')\nenv = d['meta']['environment']\nfor k in ('is_bright_os','in_container','has_kvm','has_systemd','kernel','python'):\n    print(f'  {k}: {env.get(k)}')\nprint()\nprint('Caveats:')\nfor c in d['meta']['caveats']:\n    print(f'  - {c}')\nprint()\nprint('Summary:')\nfor k,v in d['summary'].items():\n    print(f'  {k}: {v}')\nprint()\nprint('Package counts (static):')\nfor k,v in d['packages']['data']['package_lists'].items():\n    print(f'  {k}: {v}')\nprint()\nprint('Edition totals (unique packages, static, no transitive deps):')\nfor ed,info in d['packages']['data']['editions'].items():\n    extra = f\\\" (with_android: {info['with_android']})\\\" if 'with_android' in info else ''\n    print(f\\\"  {ed}: {info['unique_packages']}{extra}\\\")\n\"",
+          "comm": "bash",
+          "pid": 15573,
+          "private_dirty_kb": 288,
+          "pss_kb": 1547,
+          "rss_kb": 3148,
+          "slice": "user-1001.slice",
+          "source": "smaps_rollup",
+          "swap_kb": 0,
+          "uid": 1001
+        },
+        {
+          "cmdline": "/sbin/agetty -o -p -- \\u --noclear - linux",
+          "comm": "agetty",
+          "pid": 348,
+          "private_dirty_kb": null,
+          "pss_kb": null,
+          "rss_kb": 1040,
+          "slice": "system.slice",
+          "source": "statm",
+          "swap_kb": null,
+          "uid": 0
+        },
+        {
+          "cmdline": "/sbin/agetty -o -p -- \\u --noclear - linux",
+          "comm": "agetty",
+          "pid": 327,
+          "private_dirty_kb": null,
+          "pss_kb": null,
+          "rss_kb": 1036,
+          "slice": "system.slice",
+          "source": "statm",
+          "swap_kb": null,
+          "uid": 0
+        },
+        {
+          "cmdline": "/sbin/agetty -o -p -- \\u --noclear - linux",
+          "comm": "agetty",
+          "pid": 331,
+          "private_dirty_kb": null,
+          "pss_kb": null,
+          "rss_kb": 1024,
+          "slice": "system.slice",
+          "source": "statm",
+          "swap_kb": null,
+          "uid": 0
+        },
+        {
+          "cmdline": "/sbin/agetty -o -p -- \\u --noclear - linux",
+          "comm": "agetty",
+          "pid": 329,
+          "private_dirty_kb": null,
+          "pss_kb": null,
+          "rss_kb": 1020,
+          "slice": "system.slice",
+          "source": "statm",
+          "swap_kb": null,
+          "uid": 0
+        },
+        {
+          "cmdline": "/sbin/agetty -o -p -- \\u --noclear - linux",
+          "comm": "agetty",
+          "pid": 330,
+          "private_dirty_kb": null,
+          "pss_kb": null,
+          "rss_kb": 1020,
+          "slice": "system.slice",
+          "source": "statm",
+          "swap_kb": null,
+          "uid": 0
+        },
+        {
+          "cmdline": "/sbin/agetty -o -p -- \\u --noclear - linux",
+          "comm": "agetty",
+          "pid": 332,
+          "private_dirty_kb": null,
+          "pss_kb": null,
+          "rss_kb": 1012,
+          "slice": "system.slice",
+          "source": "statm",
+          "swap_kb": null,
+          "uid": 0
+        },
+        {
+          "cmdline": "/usr/sbin/chronyd -F 1",
+          "comm": "chronyd",
+          "pid": 322,
+          "private_dirty_kb": null,
+          "pss_kb": null,
+          "rss_kb": 544,
+          "slice": "system.slice",
+          "source": "statm",
+          "swap_kb": null,
+          "uid": 100
+        },
+        {
+          "cmdline": "bpfilter_umh",
+          "comm": "bpfilter_umh",
+          "pid": 167,
+          "private_dirty_kb": null,
+          "pss_kb": null,
+          "rss_kb": 4,
+          "slice": "system.slice",
+          "source": "statm",
+          "swap_kb": null,
+          "uid": 0
+        },
+        {
+          "cmdline": "",
+          "comm": "kthreadd",
+          "pid": 2,
+          "private_dirty_kb": null,
+          "pss_kb": null,
+          "rss_kb": 0,
+          "slice": "system.slice",
+          "source": "statm",
+          "swap_kb": null,
+          "uid": 0
+        },
+        {
+          "cmdline": "",
+          "comm": "rcu_gp",
+          "pid": 3,
+          "private_dirty_kb": null,
+          "pss_kb": null,
+          "rss_kb": 0,
+          "slice": "system.slice",
+          "source": "statm",
+          "swap_kb": null,
+          "uid": 0
+        },
+        {
+          "cmdline": "",
+          "comm": "rcu_par_gp",
+          "pid": 4,
+          "private_dirty_kb": null,
+          "pss_kb": null,
+          "rss_kb": 0,
+          "slice": "system.slice",
+          "source": "statm",
+          "swap_kb": null,
+          "uid": 0
+        }
+      ],
+      "totals_kb": {
+        "note": "rss_sum double-counts shared libraries; pss_sum divides shared pages across consumers",
+        "pss_sum": 15188,
+        "rss_sum": 91128
+      },
+      "uptime_seconds": 1974.36
+    },
+    "duration_seconds": 0.012,
+    "ok": true
+  },
+  "meta": {
+    "caveats": [
+      "memory/boot sections measured in a container or on a non-Bright-OS host are NOT Bright OS baseline numbers.",
+      "RAM and boot targets (250-350 MB idle, <60 s boot) are NOT claimed until measured on a booted Bright OS in QEMU/hardware."
+    ],
+    "environment": {
+      "has_docker_env": false,
+      "has_kvm": false,
+      "has_systemd": true,
+      "in_container": false,
+      "is_bright_os": false,
+      "kernel": "6.1.158+",
+      "pid1": "systemd",
+      "python": "3.11.2"
+    },
+    "hostname": "e2b.local",
+    "measurement_tools_dir": "/home/user/Bright-OS/tools/measure",
+    "tag": "phase6-0-baseline-static",
+    "timestamp_utc": "2026-11-26T16:11:01Z"
+  },
+  "packages": {
+    "data": {
+      "editions": {
+        "developer": {
+          "components": [
+            "core",
+            "desktop",
+            "aura_core",
+            "edition_dev"
+          ],
+          "unique_packages": 325,
+          "with_android": 331
+        },
+        "home": {
+          "components": [
+            "core",
+            "desktop",
+            "aura_core",
+            "edition_home"
+          ],
+          "unique_packages": 240,
+          "with_android": 246
+        },
+        "lite": {
+          "components": [
+            "core",
+            "desktop_lite",
+            "aura_core",
+            "edition_lite"
+          ],
+          "unique_packages": 221
+        }
+      },
+      "hostname": "e2b.local",
+      "notes": [
+        "These are STATIC package-list counts. They do not reflect transitive apt dependencies.",
+        "Installed-size estimation requires apt-cache resolve (performed in CI environment in later sub-phases).",
+        "Actual ISO size is measured from a built ISO artifact; this tool cannot compute it from source."
+      ],
+      "overlap_analysis": {
+        "core_intersect_desktop": [],
+        "core_intersect_desktop_lite": [
+          "breeze-icon-theme",
+          "xdg-desktop-portal-gtk"
+        ],
+        "desktop_intersect_desktop_lite": [
+          "blueman",
+          "bluez",
+          "pavucontrol-qt",
+          "volumeicon-alsa"
+        ]
+      },
+      "package_lists": {
+        "android": 7,
+        "aura_core": 18,
+        "core": 173,
+        "desktop": 34,
+        "desktop_lite": 29,
+        "edition_dev": 111,
+        "edition_home": 25,
+        "edition_lite": 13
+      },
+      "repo_root": "/home/user/Bright-OS",
+      "repository": {
+        "python_packaged_copies": 63,
+        "python_source_files": 63,
+        "python_test_files_source": 17,
+        "shell_test_files": [
+          "test-apps.sh",
+          "test-build-doctor.sh",
+          "test-build-pipeline.sh",
+          "test-build-readiness.sh",
+          "test-calamares.sh",
+          "test-desktop-identity.sh",
+          "test-installer.sh",
+          "test-iso-validator.sh",
+          "test-live-boot.sh",
+          "test-live-build-compat.sh",
+          "test-live-config.sh",
+          "test-local-build.sh",
+          "test-measurement-tools.sh",
+          "test-packages.sh",
+          "test-qemu-script.sh"
+        ],
+        "shell_test_suites": 15
+      },
+      "timestamp_utc": "2026-11-26T16:11:01Z"
+    },
+    "duration_seconds": 0.006,
+    "ok": true
+  },
+  "summary": {
+    "boot_uptime_seconds": 1974.36,
+    "iso_size_mib": null,
+    "memory_used_after_reclaim_kb": 261852,
+    "memory_used_after_reclaim_mb": 255.7,
+    "package_count_lite_static": 221
+  }
+}
