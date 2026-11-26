@@ -877,5 +877,45 @@ class RealWaydroidIntegrationTests(unittest.TestCase):
         self.assertIn("running", status)
 
 
+class BackgroundWorkerSignalTests(unittest.TestCase):
+    """OperationComplete is declared (operation s, message s, success b).
+
+    Completion arguments must follow that order, or D-Bus marshalling fails
+    and clients never see the completion signal.
+    """
+
+    class _FakeService:
+        def __init__(self):
+            self.complete = []
+
+        def OperationProgress(self, *args):
+            pass
+
+        def OperationComplete(self, *args):
+            self.complete.append(args)
+
+    def _run_op(self, func):
+        from bright_android.core import android_service as svc
+        fake = self._FakeService()
+        with mock.patch.object(svc, "HAS_DBUS", True):
+            svc.BackgroundWorker(fake)._run(func, "init")
+        self.assertEqual(len(fake.complete), 1)
+        return fake.complete[0]
+
+    def test_success_arguments_match_declaration(self):
+        op, message, success = self._run_op(lambda progress_cb=None: None)
+        self.assertEqual(op, "init")
+        self.assertIsInstance(message, str)
+        self.assertIs(success, True)
+
+    def test_failure_arguments_match_declaration(self):
+        def boom(progress_cb=None):
+            raise RuntimeError("download failed")
+        op, message, success = self._run_op(boom)
+        self.assertEqual(op, "init")
+        self.assertEqual(message, "download failed")
+        self.assertIs(success, False)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

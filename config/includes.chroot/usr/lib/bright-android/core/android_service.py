@@ -391,12 +391,13 @@ class BackgroundWorker:
                     self.service.OperationProgress(op_name, msg)
             kwargs["progress_cb"] = progress
             func(*args, **kwargs)
+            # Arguments follow the declared signature (operation, message, success).
             if HAS_DBUS:
-                self.service.OperationComplete(op_name, True, "")
+                self.service.OperationComplete(op_name, "", True)
         except Exception as e:
             logger.error("[%s] failed: %s", op_name, e)
             if HAS_DBUS:
-                self.service.OperationComplete(op_name, False, str(e))
+                self.service.OperationComplete(op_name, str(e), False)
 
     def start(self, func, op_name: str, *args, **kwargs):
         with self._lock:
