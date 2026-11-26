@@ -38,7 +38,8 @@ class PermittedKeyTests(unittest.TestCase):
     def test_set_setting_writes_permitted_change(self):
         with mock.patch.object(cp, "ba_config") as cfg:
             cp.set_setting("developer/show_logs", "true")
-        cfg.set_value.assert_called_once_with("developer", "show_logs", "true")
+        # Writes go through the atomic batch path, as a one-entry batch.
+        cfg.set_values.assert_called_once_with([("developer", "show_logs", "true")])
 
 
 class RejectionTests(unittest.TestCase):
@@ -48,7 +49,7 @@ class RejectionTests(unittest.TestCase):
             with self.assertRaises(cp.ConfigPolicyError) as ctx:
                 cp.set_setting(path, value)
         self.assertIn(reason_part, str(ctx.exception))
-        cfg.set_value.assert_not_called()  # rejected changes never reach the writer
+        cfg.set_values.assert_not_called()  # rejected changes never reach the writer
 
     # --- unknown sections and keys --------------------------------------
     def test_unknown_section(self):
@@ -89,7 +90,7 @@ class RejectionTests(unittest.TestCase):
                 with mock.patch.object(cp, "ba_config") as cfg:
                     with self.assertRaises(cp.ConfigPolicyError):
                         cp.set_setting(path, "true")
-                cfg.set_value.assert_not_called()
+                cfg.set_values.assert_not_called()
 
     def test_names_must_be_lowercase_letters_and_underscores(self):
         for path in ("Developer/show_logs", "developer/SHOW_LOGS", "developer/show-logs",
@@ -99,7 +100,7 @@ class RejectionTests(unittest.TestCase):
                 with mock.patch.object(cp, "ba_config") as cfg:
                     with self.assertRaises(cp.ConfigPolicyError):
                         cp.set_setting(path, "true")
-                cfg.set_value.assert_not_called()
+                cfg.set_values.assert_not_called()
 
     def test_key_too_long(self):
         self.assertRejected("developer/" + "a" * 60, "true", "too long")
@@ -116,7 +117,7 @@ class RejectionTests(unittest.TestCase):
                 with mock.patch.object(cp, "ba_config") as cfg:
                     with self.assertRaises(cp.ConfigPolicyError):
                         cp.set_setting("developer/show_logs", bad)
-                cfg.set_value.assert_not_called()
+                cfg.set_values.assert_not_called()
 
     def test_value_too_long(self):
         self.assertRejected("developer/show_logs", "t" * 17, "too long")
@@ -125,7 +126,7 @@ class RejectionTests(unittest.TestCase):
         with mock.patch.object(cp, "ba_config") as cfg:
             with self.assertRaises(cp.ConfigPolicyError):
                 cp.set_setting(None, "true")
-        cfg.set_value.assert_not_called()
+        cfg.set_values.assert_not_called()
 
 
 class SetConfigWiringTests(unittest.TestCase):
