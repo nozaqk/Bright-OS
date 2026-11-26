@@ -58,6 +58,7 @@ from . import config as ba_config
 from . import waydroid_manager
 from . import compatibility
 from . import apk_validator
+from . import config_policy
 from . import launcher_integration
 
 
@@ -531,13 +532,15 @@ if HAS_DBUS:
                     "org.bright_os.BrightAndroid.NotAuthorized",
                     f"Cannot set config: {reason}"
                 )
-            if "/" not in key:
+            # Allowlist and value validation run after authorization, for every
+            # caller including root. See core/config_policy.py.
+            try:
+                config_policy.set_setting(key, value)
+            except config_policy.ConfigPolicyError as e:
                 raise dbus.exceptions.DBusException(
                     "org.bright_os.BrightAndroid.InvalidArgument",
-                    "Key must be in section/key format"
+                    f"Rejected config change: {e}"
                 )
-            section, k = key.split("/", 1)
-            ba_config.set_value(section, k, value)
 
         @method(INTERFACE, in_signature="", out_signature="aa{sv}", sender_keyword="sender")
         def ListApps(self, sender=None):
