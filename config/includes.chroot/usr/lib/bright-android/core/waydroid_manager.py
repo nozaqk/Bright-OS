@@ -551,6 +551,11 @@ def _app_name_from_package(pkg: str) -> str:
 @_require_waydroid
 def launch_app(package_name: str) -> bool:
     """Launch an Android application by package name."""
+    # Same rule as uninstall_app: a package name must be a Java-style identifier.
+    # Rejecting here stops a value such as "--help" from being parsed as an option.
+    import re
+    if not package_name or not re.match(r"^[a-zA-Z_][a-zA-Z0-9_.]*$", package_name):
+        raise WaydroidError(f"Invalid package name: {package_name!r}")
     if not is_running():
         raise WaydroidError(
             "Android runtime is not running. Start it first."

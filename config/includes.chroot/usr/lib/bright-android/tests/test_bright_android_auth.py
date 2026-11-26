@@ -1349,5 +1349,27 @@ class RootAuditTests(unittest.TestCase):
         info.assert_not_called()
 
 
+class LaunchPackageValidationTests(unittest.TestCase):
+    """LaunchApp must validate the package name before it reaches waydroid."""
+
+    def test_option_like_and_malformed_names_are_rejected_before_run(self):
+        from bright_android.core import waydroid_manager as wm
+        bad = ["--help", "-x", "", "com.example app", "a;rm -rf /", "1starts.with.digit",
+               "com/evil", "../../etc"]
+        with mock.patch.object(wm, "_run") as run, mock.patch.object(wm, "is_running", return_value=True):
+            for name in bad:
+                with self.assertRaises(wm.WaydroidError, msg=repr(name)):
+                    wm.launch_app(name)
+            run.assert_not_called()
+
+    def test_valid_name_passes_validation(self):
+        from bright_android.core import waydroid_manager as wm
+        with mock.patch.object(wm, "_run", return_value=(0, "", "")) as run, \
+             mock.patch.object(wm, "is_running", return_value=True), \
+             mock.patch.object(wm, "is_installed", return_value=True):
+            wm.launch_app("org.fdroid.fdroid")
+        run.assert_called()
+
+
 if __name__ == "__main__":
     unittest.main()
