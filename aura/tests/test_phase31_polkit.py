@@ -24,7 +24,12 @@ import aura.core.aura_core_service as svc_mod
 
 
 class FakeBus:
-    """Minimal stand-in for dbus.SystemBus() that returns configured PID/UID."""
+    """Minimal stand-in for dbus.SystemBus() that returns configured PID/UID.
+
+    Uses the CORRECT dbus-python method names:
+      - get_connection_unix_process_id
+      - get_connection_unix_user
+    """
 
     def __init__(self, pid, uid, raise_on_pid=None, raise_on_uid=None):
         self._pid = pid
@@ -37,7 +42,7 @@ class FakeBus:
             raise self._raise_on_pid
         return self._pid
 
-    def get_unix_user(self, sender):
+    def get_connection_unix_user(self, sender):
         if self._raise_on_uid is not None:
             raise self._raise_on_uid
         return self._uid
@@ -119,11 +124,21 @@ class CheckPolkitUnitTests(unittest.TestCase):
         svc_mod.Polkit = fake_polkit
         return self._fake_authority
 
-    def test_headless_without_bus_allows(self):
-        """When called without a bus (headless mode), allow."""
+    def test_missing_bus_denies_when_has_dbus(self):
+        """Phase 5: When HAS_DBUS=True (production) but bus is None, DENY to
+        prevent accidental in-process bypass. Production dbus-python always
+        passes bus=self._bus for dispatched methods."""
         svc_mod.HAS_DBUS = True
         ok, reason = svc_mod._check_polkit(":1.0", "some.action", bus=None)
-        self.assertTrue(ok)
+        self.assertFalse(ok, f"expected denial, got: {reason}")
+        self.assertIn("no bus provided", reason)
+
+    def test_headless_without_dbus_allows(self):
+        """When HAS_DBUS=False (dbus-python not importable, true headless),
+        allow — there is no D-Bus attack surface."""
+        svc_mod.HAS_DBUS = False
+        ok, reason = svc_mod._check_polkit(":1.0", "some.action", bus=None)
+        self.assertTrue(ok, f"expected in-process allow when HAS_DBUS=False: {reason}")
 
     def test_no_sender_fails_closed(self):
         """Sender=None must be denied."""
@@ -212,7 +227,7 @@ class CheckPolkitUnitTests(unittest.TestCase):
         bus = FakeBus(pid=2345, uid=1000)
         ok, reason = svc_mod._check_polkit(":1.42", "some.action", bus=bus)
         self.assertFalse(ok)
-        self.assertIn("only root", reason)
+        self.assertIn("Polkit is unavailable", reason)
 
     def test_polkit_exception_fails_closed(self):
         """If Polkit.Authority.get_sync() or check_authorization_sync raises,
@@ -231,7 +246,7 @@ class CheckPolkitUnitTests(unittest.TestCase):
         bus = FakeBus(pid=2345, uid=1000)
         ok, reason = svc_mod._check_polkit(":1.42", "some.action", bus=bus)
         self.assertFalse(ok)
-        self.assertIn("polkit error", reason)
+        self.assertIn("authorization check failed", reason)
 
     def test_get_sync_failure_fails_closed(self):
         """An error from get_sync (for example, polkitd not reachable) denies."""
@@ -248,12 +263,163 @@ class CheckPolkitUnitTests(unittest.TestCase):
         bus = FakeBus(pid=2345, uid=1000)
         ok, reason = svc_mod._check_polkit(":1.42", "some.action", bus=bus)
         self.assertFalse(ok)
-        self.assertIn("polkit error", reason)
+        self.assertIn("authority unavailable", reason)
 
     def test_source_uses_get_sync_not_deprecated_get(self):
         source = (PROJECT_ROOT / "aura/core/aura_core_service.py").read_text()
         self.assertIn("Polkit.Authority.get_sync(", source)
         self.assertNotRegex(source, r"Polkit\.Authority\.get\(\s*\)")
+
+    # ---- Phase 5: required authorization test cases ----
+
+    def test_missing_sender_denies(self):
+        """(Test 2) Missing sender identity → DENY."""
+        svc_mod.HAS_DBUS = True
+        svc_mod.HAS_POLKIT = True
+        bus = FakeBus(pid=2345, uid=1000)
+        ok, reason = svc_mod._check_polkit(None, "some.action", bus=bus)
+        self.assertFalse(ok, f"expected denial: {reason}")
+        self.assertIn("no sender", reason)
+
+    def test_invalid_credentials_bad_pid_range(self):
+        """(Test 3 variant) Non-positive PID → DENY."""
+        svc_mod.HAS_DBUS = True
+        svc_mod.HAS_POLKIT = True
+        bus = FakeBus(pid=0, uid=1000)
+        ok, reason = svc_mod._check_polkit(":1.42", "some.action", bus=bus)
+        self.assertFalse(ok)
+        self.assertIn("invalid caller pid", reason)
+
+    def test_invalid_credentials_negative_uid(self):
+        """(Test 3 variant) Negative UID → DENY."""
+        svc_mod.HAS_DBUS = True
+        svc_mod.HAS_POLKIT = True
+        bus = FakeBus(pid=2345, uid=-1)
+        ok, reason = svc_mod._check_polkit(":1.42", "some.action", bus=bus)
+        self.assertFalse(ok)
+        self.assertIn("invalid caller uid", reason)
+
+    def test_authorization_denial_not_authorized(self):
+        """(Test 5) Polkit says !authorized && !challenge → DENY."""
+        svc_mod.HAS_DBUS = True
+        svc_mod.HAS_POLKIT = True
+
+        class DeniedResult:
+            def get_is_authorized(self): return False
+            def get_is_challenge(self): return False
+        class FakeAuthority:
+            def check_authorization_sync(self, *a, **k): return DeniedResult()
+        svc_mod.Polkit = types.SimpleNamespace(
+            Authority=types.SimpleNamespace(get_sync=lambda cancellable: FakeAuthority()),
+            UnixProcess=types.SimpleNamespace(new=lambda pid: mock.MagicMock()),
+            CheckAuthorizationFlags=types.SimpleNamespace(ALLOW_USER_INTERACTION=1),
+        )
+        bus = FakeBus(pid=2345, uid=1000)
+        ok, reason = svc_mod._check_polkit(":1.42", "some.action", bus=bus)
+        self.assertFalse(ok)
+        self.assertEqual(reason, "not authorized")
+
+    def test_authorization_challenge_denies(self):
+        """(Test 5b) Polkit says is_challenge=True (e.g. requires
+        interactive auth) → DENY (no auth-agent is available in
+        service context)."""
+        svc_mod.HAS_DBUS = True
+        svc_mod.HAS_POLKIT = True
+
+        class ChallengeResult:
+            def get_is_authorized(self): return False
+            def get_is_challenge(self): return True
+        class FakeAuthority:
+            def check_authorization_sync(self, *a, **k): return ChallengeResult()
+        svc_mod.Polkit = types.SimpleNamespace(
+            Authority=types.SimpleNamespace(get_sync=lambda cancellable: FakeAuthority()),
+            UnixProcess=types.SimpleNamespace(new=lambda pid: mock.MagicMock()),
+            CheckAuthorizationFlags=types.SimpleNamespace(ALLOW_USER_INTERACTION=1),
+        )
+        bus = FakeBus(pid=2345, uid=1000)
+        ok, reason = svc_mod._check_polkit(":1.42", "some.action", bus=bus)
+        self.assertFalse(ok)
+        self.assertIn("authentication required", reason)
+
+    def test_authorization_timeout_or_exception_denies(self):
+        """(Test 6) Polkit raises an exception (timeout, DBus disconnect,
+        etc.) → DENY (fail closed; never treat an error as authorization)."""
+        svc_mod.HAS_DBUS = True
+        svc_mod.HAS_POLKIT = True
+
+        def raiser(*a, **k):
+            raise RuntimeError("authorization timeout / polkitd unresponsive")
+        class FakeAuthority:
+            def check_authorization_sync(self, *a, **k):
+                raiser()
+        svc_mod.Polkit = types.SimpleNamespace(
+            Authority=types.SimpleNamespace(get_sync=lambda cancellable: FakeAuthority()),
+            UnixProcess=types.SimpleNamespace(new=lambda pid: mock.MagicMock()),
+            CheckAuthorizationFlags=types.SimpleNamespace(ALLOW_USER_INTERACTION=1),
+        )
+        bus = FakeBus(pid=2345, uid=1000)
+        ok, reason = svc_mod._check_polkit(":1.42", "some.action", bus=bus)
+        self.assertFalse(ok)
+        self.assertIn("authorization check failed", reason)
+
+    def test_authorization_success(self):
+        """(Test 7) Polkit explicitly authorizes → ALLOW with reason
+        noting success."""
+        svc_mod.HAS_DBUS = True
+        svc_mod.HAS_POLKIT = True
+
+        class AllowResult:
+            def get_is_authorized(self): return True
+            def get_is_challenge(self): return False
+        class FakeAuthority:
+            def check_authorization_sync(self, *a, **k): return AllowResult()
+        svc_mod.Polkit = types.SimpleNamespace(
+            Authority=types.SimpleNamespace(get_sync=lambda cancellable: FakeAuthority()),
+            UnixProcess=types.SimpleNamespace(new=lambda pid: mock.MagicMock()),
+            CheckAuthorizationFlags=types.SimpleNamespace(ALLOW_USER_INTERACTION=1),
+        )
+        bus = FakeBus(pid=2345, uid=1000)
+        ok, reason = svc_mod._check_polkit(":1.42", "some.action", bus=bus)
+        self.assertTrue(ok, f"expected allow, got: {reason}")
+        self.assertIn("authorized", reason)
+
+    def test_root_authorized_with_valid_credentials(self):
+        """(Test 8) Root (UID 0) with valid PID/UID/sender → ALLOW even
+        without Polkit being available."""
+        svc_mod.HAS_DBUS = True
+        svc_mod.HAS_POLKIT = False
+        bus = FakeBus(pid=1, uid=0)
+        ok, reason = svc_mod._check_polkit(":1.1", "some.action", bus=bus)
+        self.assertTrue(ok, f"expected root to be authorized: {reason}")
+        self.assertIn("root", reason)
+
+    def test_non_root_denied_when_polkit_unavailable(self):
+        """(Test 4) Polkit is not importable AND caller is non-root →
+        DENY (no fallback to same-user or UID 0 check)."""
+        svc_mod.HAS_DBUS = True
+        svc_mod.HAS_POLKIT = False
+        bus = FakeBus(pid=2345, uid=1000)
+        ok, reason = svc_mod._check_polkit(":1.42", "some.action", bus=bus)
+        self.assertFalse(ok)
+        self.assertIn("Polkit is unavailable", reason)
+
+    def test_polkit_authority_init_failure_denies(self):
+        """(Test 4b) Polkit module is importable but getting the authority
+        fails (e.g. no polkitd) → DENY (not fail open)."""
+        svc_mod.HAS_DBUS = True
+        svc_mod.HAS_POLKIT = True
+
+        def authority_raises(cancellable):
+            raise RuntimeError("Could not connect to polkitd")
+        svc_mod.Polkit = types.SimpleNamespace(
+            Authority=types.SimpleNamespace(get_sync=authority_raises),
+            UnixProcess=types.SimpleNamespace(new=lambda pid: mock.MagicMock()),
+            CheckAuthorizationFlags=types.SimpleNamespace(ALLOW_USER_INTERACTION=1),
+        )
+        bus = FakeBus(pid=2345, uid=1000)
+        ok, reason = svc_mod._check_polkit(":1.42", "some.action", bus=bus)
+        self.assertFalse(ok)
+        self.assertIn("authority unavailable", reason)
 
 
 class PolkitPolicyFileTests(unittest.TestCase):
