@@ -235,7 +235,26 @@ class HomePage(QWidget):
         self.refresh_timer.start(10000)
 
         self._refresh_worker = None
+        self.worker = None
+        self._closed = False
         self.refresh_status()
+
+    def cleanup(self):
+        """Stop timers and wait for in-flight workers. Called by the main
+        window's closeEvent so closing the window during a refresh or
+        install does not leave threads running or deliver signals to
+        destroyed widgets."""
+        self._closed = True
+        if hasattr(self, "refresh_timer"):
+            self.refresh_timer.stop()
+        for attr in ("_refresh_worker", "worker"):
+            w = getattr(self, attr, None)
+            if w is not None and isinstance(w, QThread) and w.isRunning():
+                w.quit()
+                if not w.wait(2000):  # 2s grace period; matches QThread docs
+                    w.terminate()
+                    w.wait(1000)
+            setattr(self, attr, None)
 
     def _detect_edition(self) -> str:
         try:
@@ -263,6 +282,11 @@ class HomePage(QWidget):
 
     def _apply_status(self, data):
         """Apply results of the async status refresh."""
+        # If the page/window was closed while the worker was running, bail
+        # out without touching widgets (they may already be destroyed).
+        if self._closed:
+            self._refresh_worker = None
+            return
         compat = data.get("compat", {})
         runtime = data.get("runtime", {})
         apps = data.get("apps", [])
@@ -371,6 +395,8 @@ class HomePage(QWidget):
         self._refresh_worker = None
 
     def _run_worker(self, func, *args, op_name="Operation", **kwargs):
+        if self._closed:
+            return
         self.progress_bar.setVisible(True)
         self.progress_label.setVisible(True)
         self.progress_label.setText(f"{op_name}...")
@@ -382,6 +408,9 @@ class HomePage(QWidget):
         self.worker.start()
 
     def _on_worker_done(self, success, error):
+        if self._closed:
+            self.worker = None
+            return
         self.progress_bar.setVisible(False)
         self.progress_label.setVisible(False)
         self.setEnabled(True)
@@ -469,9 +498,25 @@ class ApplicationsPage(QWidget):
         self.layout.addStretch()
 
         self._apps_refresh_worker = None
+        self.worker = None
+        self._closed = False
+
+    def cleanup(self):
+        """Stop any in-flight app-list or install worker."""
+        self._closed = True
+        for attr in ("_apps_refresh_worker", "worker"):
+            w = getattr(self, attr, None)
+            if w is not None and isinstance(w, QThread) and w.isRunning():
+                w.quit()
+                if not w.wait(2000):
+                    w.terminate()
+                    w.wait(1000)
+            setattr(self, attr, None)
 
     def refresh_apps(self):
         """Refresh the app list (uses a short spinner to avoid freezing)."""
+        if self._closed:
+            return
         self.apps_placeholder.setText("Loading applications...")
         if not hasattr(self, "_apps_refresh_worker") or self._apps_refresh_worker is None:
             self._apps_refresh_worker = AppListWorker()
@@ -480,6 +525,8 @@ class ApplicationsPage(QWidget):
 
     def _apply_app_list(self, running, apps, error):
         self._apps_refresh_worker = None
+        if self._closed:
+            return
         if error:
             self.apps_placeholder.setText(f"Error: {error}")
             return
@@ -601,6 +648,9 @@ class ApplicationsPage(QWidget):
         self._do_install_apk(path)
 
     def _on_start_then_install(self, ok, err, apk_path):
+        if self._closed:
+            self.worker = None
+            return
         if not ok:
             self.progress_bar.setVisible(False)
             self.setEnabled(True)
@@ -609,6 +659,8 @@ class ApplicationsPage(QWidget):
         self._do_install_apk(apk_path)
 
     def _do_install_apk(self, path):
+        if self._closed:
+            return
         from bright_android.core.service_client import BrightAndroidClient
         self.progress_bar.setVisible(True)
         self.progress_bar.setRange(0, 0)
@@ -619,6 +671,9 @@ class ApplicationsPage(QWidget):
         self.worker.start()
 
     def _on_install_done(self, success, error):
+        if self._closed:
+            self.worker = None
+            return
         self.progress_bar.setVisible(False)
         self.setEnabled(True)
         if success:
@@ -765,6 +820,10 @@ class SettingsPage(QWidget):
 
         self.load_settings()
 
+        self.save_worker = None
+        self.restart_worker = None
+        self._closed = False
+
     def load_settings(self):
         from bright_android.core import config as ba_config
         self.auto_start_cb.setChecked(ba_config.get_bool("runtime", "auto_start", False))
@@ -779,6 +838,18 @@ class SettingsPage(QWidget):
         self.adb_cb.setChecked(ba_config.get_bool("developer", "adb_enabled", False))
         self.show_logs_cb.setChecked(ba_config.get_bool("developer", "show_logs", False))
         self.nogpu_cb.setChecked(ba_config.get_bool("developer", "nogpu_mode", False))
+
+    def cleanup(self):
+        """Wait for in-flight settings/restart workers before destruction."""
+        self._closed = True
+        for attr in ("save_worker", "restart_worker"):
+            w = getattr(self, attr, None)
+            if w is not None and isinstance(w, QThread) and w.isRunning():
+                w.quit()
+                if not w.wait(2000):
+                    w.terminate()
+                    w.wait(1000)
+            setattr(self, attr, None)
 
     def _setting_checkboxes(self):
         """(section, key, checkbox) for every setting this page controls."""
@@ -798,6 +869,8 @@ class SettingsPage(QWidget):
         ]
 
     def save_settings(self):
+        if self._closed:
+            return
         from bright_android.core import config as ba_config
         # Send only changed values. Each SetConfig call is authorized by the
         # service, and a change may require an admin prompt.
@@ -831,12 +904,17 @@ class SettingsPage(QWidget):
             done += 1
 
     def _on_settings_saved(self, success, error):
+        if self._closed:
+            self.save_worker = None
+            return
         if success:
             QMessageBox.information(self, "Settings Saved", "Android settings have been saved.")
         else:
             QMessageBox.critical(self, "Settings Not Saved", error)
 
     def restart_runtime(self):
+        if self._closed:
+            return
         reply = QMessageBox.question(
             self, "Restart Android", "Restart the Android runtime?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -857,6 +935,9 @@ class SettingsPage(QWidget):
         self.restart_worker.start()
 
     def _on_restart_done(self, success, error):
+        if self._closed:
+            self.restart_worker = None
+            return
         if success:
             QMessageBox.information(self, "Restarted", "Android runtime restarted.")
         else:
@@ -1084,6 +1165,25 @@ class BrightAndroidWindow(QMainWindow):
 
         h.addWidget(self.nav)
         h.addWidget(self.stack, 1)
+
+    def closeEvent(self, event):
+        """Wait for background workers on every page before allowing the
+        window to close. This prevents the 'QThread: Destroyed while thread
+        is still running' warning and avoids delivering signals to
+        partially-destroyed widgets. Closing during a refresh or APK
+        install does not crash and does not abort the app process."""
+        # Stop any auto-refresh timers and join workers. Iterate the stack
+        # widgets (they are QScrollAreas whose .widget() is the page).
+        for i in range(self.stack.count()):
+            scroll = self.stack.widget(i)
+            page = scroll.widget() if hasattr(scroll, "widget") else scroll
+            if page is not None and hasattr(page, "cleanup"):
+                try:
+                    page.cleanup()
+                except Exception as e:
+                    # Never prevent close because of cleanup errors.
+                    print(f"cleanup error on {type(page).__name__}: {e}", file=sys.stderr)
+        super().closeEvent(event)
 
 
 def main():

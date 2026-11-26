@@ -160,5 +160,111 @@ class GuiCopyTests(unittest.TestCase):
         self.assertEqual(packaged.read_bytes(), GUI_PATH.read_bytes())
 
 
+class WorkerLifecycleTests(unittest.TestCase):
+    """Phase 5 Priority 4: GUI worker lifecycle hardening.
+
+    These AST-based tests verify that:
+      - Each page class that creates workers defines a cleanup() method
+        that stops the timer and joins workers with quit()/wait().
+      - Each async signal-handler (_apply_status, _apply_app_list,
+        _on_worker_done, _on_install_done, _on_settings_saved,
+        _on_restart_done) checks self._closed early to avoid touching
+        widgets after closeEvent has begun tearing the page down.
+      - BrightAndroidWindow defines closeEvent and calls cleanup() on
+        each page.
+
+    Runtime tests (actually opening the window, starting a refresh and
+    closing it mid-flight) require a PyQt6 + X11/Wayland environment and
+    are therefore NOT exercised here; they would be manual / CI tests
+    on a provisioned machine. We deliberately DO NOT claim the race is
+    proven absent — these static checks plus the cleanup/closed-guard
+    pattern are the mitigation.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tree = _gui_tree()
+        cls.source = GUI_PATH.read_text()
+        # Map class name -> ClassDef node
+        cls.classes = {node.name: node for node in ast.walk(cls.tree)
+                       if isinstance(node, ast.ClassDef)}
+
+    def _methods_of(self, class_name):
+        return {node.name: node for node in self.classes[class_name].body
+                if isinstance(node, ast.FunctionDef)}
+
+    def test_homepage_has_cleanup(self):
+        methods = self._methods_of("HomePage")
+        self.assertIn("cleanup", methods)
+        # cleanup must reference both self.refresh_timer and the workers.
+        src = ast.get_source_segment(self.source, methods["cleanup"])
+        self.assertIn("refresh_timer", src)
+        self.assertIn("_refresh_worker", src)
+        self.assertIn("wait(", src)
+
+    def test_applicationspage_has_cleanup(self):
+        methods = self._methods_of("ApplicationsPage")
+        self.assertIn("cleanup", methods)
+        src = ast.get_source_segment(self.source, methods["cleanup"])
+        self.assertIn("_apps_refresh_worker", src)
+        self.assertIn("wait(", src)
+
+    def test_settingspage_has_cleanup(self):
+        methods = self._methods_of("SettingsPage")
+        self.assertIn("cleanup", methods)
+        src = ast.get_source_segment(self.source, methods["cleanup"])
+        self.assertIn("save_worker", src)
+        self.assertIn("restart_worker", src)
+        self.assertIn("wait(", src)
+
+    def test_main_window_has_closeevent_calling_cleanup(self):
+        methods = self._methods_of("BrightAndroidWindow")
+        self.assertIn("closeEvent", methods)
+        src = ast.get_source_segment(self.source, methods["closeEvent"])
+        self.assertIn("cleanup", src)
+
+    def _handler_has_closed_guard(self, class_name, method_name):
+        methods = self._methods_of(class_name)
+        self.assertIn(method_name, methods,
+                      f"{class_name}.{method_name} missing")
+        src = ast.get_source_segment(self.source, methods[method_name])
+        self.assertRegex(
+            src, r"self\._closed\s*:",
+            f"{class_name}.{method_name} does not check self._closed early")
+
+    def test_apply_status_guards_against_closed(self):
+        self._handler_has_closed_guard("HomePage", "_apply_status")
+
+    def test_on_worker_done_guards_against_closed(self):
+        self._handler_has_closed_guard("HomePage", "_on_worker_done")
+
+    def test_apply_app_list_guards_against_closed(self):
+        self._handler_has_closed_guard("ApplicationsPage", "_apply_app_list")
+
+    def test_on_install_done_guards_against_closed(self):
+        self._handler_has_closed_guard("ApplicationsPage", "_on_install_done")
+
+    def test_on_settings_saved_guards_against_closed(self):
+        self._handler_has_closed_guard("SettingsPage", "_on_settings_saved")
+
+    def test_on_restart_done_guards_against_closed(self):
+        self._handler_has_closed_guard("SettingsPage", "_on_restart_done")
+
+    def test_homepage_initializes_closed_flag(self):
+        init_src = ast.get_source_segment(
+            self.source, self._methods_of("HomePage")["__init__"])
+        self.assertIn("_closed", init_src)
+
+    def test_applicationspage_initializes_closed_flag(self):
+        init_src = ast.get_source_segment(
+            self.source, self._methods_of("ApplicationsPage")["__init__"])
+        self.assertIn("_closed", init_src)
+
+    def test_settingspage_initializes_closed_flag(self):
+        init_src = ast.get_source_segment(
+            self.source, self._methods_of("SettingsPage")["__init__"])
+        self.assertIn("_closed", init_src)
+
+
 if __name__ == "__main__":
     unittest.main()
