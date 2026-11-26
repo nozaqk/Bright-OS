@@ -22,11 +22,14 @@ This document describes how to build bootable Bright OS ISO images from source.
 - **INSTALLED SYSTEM BOOT TESTED** — Installed system reboots to login and desktop
 - **HARDWARE TESTED** — Booted and used on real hardware
 
-> **Important:** The build configuration is statically validated (**916 automated tests pass, 0 failures**),
-> but no ISO has been built in the Arena sandbox due to restricted network access
-> (Debian package mirrors are not reachable from the build sandbox).
-> To produce a genuine ISO, follow the instructions below on a Debian machine with
-> normal internet access.
+> **Important:** The build configuration is statically validated (all automated
+> tests pass locally; see the CI workflow). ISOs are now built automatically by
+> GitHub Actions on every push to an implementation branch and on every pull
+> request — see **[ISO-BUILD.md](ISO-BUILD.md)** for how to trigger, download and
+> verify builds, and how to create draft releases.
+>
+> Local building on your own Debian machine is still supported (instructions
+> below) for development, debugging and faster iteration.
 
 ## Quick Start (First ISO Build)
 
