@@ -412,10 +412,13 @@ if [ -d "${BA_SRC_DIR}" ]; then
     chmod +x config/includes.chroot/usr/bin/bright-android 2>/dev/null || true
 fi
 
-# --- Copy Bright Android GUI application ---
-if [ -f "${PROJECT_ROOT}/applications/bright-android/bright-android" ]; then
+# --- Bright Android GUI entry point ---
+# Use the maintained package module (bright_android/gui.py) as the single source.
+# applications/bright-android/bright-android is an older copy with a known bug
+# (the "if False" runtime status check) and must not be shipped.
+if [ -f "${BA_SRC_DIR}/gui.py" ]; then
     mkdir -p "${BA_DEST_DIR}"
-    cp "${PROJECT_ROOT}/applications/bright-android/bright-android" "${BA_DEST_DIR}/bright-android-gui.py"
+    cp "${BA_SRC_DIR}/gui.py" "${BA_DEST_DIR}/bright-android-gui.py"
     chmod 0644 "${BA_DEST_DIR}/bright-android-gui.py"
 fi
 if [ -f "${PROJECT_ROOT}/applications/bright-android/bright-android.desktop" ]; then

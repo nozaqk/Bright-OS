@@ -98,24 +98,17 @@ EOF
 
 # Sysctl security hardening is provided by includes.chroot/etc/sysctl.d/99-bright-os-sysctl.conf
 
-# NetworkManager config
-mkdir -p /etc/NetworkManager/conf.d
-cat > /etc/NetworkManager/conf.d/99-bright-os.conf << 'EOF'
-[main]
-dns=default
-plugins=keyfile
-[connectivity]
-uri=http://network-test.debian.org/nm
-interval=300
-enabled=true
-EOF
+# NetworkManager config: provided by includes.chroot/etc/NetworkManager/conf.d/99-bright-os-network.conf
 
 # Enable services
 systemctl enable NetworkManager.service 2>/dev/null || true
 systemctl enable sddm.service 2>/dev/null || true
 systemctl enable firewalld.service 2>/dev/null || true
-systemctl enable bluetooth.service 2>/dev/null || true
-systemctl enable cups.service 2>/dev/null || true
+if [ "$BRIGHT_EDITION" != "lite" ]; then
+    # Lite masks these units in build.sh; enabling them would fight that choice
+    systemctl enable bluetooth.service 2>/dev/null || true
+    systemctl enable cups.service 2>/dev/null || true
+fi
 systemctl enable udisks2.service 2>/dev/null || true
 systemctl enable bright-os-firstboot.service 2>/dev/null || true
 systemctl set-default graphical.target 2>/dev/null || true
@@ -130,7 +123,6 @@ fi
 if [ -d /usr/share/bright-os/installer ]; then
     cp -f /usr/share/bright-os/installer/settings.conf /etc/calamares/settings.conf 2>/dev/null || true
     cp -f /usr/share/bright-os/installer/modules/*.conf /etc/calamares/modules/ 2>/dev/null || true
-    cp -f /usr/share/bright-os/installer/postcfg.sh /usr/share/bright-os/installer/postcfg.sh 2>/dev/null || true
     chmod +x /usr/share/bright-os/installer/postcfg.sh 2>/dev/null || true
     if [ -d /usr/share/bright-os/installer/branding ]; then
         cp -rf /usr/share/bright-os/installer/branding/* /etc/calamares/branding/ 2>/dev/null || true
