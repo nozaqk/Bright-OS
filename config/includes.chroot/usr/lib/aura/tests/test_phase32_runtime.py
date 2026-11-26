@@ -214,6 +214,12 @@ class SystemdUnitTests(unittest.TestCase):
     def test_syslog_identifier(self):
         self.assertIn("SyslogIdentifier=aura-core", self.content)
 
+    def test_start_limit_is_in_unit_section(self):
+        # systemd reads StartLimit* only from [Unit]; in [Service] it is ignored.
+        unit_sec = self.content.split("[Service]")[0]
+        self.assertIn("StartLimitIntervalSec=60", unit_sec)
+        self.assertIn("StartLimitBurst=5", unit_sec)
+
     def test_install_not_wanted_at_boot(self):
         # AURA must start only on request, never automatically at boot.
         self.assertNotRegex(self.content, r"(?m)^WantedBy=",
