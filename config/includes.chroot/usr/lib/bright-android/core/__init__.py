@@ -1,0 +1,1 @@
+"""Bright Android core package."""

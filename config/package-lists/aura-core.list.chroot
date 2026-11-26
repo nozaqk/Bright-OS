@@ -7,7 +7,11 @@
 # =============================================================================
 
 # --- Python 3 runtime (for the AURA service) ---
-# python3, python3-dbus, python3-gi, python3-yaml, python3-pip come from core.list.chroot
+python3
+python3-dbus
+python3-gi
+python3-yaml
+python3-pip
 python3-setuptools
 python3-psutil
 
@@ -19,7 +23,10 @@ python3-psutil
 # llama.cpp
 
 # --- D-Bus and systemd (required for service activation) ---
-# dbus, systemd, policykit-1, policykit-1-gnome come from core.list.chroot
+dbus
+systemd
+policykit-1
+policykit-1-gnome
 gir1.2-polkit-1.0
 
 # --- Security monitoring prerequisites ---
