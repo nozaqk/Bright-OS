@@ -75,7 +75,53 @@ def validate_setting(path: str, value: str) -> tuple:
     return section, key, value
 
 
+MAX_BATCH = 32  # more settings than the allowlist holds; a larger request is malformed
+
+
+def validate_settings(pairs) -> list:
+    """Validate a whole batch of (path, value) pairs.
+
+    Returns the validated (section, key, value) list. Raises ConfigPolicyError
+    naming the first invalid entry. The batch is all or nothing: callers write
+    nothing unless this returns.
+    """
+    try:
+        items = list(pairs)
+    except TypeError:
+        raise ConfigPolicyError("settings must be a list of (key, value) pairs")
+    if not items:
+        raise ConfigPolicyError("no settings given")
+    if len(items) > MAX_BATCH:
+        raise ConfigPolicyError(f"too many settings in one request (max {MAX_BATCH})")
+    validated = []
+    seen = set()
+    for index, item in enumerate(items, start=1):
+        try:
+            path, value = item
+        except (TypeError, ValueError):
+            raise ConfigPolicyError(f"setting {index} must be a (key, value) pair")
+        try:
+            section, key, value = validate_setting(path, value)
+        except ConfigPolicyError as e:
+            raise ConfigPolicyError(f"setting {index}: {e}") from e
+        if (section, key) in seen:
+            raise ConfigPolicyError(f"setting {index}: {section}/{key} appears twice")
+        seen.add((section, key))
+        validated.append((section, key, value))
+    return validated
+
+
+def set_settings(pairs) -> int:
+    """Validate a batch and write it in one atomic step. Returns the count written.
+
+    Nothing is written if any entry is invalid, and the file is replaced
+    atomically, so a failed write leaves the previous configuration in place.
+    """
+    validated = validate_settings(pairs)
+    ba_config.set_values(validated)
+    return len(validated)
+
+
 def set_setting(path: str, value: str) -> None:
-    """Validate a change and write it. Nothing is written if validation fails."""
-    section, key, value = validate_setting(path, value)
-    ba_config.set_value(section, key, value)
+    """Validate and write one change. Nothing is written if validation fails."""
+    set_settings([(path, value)])

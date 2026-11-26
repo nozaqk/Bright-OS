@@ -56,13 +56,13 @@ class AuthorizationTests(unittest.TestCase):
     def _make_bus(self, pid=12345, uid=None, pid_raises=None, uid_raises=None):
         bus = mock.MagicMock()
         if pid_raises is not None:
-            bus.get_connection_unix_process_id.side_effect = pid_raises
+            bus.get_object.return_value.GetConnectionUnixProcessID.side_effect = pid_raises
         else:
-            bus.get_connection_unix_process_id.return_value = pid
+            bus.get_object.return_value.GetConnectionUnixProcessID.return_value = pid
         if uid_raises is not None:
-            bus.get_connection_unix_user.side_effect = uid_raises
+            bus.get_object.return_value.GetConnectionUnixUser.side_effect = uid_raises
         else:
-            bus.get_connection_unix_user.return_value = (
+            bus.get_object.return_value.GetConnectionUnixUser.return_value = (
                 uid if uid is not None else TEST_SERVICE_UID
             )
         return bus
@@ -436,17 +436,15 @@ class SecurityRegressionTests(unittest.TestCase):
                 "must deny when bus is real"
             )
 
-    def test_credentials_lookup_uses_correct_dbus_api(self):
-        """Must use get_connection_unix_process_id and
-        get_connection_unix_user — the CORRECT dbus-python API. The old names
-        (get_unix_process_id / get_unix_user_id) were bugs that raised
-        AttributeError and fell through to the implicit-trust bypass."""
-        self.assertIn("get_connection_unix_process_id", self.source)
-        self.assertIn("get_connection_unix_user", self.source)
-        self.assertNotIn("get_unix_process_id(", self.source,
-                         "Old/wrong dbus method name (missing 'connection_')")
-        self.assertNotIn("get_unix_user_id(", self.source,
-                         "Old/wrong dbus method name (should be get_connection_unix_user)")
+    def test_credentials_lookup_uses_bus_daemon_api(self):
+        """Caller PID and UID must come from the bus daemon. The per-bus methods
+        named get_connection_unix_process_id / get_connection_unix_user do not
+        exist in dbus-python; a live bus rejected every call with AttributeError.
+        """
+        self.assertIn("GetConnectionUnixProcessID", self.source)
+        self.assertIn("GetConnectionUnixUser", self.source)
+        self.assertNotIn("bus.get_connection_unix_process_id(", self.source)
+        self.assertNotIn("bus.get_connection_unix_user(", self.source)
 
     def test_all_dbus_methods_call_check_authorization(self):
         """Every D-Bus method in the HAS_DBUS class must call
@@ -1069,8 +1067,8 @@ class PolkitResponseTests(unittest.TestCase):
 
     def _check(self, action=None):
         bus = mock.MagicMock()
-        bus.get_connection_unix_process_id.return_value = 4242
-        bus.get_connection_unix_user.return_value = TEST_SERVICE_UID
+        bus.get_object.return_value.GetConnectionUnixProcessID.return_value = 4242
+        bus.get_object.return_value.GetConnectionUnixUser.return_value = TEST_SERVICE_UID
         return svc._check_authorization(
             ":1.77", action or svc.POLKIT_ACTION_INIT, bus=bus
         )
@@ -1203,13 +1201,13 @@ class FailClosedTests(unittest.TestCase):
              pid_exc=None, uid_exc=None):
         bus = mock.MagicMock()
         if pid_exc is not None:
-            bus.get_connection_unix_process_id.side_effect = pid_exc
+            bus.get_object.return_value.GetConnectionUnixProcessID.side_effect = pid_exc
         else:
-            bus.get_connection_unix_process_id.return_value = pid if pid_v is None else pid_v
+            bus.get_object.return_value.GetConnectionUnixProcessID.return_value = pid if pid_v is None else pid_v
         if uid_exc is not None:
-            bus.get_connection_unix_user.side_effect = uid_exc
+            bus.get_object.return_value.GetConnectionUnixUser.side_effect = uid_exc
         else:
-            bus.get_connection_unix_user.return_value = uid if uid_v is None else uid_v
+            bus.get_object.return_value.GetConnectionUnixUser.return_value = uid if uid_v is None else uid_v
         return bus
 
     def _assert_denied(self, ok, reason, msg=""):
@@ -1344,8 +1342,8 @@ class RootAuditTests(unittest.TestCase):
 
     def _root_bus(self):
         bus = mock.MagicMock()
-        bus.get_connection_unix_process_id.return_value = 4242
-        bus.get_connection_unix_user.return_value = 0
+        bus.get_object.return_value.GetConnectionUnixProcessID.return_value = 4242
+        bus.get_object.return_value.GetConnectionUnixUser.return_value = 0
         return bus
 
     def test_root_state_change_is_logged(self):
@@ -1413,8 +1411,8 @@ class PolkitResourceTests(unittest.TestCase):
 
     def _bus(self, pid=4242):
         bus = mock.MagicMock()
-        bus.get_connection_unix_process_id.return_value = pid
-        bus.get_connection_unix_user.return_value = TEST_SERVICE_UID
+        bus.get_object.return_value.GetConnectionUnixProcessID.return_value = pid
+        bus.get_object.return_value.GetConnectionUnixUser.return_value = TEST_SERVICE_UID
         return bus
 
     def _install(self, check_fn):
@@ -1560,8 +1558,8 @@ class RootPolicyTests(unittest.TestCase):
 
     def _bus(self, uid=0, pid=4242):
         bus = mock.MagicMock()
-        bus.get_connection_unix_process_id.return_value = pid
-        bus.get_connection_unix_user.return_value = uid
+        bus.get_object.return_value.GetConnectionUnixProcessID.return_value = pid
+        bus.get_object.return_value.GetConnectionUnixUser.return_value = uid
         return bus
 
     def test_root_bypasses_polkit_for_state_change(self):

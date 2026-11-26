@@ -619,7 +619,7 @@ class SecurityValidationTests(unittest.TestCase):
         from bright_android.core.android_service import _check_authorization
         import bright_android.core.android_service as svc
         bus_mock = mock.MagicMock()
-        bus_mock.get_connection_unix_process_id.side_effect = Exception("no such sender")
+        bus_mock.get_object.return_value.GetConnectionUnixProcessID.side_effect = Exception("no such sender")
         with mock.patch.object(svc, "HAS_DBUS", True), \
              mock.patch.object(svc, "HAS_POLKIT", False):
             ok, reason = _check_authorization(
@@ -631,8 +631,8 @@ class SecurityValidationTests(unittest.TestCase):
         from bright_android.core.android_service import _check_authorization
         import bright_android.core.android_service as svc
         bus_mock = mock.MagicMock()
-        bus_mock.get_connection_unix_process_id.return_value = 100
-        bus_mock.get_connection_unix_user.return_value = 0  # root
+        bus_mock.get_object.return_value.GetConnectionUnixProcessID.return_value = 100
+        bus_mock.get_object.return_value.GetConnectionUnixUser.return_value = 0  # root
         with mock.patch.object(svc, "HAS_DBUS", True), \
              mock.patch.object(svc, "HAS_POLKIT", False):
             ok, reason = _check_authorization(
@@ -898,7 +898,10 @@ class BackgroundWorkerSignalTests(unittest.TestCase):
         from bright_android.core import android_service as svc
         fake = self._FakeService()
         with mock.patch.object(svc, "HAS_DBUS", True):
-            svc.BackgroundWorker(fake)._run(func, "init")
+            worker = svc.BackgroundWorker(fake, dispatch=lambda fn, *a: fn(*a))
+            worker.start(func, "init")
+            worker._thread.join(5)
+            self.assertFalse(worker._thread.is_alive())
         self.assertEqual(len(fake.complete), 1)
         return fake.complete[0]
 
@@ -915,6 +918,105 @@ class BackgroundWorkerSignalTests(unittest.TestCase):
         self.assertEqual(op, "init")
         self.assertEqual(message, "download failed")
         self.assertIs(success, False)
+
+
+class BackgroundWorkerOperationTests(unittest.TestCase):
+    """One operation at a time, idle before completion, failures reported."""
+
+    class _Service:
+        def __init__(self):
+            self.events = []
+            self.worker = None
+
+        def OperationProgress(self, operation, message):
+            self.events.append(("progress", operation, message))
+
+        def OperationComplete(self, operation, message, success):
+            # Record the worker state at the moment completion is published.
+            busy = self.worker.current_operation if self.worker else "unset"
+            self.events.append(("complete", operation, message, success, busy))
+
+    def _worker(self, service):
+        from bright_android.core import android_service as svc
+        worker = svc.BackgroundWorker(service, dispatch=lambda fn, *a: fn(*a))
+        service.worker = worker
+        return worker, svc
+
+    def test_second_start_while_running_is_refused(self):
+        import threading
+        service = self._Service()
+        worker, svc = self._worker(service)
+        release = threading.Event()
+
+        def slow(progress_cb=None):
+            release.wait(5)
+
+        with mock.patch.object(svc, "HAS_DBUS", True):
+            worker.start(slow, "start")
+            with self.assertRaises(svc.OperationBusy):
+                worker.start(slow, "stop")
+            release.set()
+            worker._thread.join(5)
+            # Once the first operation has finished, the next one is accepted.
+            worker.start(lambda progress_cb=None: None, "stop")
+            worker._thread.join(5)
+        completes = [e for e in service.events if e[0] == "complete"]
+        self.assertEqual([c[1] for c in completes], ["start", "stop"])
+
+    def test_worker_is_idle_when_completion_is_published(self):
+        service = self._Service()
+        worker, svc = self._worker(service)
+        with mock.patch.object(svc, "HAS_DBUS", True):
+            worker.start(lambda progress_cb=None: None, "start")
+            worker._thread.join(5)
+        complete = [e for e in service.events if e[0] == "complete"][0]
+        self.assertIsNone(complete[4], "worker still marked busy at completion")
+
+    def test_failure_is_published_as_unsuccessful_with_message(self):
+        service = self._Service()
+        worker, svc = self._worker(service)
+
+        def boom(progress_cb=None):
+            raise RuntimeError("container failed to boot")
+
+        with mock.patch.object(svc, "HAS_DBUS", True):
+            worker.start(boom, "start")
+            worker._thread.join(5)
+        complete = [e for e in service.events if e[0] == "complete"][0]
+        self.assertEqual(complete[1:4], ("start", "container failed to boot", False))
+        self.assertIsNone(worker.current_operation)
+
+    def test_failure_leaves_worker_available(self):
+        service = self._Service()
+        worker, svc = self._worker(service)
+        with mock.patch.object(svc, "HAS_DBUS", True):
+            worker.start(lambda progress_cb=None: 1 / 0, "start")
+            worker._thread.join(5)
+            worker.start(lambda progress_cb=None: None, "start")  # must not raise
+            worker._thread.join(5)
+        self.assertEqual([e[3] for e in service.events if e[0] == "complete"], [False, True])
+
+    def test_progress_carries_operation_name(self):
+        service = self._Service()
+        worker, svc = self._worker(service)
+
+        def job(progress_cb=None):
+            progress_cb("Starting container")
+
+        with mock.patch.object(svc, "HAS_DBUS", True):
+            worker.start(job, "start")
+            worker._thread.join(5)
+        self.assertIn(("progress", "start", "Starting container"), service.events)
+
+    def test_signal_emission_goes_through_dispatch(self):
+        from bright_android.core import android_service as svc
+        calls = []
+        worker = svc.BackgroundWorker(self._Service(),
+                                      dispatch=lambda fn, *a: calls.append(a))
+        with mock.patch.object(svc, "HAS_DBUS", True):
+            worker.start(lambda progress_cb=None: None, "init")
+            worker._thread.join(5)
+        self.assertEqual(calls[-1], ("init", "", True))
 
 
 if __name__ == "__main__":
