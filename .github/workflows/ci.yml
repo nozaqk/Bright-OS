@@ -29,8 +29,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install shellcheck
+      - name: Install Python and shell dependencies
         run: |
+          python3 -m pip install --quiet --upgrade pip
+          python3 -m pip install --quiet pyyaml
           sudo apt-get update -qq
           sudo apt-get install -y -qq shellcheck
 
