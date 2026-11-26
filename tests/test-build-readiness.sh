@@ -233,7 +233,7 @@ for app in desktop/shell/bright-desktop-shell.py \
            applications/bright-update/bright-update \
            applications/bright-store/bright-store \
            applications/bright-about/bright-about; do
-    if python3 -c "import py_compile; py_compile.compile('${app}', doraise=True)" 2>/dev/null; then
+    if python3 tests/support/py_syntax_check.py "$app" 2>/dev/null; then
         echo -e "${GREEN}[PASS]${NC} $app compiles"
         PASS=$((PASS+1))
     else

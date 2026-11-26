@@ -13,9 +13,13 @@ NC='\033[0m'
 
 echo "=== Bright OS Test Suite ==="
 
+# Portable syntax check: uses a helper that compiles the Python source to
+# bytecode in a temp location so the test does not require write access to
+# the source tree. This works correctly when running as a non-root user
+# (e.g. "nobody") against a read-only / protected checkout.
 test_py() {
     local name="$1"; local path="$2"
-    if python3 -c "import py_compile; py_compile.compile('${path}', doraise=True)" 2>/dev/null; then
+    if python3 tests/support/py_syntax_check.py "$path" 2>/dev/null; then
         echo -e "${GREEN}[PASS]${NC} $name"; PASS=$((PASS+1))
     else
         echo -e "${RED}[FAIL]${NC} $name (syntax error)"; FAIL=$((FAIL+1))

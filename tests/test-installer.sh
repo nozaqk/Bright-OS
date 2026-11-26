@@ -540,9 +540,11 @@ bash -n "build/scripts/validate-iso.sh" && pass "validate-iso.sh syntax valid" |
 echo ""
 
 # --- 24. Python backend syntax ---
+# Use the support helper which compiles to a temp .pyc so the test works
+# when run as a non-root user (no write access to the source tree is needed).
 echo "--- 24. Python Shell Backend Syntax ---"
-python3 -c "import py_compile; py_compile.compile('desktop/shell/bright-desktop-shell.py', doraise=True)" 2>/dev/null && pass "bright-desktop-shell.py syntax valid" || fail "bright-desktop-shell.py syntax error"
-python3 -c "import py_compile; py_compile.compile('applications/bright-about/bright-about', doraise=True)" 2>/dev/null && pass "bright-about syntax valid" || fail "bright-about syntax error"
+python3 tests/support/py_syntax_check.py desktop/shell/bright-desktop-shell.py 2>/dev/null && pass "bright-desktop-shell.py syntax valid" || fail "bright-desktop-shell.py syntax error"
+python3 tests/support/py_syntax_check.py applications/bright-about/bright-about 2>/dev/null && pass "bright-about syntax valid" || fail "bright-about syntax error"
 
 echo ""
 
