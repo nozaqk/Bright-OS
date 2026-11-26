@@ -276,8 +276,12 @@ def _check_authorization(sender, action_id: str, bus=None,
     if not ok:
         return False, reason
 
-    # Root is always authorized for any action
+    # Root is always authorized. Polkit is not consulted for root, so record
+    # root-authorized state changes for audit (read-only calls are not logged).
     if uid == 0:
+        if not allow_same_user:
+            logger.info("Root authorized state-changing action=%s (Polkit not consulted)",
+                        action_id)
         return True, "root caller"
 
     # Same-user verification — other local accounts are denied

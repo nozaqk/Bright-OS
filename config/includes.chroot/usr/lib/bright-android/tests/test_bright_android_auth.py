@@ -17,6 +17,7 @@ skipped by default (set BRIGHT_ANDROID_REAL_INTEGRATION=1 to run them on a
 provisioned system with a running bright-android service).
 """
 import os
+import logging
 import re
 import threading
 import unittest
@@ -1311,6 +1312,41 @@ class FailClosedTests(unittest.TestCase):
         ok, reason = svc._check_authorization(":1.1", self.STATE_ACTION, bus=self._bus())
         self.assertTrue(ok, reason)
         self.assertEqual(reason, "polkit authorized")
+
+
+class RootAuditTests(unittest.TestCase):
+    """Root bypasses Polkit, so state-changing root authorizations must be logged."""
+
+    def setUp(self):
+        self._saved = {k: getattr(svc, k) for k in ("HAS_DBUS", "HAS_POLKIT", "SERVICE_UID")}
+        svc.HAS_DBUS = True
+        svc.HAS_POLKIT = False
+        svc.SERVICE_UID = TEST_SERVICE_UID
+
+    def tearDown(self):
+        for k, v in self._saved.items():
+            setattr(svc, k, v)
+
+    def _root_bus(self):
+        bus = mock.MagicMock()
+        bus.get_connection_unix_process_id.return_value = 4242
+        bus.get_connection_unix_user.return_value = 0
+        return bus
+
+    def test_root_state_change_is_logged(self):
+        with self.assertLogs("bright_android", level="INFO") as cap:
+            ok, reason = svc._check_authorization(
+                ":1.1", svc.POLKIT_ACTION_INSTALL, bus=self._root_bus())
+        self.assertTrue(ok)
+        self.assertEqual(reason, "root caller")
+        self.assertTrue(any("Root authorized state-changing" in m for m in cap.output))
+
+    def test_root_read_only_is_not_logged(self):
+        with mock.patch.object(svc.logger, "info") as info:
+            ok, _ = svc._check_authorization(
+                ":1.1", svc.POLKIT_ACTION_SYNC, bus=self._root_bus(), allow_same_user=True)
+        self.assertTrue(ok)
+        info.assert_not_called()
 
 
 if __name__ == "__main__":
