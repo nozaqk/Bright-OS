@@ -127,8 +127,8 @@ done
 # --- rc.xml root element and key sections -------------------------------
 echo ""
 echo "--- rc.xml structure ---"
-for f in "$PKG_BRIGHT_OS_DIR/labwc/rc.xml"; do
-    if python3 -c "
+f="$PKG_BRIGHT_OS_DIR/labwc/rc.xml"
+if python3 -c "
 import xml.etree.ElementTree as ET, sys
 root = ET.parse('$f').getroot()
 assert root.tag == 'labwc_config', f'root tag is {root.tag}'
@@ -137,11 +137,10 @@ assert root.find('mouse') is not None, 'missing <mouse>'
 assert root.find('windowRules') is not None, 'missing <windowRules>'
 assert root.find('theme') is not None, 'missing <theme>'
 " 2>/tmp/err; then
-        pass "rc.xml has <labwc_config>/keyboard/mouse/windowRules/theme"
-    else
-        fail "rc.xml structure issue: $(cat /tmp/err)"
-    fi
-done
+    pass "rc.xml has <labwc_config>/keyboard/mouse/windowRules/theme"
+else
+    fail "rc.xml structure issue: $(cat /tmp/err)"
+fi
 
 # --- bright-labwc.desktop content ---------------------------------------
 echo ""
