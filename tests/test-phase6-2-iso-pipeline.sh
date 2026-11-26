@@ -137,7 +137,8 @@ done
 
 echo ""
 echo "--- Build invocation uses correct flags ---"
-if grep -q "bash build/scripts/build.sh" "$WF_ISO" && \
+# Match build.sh invocation (may be preceded by sudo -E or bash -x flags).
+if grep -qE "build/scripts/build\.sh" "$WF_ISO" && \
    grep -q "\-\-version" "$WF_ISO" && \
    grep -q "\-\-distro" "$WF_REL"; then
     pass "Workflows invoke build.sh with --version and --distro"
