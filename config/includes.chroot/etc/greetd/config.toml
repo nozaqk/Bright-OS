@@ -1,0 +1,20 @@
+# =============================================================================
+# greetd configuration for Bright OS (Phase 6.3 lightweight)
+#
+# Greeter: gtkgreet, hosted inside cage (a minimal kiosk Wayland compositor).
+# The greeter runs as user 'greeter' (created by the bright-greeter sysusers
+# snippet). Users can pick between installed wayland-sessions at login:
+#   - Bright Desktop (labwc)   ← default
+#   - Bright Desktop (KWin)    ← only present when optional-recovery-kwin
+#                                profile is installed
+#
+# Recovery text consoles remain on tty2..tty6 (Alt+F2...F6).
+# =============================================================================
+
+[terminal]
+vt = 1
+
+[default_session]
+# cage -s allows switching VTs without cage dying.
+command = "cage -s -- gtkgreet --sessions"
+user = "greeter"

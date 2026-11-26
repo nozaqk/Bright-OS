@@ -261,10 +261,24 @@ echo "--- 7. Display Manager (SDDM) Configuration ---"
 assert_file "installer/calamares/modules/displaymanager.conf" "displaymanager.conf exists"
 validate_yaml "installer/calamares/modules/displaymanager.conf" "displaymanager.conf is valid YAML"
 
-grep -qE "^[[:space:]]+-[[:space:]]+sddm" "installer/calamares/modules/displaymanager.conf" && pass "SDDM set as display manager" || fail "SDDM set as display manager"
+# Phase 6.3: greetd is the preferred DM; SDDM is listed as fallback.
+if grep -qE "^[[:space:]]+-[[:space:]]+greetd" "installer/calamares/modules/displaymanager.conf"; then
+    pass "greetd is listed as preferred display manager (Phase 6.3)"
+else
+    fail "greetd not listed as display manager"
+fi
+if grep -qE "^[[:space:]]+-[[:space:]]+sddm" "installer/calamares/modules/displaymanager.conf"; then
+    pass "SDDM listed as fallback display manager"
+else
+    fail "SDDM not listed as fallback display manager"
+fi
 assert_contains "installer/calamares/modules/displaymanager.conf" 'defaultDesktopSession: "bright.desktop"' "Default session is bright.desktop"
 assert_contains "installer/calamares/modules/displaymanager.conf" "basicSetup: true" "Basic DM setup enabled"
-assert_contains "installer/calamares/modules/displaymanager.conf" "theme: breeze" "SDDM theme is Breeze (matches branding)"
+if grep -q "theme: breeze" "installer/calamares/modules/displaymanager.conf"; then
+    pass "SDDM theme config (breeze) present for fallback case"
+else
+    fail "SDDM theme (breeze) not configured"
+fi
 
 echo ""
 
@@ -514,17 +528,33 @@ for edition in home developer lite; do
     assert_file "editions/${edition}/packages.list" "${edition} edition packages.list exists"
 done
 
-# Check desktop package lists
+# Check desktop package lists (Phase 6.3: core is labwc+greetd; no Plasma default)
 assert_file "config/package-lists/desktop.list.chroot" "Home/Developer desktop package list exists"
 assert_file "config/package-lists/desktop-lite.list.chroot" "Lite desktop package list exists"
-assert_contains "config/package-lists/desktop.list.chroot" "plasma-desktop" "Home/Developer uses Plasma desktop"
-assert_contains "config/package-lists/desktop-lite.list.chroot" "lxqt-core" "Lite uses LXQt"
-assert_contains "config/package-lists/desktop-lite.list.chroot" "openbox" "Lite includes Openbox"
-# Check that plasma-desktop is NOT a package dependency (ignoring comment lines)
-if grep -v "^#" "config/package-lists/desktop-lite.list.chroot" | grep -q "^plasma-desktop$"; then
-    fail "Lite includes plasma-desktop as a package"
+assert_contains "config/package-lists/core.list.chroot" "^labwc$" "Core includes labwc (default compositor)"
+assert_contains "config/package-lists/core.list.chroot" "^greetd$" "Core includes greetd (default DM)"
+# Plasma stack must NOT be in core (moved to optional-recovery-kwin)
+if grep -v "^#" "config/package-lists/core.list.chroot" | grep -q "^plasma-desktop$"; then
+    fail "core.list.chroot still includes plasma-desktop"
 else
-    pass "Lite does not include plasma-desktop package"
+    pass "Core is lightweight (no plasma-desktop)"
+fi
+if grep -v "^#" "config/package-lists/core.list.chroot" | grep -q "^sddm$"; then
+    fail "core.list.chroot still includes sddm (moved to optional-recovery-kwin)"
+else
+    pass "Core does not include sddm (in recovery profile)"
+fi
+# Check that plasma-desktop is NOT pulled in by desktop.list.chroot
+if grep -v "^#" "config/package-lists/desktop.list.chroot" | grep -q "^plasma-desktop$"; then
+    fail "Default desktop list unexpectedly includes plasma-desktop"
+else
+    pass "Default desktop list is lightweight (no plasma-desktop)"
+fi
+# Lite edition must also be lightweight
+if grep -v "^#" "config/package-lists/desktop-lite.list.chroot" | grep -qE "^(lxqt-core|plasma-desktop|kwin-wayland)$"; then
+    fail "Lite desktop list still contains heavy desktop packages"
+else
+    pass "Lite desktop list is lightweight (Phase 6.3)"
 fi
 
 echo ""

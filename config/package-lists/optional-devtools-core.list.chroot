@@ -1,0 +1,32 @@
+# =============================================================================
+# Bright OS — Optional: Developer tools
+# Not installed in the lightweight default.
+# =============================================================================
+
+build-essential
+gcc
+g++
+gdb
+clang
+lldb
+cmake
+ninja-build
+make
+autoconf
+automake
+libtool
+pkg-config
+linux-headers-amd64
+git-lfs
+git-gui
+gitk
+subversion
+mercurial
+vim
+neovim
+strace
+ltrace
+linux-perf
+valgrind
+lsof
+psmisc

@@ -1,0 +1,11 @@
+# =============================================================================
+# Bright OS — Optional: Printing (CUPS)
+# Not installed by default in the lightweight core.
+# =============================================================================
+
+cups
+cups-filters
+cups-bsd
+printer-driver-all
+system-config-printer
+system-config-printer-common

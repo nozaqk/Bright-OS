@@ -85,39 +85,43 @@ if [ $LEAKS -eq 0 ]; then
     pass "No Plasma packages leak into Lite edition"
 fi
 
-# Check Lite has LXQt
-if echo "$DESKTOP_LITE" | grep -qx "lxqt-core"; then
-    pass "Lite includes lxqt-core"
+# --- Phase 6.3: core is now lightweight (labwc + greetd). KWin and SDDM have
+# been moved to optional-recovery-kwin.list.chroot. Lite inherits labwc from
+# core; it no longer needs lxqt-core/openbox/picom as separate WM layers.
+# We check that labwc (compositor) and greetd (DM) are present.
+
+# Check core includes labwc (default compositor, Phase 6.3)
+if echo "$CORE" | grep -qx "labwc"; then
+    pass "Core includes labwc (default Wayland compositor, Phase 6.3)"
 else
-    fail "Lite missing lxqt-core"
+    fail "Core missing labwc (default compositor)"
 fi
 
-# Check Lite has a compositor (picom)
-if echo "$DESKTOP_LITE" | grep -qx "picom"; then
-    pass "Lite includes picom compositor"
+# Check core includes greetd (default display manager, Phase 6.3)
+if echo "$CORE" | grep -qx "greetd"; then
+    pass "Core includes greetd (lightweight display manager, Phase 6.3)"
 else
-    fail "Lite missing picom compositor"
+    fail "Core missing greetd (display manager)"
 fi
 
-# Check Lite has a window manager (openbox)
-if echo "$DESKTOP_LITE" | grep -qx "openbox"; then
-    pass "Lite includes openbox window manager"
+# Check core includes cage (kiosk compositor used by gtkgreet)
+if echo "$CORE" | grep -qx "cage"; then
+    pass "Core includes cage (greeter kiosk compositor)"
 else
-    fail "Lite missing openbox"
+    fail "Core missing cage (needed by greetd/gtkgreet)"
 fi
 
-# Check KWin is in core (needed by Bright Desktop)
-if echo "$CORE" | grep -qx "kwin-wayland"; then
-    pass "Core includes kwin-wayland (needed by Bright Desktop on all editions)"
+# Check that KWin is available in optional-recovery-kwin (recovery path)
+RECOVERY_LIST="${PROJECT_ROOT}/config/package-lists/optional-recovery-kwin.list.chroot"
+if [ -f "$RECOVERY_LIST" ] && grep -qx "kwin-wayland" "$RECOVERY_LIST"; then
+    pass "KWin available in optional-recovery-kwin profile (recovery path preserved)"
 else
-    fail "Core missing kwin-wayland"
+    fail "KWin recovery profile missing or doesn't contain kwin-wayland"
 fi
-
-# Check SDDM is in core (display manager needed by all)
-if echo "$CORE" | grep -qx "sddm"; then
-    pass "Core includes sddm (display manager)"
+if [ -f "$RECOVERY_LIST" ] && grep -qx "sddm" "$RECOVERY_LIST"; then
+    pass "SDDM available in optional-recovery-kwin profile (recovery path preserved)"
 else
-    fail "Core missing sddm"
+    fail "SDDM recovery profile missing or doesn't contain sddm"
 fi
 
 # --- Check for known-bad package names ---

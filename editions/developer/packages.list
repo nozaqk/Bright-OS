@@ -1,10 +1,11 @@
 # =============================================================================
 # Bright OS Developer Edition — Additional packages
-# Target: Software developers, electronics engineers, system administrators
-# Desktop: Full KDE Plasma (inherits Home apps + development toolchain)
+# Phase 6.3: lightweight core (labwc + greetd) plus full dev toolchain.
+# Inherits Home apps where reasonable; adds compilers, editors, debuggers,
+# containers, electronics-engineering tools.
 # =============================================================================
 
-# --- Include Home edition applications (duplicates are handled by apt) ---
+# --- Web / media / office (same as Home) ---
 firefox-esr
 thunderbird
 vlc
@@ -16,13 +17,23 @@ libreoffice-impress
 libreoffice-draw
 libreoffice-gtk3
 libreoffice-math
-libreoffice-base
 evince
 eog
 simple-scan
 gnome-calculator
 
-# --- Development essentials ---
+# --- Bluetooth, printing, VPN/mDNS ---
+bluez
+blueman
+cups
+cups-filters
+cups-bsd
+system-config-printer
+network-manager-openvpn
+avahi-daemon
+avahi-utils
+
+# --- Build toolchain ---
 build-essential
 gcc
 g++
@@ -36,6 +47,7 @@ autoconf
 automake
 libtool
 pkg-config
+linux-headers-amd64
 
 # --- Python development ---
 python3-dev
@@ -48,9 +60,7 @@ python3-pandas
 python3-matplotlib
 ipython3
 
-# --- C/C++/Qt development libraries ---
-libc6-dev
-libstdc++-dev
+# --- Qt6 development libraries ---
 qt6-base-dev
 qt6-base-dev-tools
 qt6-declarative-dev
@@ -64,11 +74,11 @@ default-jdk
 default-jre
 maven
 
-# --- Node.js / JavaScript ---
+# --- Node.js ---
 nodejs
 npm
 
-# --- Version control ---
+# --- VCS ---
 git
 git-lfs
 git-gui
@@ -76,7 +86,7 @@ gitk
 subversion
 mercurial
 
-# --- Container and virtualization ---
+# --- Containers / virtualization ---
 docker.io
 qemu-system-x86
 qemu-utils
@@ -107,15 +117,13 @@ openscad
 # --- Serial/USB tools ---
 libusb-1.0-0-dev
 gphoto2
-sigrok
-pulseview
 
 # --- Database clients ---
 sqlite3
 postgresql-client
 mariadb-client
 
-# --- Networking and debugging ---
+# --- Network / debugging ---
 wireshark
 nmap
 tcpdump
@@ -132,7 +140,7 @@ doxygen
 graphviz
 pandoc
 
-# --- Performance and debugging ---
+# --- Performance / debugging ---
 valgrind
 strace
 ltrace
@@ -142,7 +150,6 @@ sysstat
 lsof
 psmisc
 
-# --- Wine for Windows development/testing ---
-wine
-wine64
-winetricks
+# --- Secure Boot shim (convenient for devs who dual-boot with SB enabled) ---
+shim-signed
+grub-efi-amd64-signed

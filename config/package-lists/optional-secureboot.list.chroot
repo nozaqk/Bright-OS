@@ -1,0 +1,8 @@
+# =============================================================================
+# Bright OS — Optional: Secure Boot (shim + signed GRUB)
+# The unsigned grub-efi-amd64-bin boots on systems without Secure Boot, but
+# shim-signed + grub-efi-amd64-signed are needed for SB-enabled firmware.
+# =============================================================================
+
+shim-signed
+grub-efi-amd64-signed

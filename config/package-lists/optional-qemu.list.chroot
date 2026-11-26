@@ -1,0 +1,8 @@
+# =============================================================================
+# Bright OS — Optional: Virtualization/QEMU
+# Useful for development and smoke testing; not needed by end users.
+# =============================================================================
+
+qemu-system-x86
+qemu-utils
+ovmf

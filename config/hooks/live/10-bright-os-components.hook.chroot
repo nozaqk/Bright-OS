@@ -80,7 +80,11 @@ dock_auto_hide=false
 animations=${DEFAULT_ANIMATIONS}
 EOF
 
-# Default SDDM config for live session (autologin configured in live boot hook)
+# --- Display manager config -----------------------------------------------
+# Phase 6.3: greetd is the default DM. If SDDM is present (optional-recovery-
+# kwin profile), write a minimal config so manual `systemctl start sddm`
+# still works, but leave it disabled (display-manager.service symlinks to
+# greetd; see hook 15-display-manager).
 mkdir -p /etc/sddm.conf.d
 cat > /etc/sddm.conf.d/bright-live.conf << 'EOF'
 [Theme]
@@ -93,25 +97,51 @@ EnableHiDPI=true
 [X11]
 EnableHiDPI=true
 EOF
-# Autologin config is written by live boot hook 05-bright-os at runtime
-# (not at build time, since it needs to exist for the live user)
 
-# Sysctl security hardening is provided by includes.chroot/etc/sysctl.d/99-bright-os-sysctl.conf
+# Greetd config dir (config is provided by includes.chroot/etc/greetd/config.toml)
+mkdir -p /etc/greetd
 
-# NetworkManager config: provided by includes.chroot/etc/NetworkManager/conf.d/99-bright-os-network.conf
+# Autologin for the live user is configured by lib/live/config/05-bright-os
+# at boot time (not baked into the image).
 
-# Enable services
+# Sysctl hardening is provided by includes.chroot/etc/sysctl.d/99-bright-os-sysctl.conf
+# NetworkManager config is provided by includes.chroot/etc/NetworkManager/conf.d/99-bright-os-network.conf
+
+# --- Enable essential services --------------------------------------------
 systemctl enable NetworkManager.service 2>/dev/null || true
-systemctl enable sddm.service 2>/dev/null || true
 systemctl enable firewalld.service 2>/dev/null || true
-if [ "$BRIGHT_EDITION" != "lite" ]; then
-    # Lite masks these units in build.sh; enabling them would fight that choice
-    systemctl enable bluetooth.service 2>/dev/null || true
-    systemctl enable cups.service 2>/dev/null || true
-fi
 systemctl enable udisks2.service 2>/dev/null || true
 systemctl enable bright-os-firstboot.service 2>/dev/null || true
+
+# Enable greetd (lightweight DM) if present.
+if [ -x /usr/sbin/greetd ]; then
+    systemctl enable greetd.service 2>/dev/null || true
+fi
+
+# Enable bluetooth/cups ONLY for editions that include them (they are NOT
+# in core.list.chroot in Phase 6.3, so check whether the binaries exist).
+if command -v bluetoothd >/dev/null 2>&1; then
+    systemctl enable bluetooth.service 2>/dev/null || true
+fi
+if [ -x /usr/sbin/cupsd ]; then
+    systemctl enable cups.service 2>/dev/null || true
+fi
+
 systemctl set-default graphical.target 2>/dev/null || true
+
+# --- Install labwc system-wide configuration -----------------------------
+# These are the Bright defaults; users can override in ~/.config/labwc/.
+if [ -d /usr/share/bright-os/labwc ] || [ -d /usr/share/bright-os/session/labwc ]; then
+    LABWC_DEST="/usr/share/bright-os/labwc"
+    mkdir -p "$LABWC_DEST"
+    # The build.sh copies desktop/session/labwc/* into config/includes.chroot
+    # before hooks run; if files are already in /usr/share/bright-os/labwc/,
+    # don't overwrite (build.sh's copy is authoritative).
+    for f in /usr/share/bright-os/session/labwc/*; do
+        [ -f "$f" ] && cp -n "$f" "$LABWC_DEST/" 2>/dev/null || true
+    done
+    chmod 0755 "$LABWC_DEST/autostart" 2>/dev/null || true
+fi
 
 # Apply firewall defaults
 if command -v firewall-cmd &>/dev/null; then

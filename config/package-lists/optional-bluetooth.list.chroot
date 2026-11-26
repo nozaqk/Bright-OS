@@ -1,0 +1,8 @@
+# =============================================================================
+# Bright OS — Optional: Bluetooth
+# Provides Bluetooth support. Not installed by default in the lightweight
+# core; add this list when building an edition that wants BT.
+# =============================================================================
+
+bluez
+blueman

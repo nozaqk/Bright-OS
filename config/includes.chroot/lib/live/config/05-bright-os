@@ -44,9 +44,29 @@ if [ -d /home/user ]; then
     fi
 fi
 
-# SDDM autologin for live session
-mkdir -p /etc/sddm.conf.d
-cat > /etc/sddm.conf.d/bright-live-autologin.conf << EOF
+# --- Display manager autologin for the live user ---
+# Configure greetd (Phase 6.3 default) to autologin the 'user' account
+# straight into Bright Desktop (labwc). If greetd isn't installed, fall
+# back to SDDM autologin config (for optional-recovery-kwin builds).
+if [ -f /etc/greetd/config.toml ] || [ -x /usr/sbin/greetd ]; then
+    # greetd autologin: replace the default_session command with one that
+    # runs bright-desktop-shell directly as the live user (no greeter).
+    mkdir -p /etc/greetd
+    cat > /etc/greetd/config.toml << 'GREETEOF'
+[terminal]
+vt = 1
+
+[default_session]
+command = "bright-desktop-shell"
+user = "user"
+GREETEOF
+    echo "Bright OS: greetd configured for live-user autologin"
+fi
+
+# SDDM autologin (only if SDDM is present, e.g. recovery-kwin profile)
+if [ -x /usr/sbin/sddm ]; then
+    mkdir -p /etc/sddm.conf.d
+    cat > /etc/sddm.conf.d/bright-live-autologin.conf << EOF
 [Autologin]
 User=user
 Session=bright.desktop
@@ -62,6 +82,8 @@ EnableHiDPI=true
 [X11]
 EnableHiDPI=true
 EOF
+    echo "Bright OS: SDDM autologin configured"
+fi
 
 # MOTD
 cat > /etc/motd << EOF

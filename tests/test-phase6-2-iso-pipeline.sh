@@ -147,21 +147,29 @@ else
 fi
 
 echo ""
-echo "--- Edition safety: KWin default, labwc optional ---"
+echo "--- Phase 6.3: labwc default compositor, KWin recovery ---"
 if grep -q "BRIGHT_EDITION: home" "$WF_ISO" "$WF_REL"; then
-    pass "CI/release default edition is 'home' (KWin/Plasma)"
+    pass "CI/release default edition is 'home'"
 else
     fail "Default edition is not 'home'"
 fi
-if grep -q "^kwin-wayland" config/package-lists/core.list.chroot; then
-    pass "kwin-wayland is in core package list (default compositor)"
+# Phase 6.3: labwc is default compositor in core; kwin-wayland is in
+# optional-recovery-kwin profile.
+if grep -q "^labwc$" config/package-lists/core.list.chroot; then
+    pass "labwc is in core (default compositor, Phase 6.3)"
 else
-    fail "kwin-wayland not in core.list.chroot"
+    fail "labwc not in core.list.chroot"
 fi
-if grep -q "^labwc" config/package-lists/core.list.chroot; then
-    fail "labwc in core.list.chroot — must remain optional/experimental"
+if grep -q "^greetd$" config/package-lists/core.list.chroot; then
+    pass "greetd is in core (lightweight display manager, Phase 6.3)"
 else
-    pass "labwc is NOT in core (remains optional/experimental)"
+    fail "greetd not in core.list.chroot"
+fi
+if grep -q "^kwin-wayland$" config/package-lists/optional-recovery-kwin.list.chroot \
+   && grep -q "^sddm$" config/package-lists/optional-recovery-kwin.list.chroot; then
+    pass "KWin+SDDM available via optional-recovery-kwin profile (recovery path)"
+else
+    fail "kwin-wayland/sddm missing from optional-recovery-kwin profile"
 fi
 
 # --- Summary ---

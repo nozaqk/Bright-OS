@@ -1,70 +1,23 @@
 # =============================================================================
-# Bright OS — Lite Desktop Packages
-# Lightweight alternatives to the full KDE Plasma desktop for the Lite edition.
-# These replace desktop.list.chroot when building the Lite edition.
+# Bright OS — Lite Desktop Overlay (Phase 6.3)
 #
-# Key differences from desktop.list.chroot:
-# - No plasma-desktop or plasma-workspace (saves ~500MB)
-# - Uses Openbox as window manager instead of full KWin desktop shell
-# - Uses GTK/lighter alternatives for tray applets
-# - LXQt components where lighter than Plasma equivalents
-# - KWin is still installed (from core) for Wayland, but not full Plasma
-# Target: Debian 13 (Trixie) amd64
+# In Phase 6.3 the DEFAULT core is already lightweight (labwc + greetd).
+# The Lite edition adds ONLY the following on top of the core:
+#   - Small extra utilities for low-spec hardware
+#   - Additional low-memory apps
+# It still does NOT include Plasma/KWin/SDDM (those live in
+# optional-recovery-kwin.list.chroot) and does NOT include Android/Bluetooth/
+# Printing (those stay in their optional-* lists and are NOT installed by
+# default for lite).
 # =============================================================================
 
-# --- LXQt core components (lighter panel/settings than Plasma) ---
-lxqt-core
-lxqt-themes
-lxqt-about
-lxqt-config
-lxqt-policykit
-lxqt-powermanagement
-lxqt-runner
-lxqt-session
-lxqt-globalkeys
-lxqt-notificationd
-
-# --- Lightweight window manager for X11 fallback ---
-openbox
-obconf
-
-# --- Compositor for X11 transparency (replaces KWin effects in Lite) ---
-picom
-
-# --- Lightweight file manager ---
-pcmanfm-qt
-lximage-qt
-
-# --- Lightweight terminal ---
+# --- Terminal is already alacritty in core; add qterminal as fallback ---
 qterminal
 
-# --- Lightweight text editor ---
-featherpad
+# --- Archive manager for XFCE-style desktop expectations ---
+xarchiver
 
-# --- System tray applets (lightweight, GTK-based) ---
-network-manager-gnome
-blueman
-pavucontrol-qt
-volumeicon-alsa
+# --- Resource monitor (Qt-based, lighter than htop with UI) ---
+qps
 
-# --- Power management (lighter than powerdevil) ---
-xfce4-power-manager
-
-# --- Breeze cursor theme only (not full breeze-gtk-theme to save space) ---
-breeze-cursor-theme
-breeze-icon-theme
-
-# --- Theme support for Qt5 apps (qt6ct is in core for Qt6) ---
-qt5ct
-
-# --- XDG portal for non-Plasma sessions ---
-xdg-desktop-portal-gtk
-
-# --- Essential printing (lite) ---
-cups-bsd
-
-# --- Bluetooth support (lite, via blueman not bluedevil) ---
-bluez
-
-# --- Archive support ---
-engrampa
+# --- CLI torrent client already in core via transmission-cli; no need for GUI ---

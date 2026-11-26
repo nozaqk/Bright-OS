@@ -1,39 +1,25 @@
 # =============================================================================
 # AURA Core — Native Intelligence Platform (Foundation Packages)
-# These packages are required for the AURA Core service and are included
-# in ALL editions (Home, Developer, Lite). AURA Core runs without AI models
-# and without internet, providing security monitoring and service management.
+# Phase 6.3: trimmed to only packages NOT already pulled in by core.list.chroot.
+# AURA Core runs WITHOUT AI models and WITHOUT internet, providing security
+# monitoring and service management. Activation is strictly on-demand via
+# D-Bus (see config/includes.chroot/etc/systemd/system/aura-core.service);
+# it does NOT start at boot.
 # Target: Debian 13 (Trixie) amd64
 # =============================================================================
 
-# --- Python 3 runtime (for the AURA service) ---
-python3
-python3-dbus
-python3-gi
-python3-yaml
-python3-pip
-python3-setuptools
-python3-psutil
-
-# --- Optional local inference backend ---
-# llama.cpp may or may not be packaged in Debian Trixie at time of build;
-# the AURA intelligence engine gracefully stays UNAVAILABLE when the binary
-# is not installed, and users can install it post-install. Administrators
-# may uncomment or add the actual package name here if their mirror has it.
-# llama.cpp
-
-# --- D-Bus and systemd (required for service activation) ---
-dbus
-systemd
-policykit-1
-policykit-1-gnome
+# --- Polkit GObject Introspection (needed for authorization checks) ---
+# policykit-1 + policykit-1-gnome already ship in core; this GIR binding is
+# specific to AURA's polkit integration.
 gir1.2-polkit-1.0
 
-# --- Security monitoring prerequisites ---
-# Used by Phase 4 security engine
-auditd
-apparmor
+# --- Security monitoring ---
+# AppArmor is enabled in the kernel by default on Debian Trixie;
+# apparmor-utils is a small admin helper (aa-status, aa-enforce).
 apparmor-utils
-iptables
-nftables
+auditd
 inotify-tools
+
+# --- Firewalling (nftables CLI; firewalld is already in core) ---
+nftables
+iptables

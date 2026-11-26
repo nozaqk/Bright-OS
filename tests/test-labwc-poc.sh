@@ -60,8 +60,7 @@ for f in \
     "$PKG_BRIGHT_OS_DIR/labwc/environment" \
     "$PKG_BRIGHT_OS_DIR/labwc/autostart" \
     "$PKG_BRIGHT_OS_DIR/bright-desktop-session-labwc.sh" \
-    "$PKG_SESSIONS_DIR/bright-labwc.desktop" \
-    "config/package-lists/labwc-experimental.list.chroot" \
+    "$PKG_SESSIONS_DIR/bright.desktop" \
     ; do
     if [ -f "$f" ]; then
         pass "File present: $f"
@@ -190,13 +189,18 @@ else
     fail "bright-desktop-session.sh no longer references kwin_wayland"
 fi
 
-# --- Core package list does NOT include labwc (not yet default) --------
+# --- Phase 6.3: labwc is now the default compositor in core -------------
 echo ""
-echo "--- Core package list untouched (labwc is OPTIONAL in 6.1) ---"
-if grep -qi "^labwc" config/package-lists/core.list.chroot; then
-    fail "core.list.chroot unexpectedly contains labwc (should be optional in 6.1)"
+echo "--- Core package list includes labwc (default compositor in Phase 6.3) ---"
+if grep -q "^labwc$" config/package-lists/core.list.chroot; then
+    pass "core.list.chroot includes labwc (default compositor)"
 else
-    pass "core.list.chroot does NOT include labwc (still optional)"
+    fail "core.list.chroot missing labwc (default compositor)"
+fi
+if grep -q "^greetd$" config/package-lists/core.list.chroot; then
+    pass "core.list.chroot includes greetd (lightweight display manager)"
+else
+    fail "core.list.chroot missing greetd"
 fi
 
 # --- Packaged copies in sync --------------------------------------------
@@ -290,19 +294,23 @@ else
     fail "labwc session script does not pass --config-dir to labwc"
 fi
 
-# --- Optional package list is well formed ------------------------------
+# --- Phase 6.3: labwc is in core; verify labwc-related packages are present
 echo ""
-echo "--- labwc-experimental package list ---"
-# Count non-comment lines; should contain labwc and layer-shell-qt
-if grep -v '^#' config/package-lists/labwc-experimental.list.chroot | grep -v '^$' | grep -q "^labwc"; then
-    pass "labwc-experimental.list.chroot includes labwc"
+echo "--- Core list includes labwc support packages ---"
+for pkg in labwc greetd cage gtkgreet layer-shell-qt qml6-module-org-kde-layershell \
+           xdg-desktop-portal-wlr mako-notifier swaylock swayidle kanshi grim slurp; do
+    if grep -q "^${pkg}$" config/package-lists/core.list.chroot; then
+        pass "core.list.chroot includes $pkg"
+    else
+        fail "core.list.chroot missing $pkg"
+    fi
+done
+# Recovery profile still provides KWin+SDDM fallback
+if grep -q "^sddm$" config/package-lists/optional-recovery-kwin.list.chroot \
+   && grep -q "^kwin-wayland$" config/package-lists/optional-recovery-kwin.list.chroot; then
+    pass "optional-recovery-kwin includes sddm + kwin-wayland (recovery path)"
 else
-    fail "labwc-experimental.list.chroot missing labwc"
-fi
-if grep -q "layer-shell-qt" config/package-lists/labwc-experimental.list.chroot; then
-    pass "labwc-experimental.list.chroot includes layer-shell-qt"
-else
-    fail "labwc-experimental.list.chroot missing layer-shell-qt"
+    fail "optional-recovery-kwin missing sddm or kwin-wayland"
 fi
 
 # --- Summary ------------------------------------------------------------

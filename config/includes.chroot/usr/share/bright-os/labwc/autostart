@@ -1,5 +1,5 @@
 #!/bin/sh
-# Bright OS labwc session autostart (Phase 6.1 PoC)
+# Bright OS labwc session autostart (Phase 6.3 default compositor)
 # Runs after the labwc compositor has initialised.
 # All commands are guarded with `command -v` so missing optional packages
 # do not break session startup.
