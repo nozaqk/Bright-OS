@@ -85,7 +85,9 @@ def _check_polkit(sender, action_id, bus=None):
         return False, "polkit unavailable; only root may perform this action"
 
     try:
-        authority = Polkit.Authority.get()
+        # get_sync replaces the deprecated get(); a failure raises and is
+        # handled below (fail closed).
+        authority = Polkit.Authority.get_sync(None)
         # Polkit.UnixProcess.new(pid) takes a single int PID. Polkit
         # internally reads /proc/<pid>/status to verify the UID, so a
         # stale/reused PID would not be confused with another user's
