@@ -94,16 +94,16 @@ def _get_caller_credentials(sender, bus) -> tuple:
     Returns (ok: bool, pid: int, uid: int, reason: str). When ok is False,
     pid/uid are 0 and reason describes why credentials could not be obtained.
 
-    Production-invariant: when HAS_DBUS is True and the call was dispatched by
-    dbus-python, `bus` is always the service's Connection object and `sender`
-    is always a non-None bus name. The in-process/headless path below is only
-    reachable when HAS_DBUS is False (dbus module unavailable, e.g. unit tests
-    or headless CLI use) and does NOT apply to real D-Bus-dispatched calls.
+    Every failure returns ok=False (deny): dbus-python missing, no bus object,
+    no sender, or credentials that cannot be read or are out of range.
     """
     if not HAS_DBUS:
-        # dbus-python is not importable in this process: we are running in
-        # headless mode or unit tests. There is no D-Bus attack surface.
-        return True, 0, SERVICE_UID, "in-process call (no D-Bus bus)"
+        # dbus-python is not importable, so this process cannot receive or
+        # verify D-Bus callers. Authorization must not be granted without a
+        # verifiable caller identity: deny. (Nothing calls this path at
+        # runtime: the authorized methods exist only on the D-Bus service
+        # class, which is defined only when HAS_DBUS is True.)
+        return False, 0, 0, "D-Bus unavailable (python3-dbus missing); denied"
 
     # When HAS_DBUS is True but bus is None, this is a programming error in
     # the caller (method was invoked without passing self._bus) or a direct
@@ -221,11 +221,9 @@ def _check_authorization(sender, action_id: str, bus=None,
     """Authorize a D-Bus method call.
 
     Authorization model (Phase 2.3 — FAIL-CLOSED for all state changes):
-      0. In-process calls (HAS_DBUS=False): allow (trusted path).
-         Not reachable from any real D-Bus dispatch; dbus-python always
-         supplies a bus object and sender for dispatched methods. If HAS_DBUS
-         is True and bus is None (caller error), we DENY to prevent accidental
-         in-process bypass.
+      0. No D-Bus (HAS_DBUS=False) or no bus object: DENY. There is no
+         trusted in-process path; a caller whose identity cannot be verified
+         is never authorized.
       1. Credentials must be obtainable (PID/UID) → fail closed otherwise.
       2. Root is always authorized.
       3. Same-UID check: caller UID must match service UID. Other local
@@ -277,10 +275,6 @@ def _check_authorization(sender, action_id: str, bus=None,
     ok, pid, uid, reason = _get_caller_credentials(sender, bus)
     if not ok:
         return False, reason
-
-    # In-process / headless mode (HAS_DBUS=False): trusted path.
-    if "in-process" in reason or "headless" in reason:
-        return True, reason
 
     # Root is always authorized for any action
     if uid == 0:

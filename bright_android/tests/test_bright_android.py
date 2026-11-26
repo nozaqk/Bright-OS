@@ -605,7 +605,7 @@ class SecurityValidationTests(unittest.TestCase):
 
     def test_polkit_check_rejects_no_sender(self):
         """When a real bus is present, sender=None must be denied (fail-closed).
-        bus=None in-process calls are allowed separately."""
+        bus=None is also denied (see FailClosedTests)."""
         from bright_android.core.android_service import _check_authorization
         import bright_android.core.android_service as svc
         bus_mock = mock.MagicMock()
