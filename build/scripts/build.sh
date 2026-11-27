@@ -815,7 +815,11 @@ else
         log_error "  Build log:        ${BUILD_DIR}/${BUILD_LOG}"
         log_error "  Review the validation output above for specific failures."
         log_error "========================================"
-        exit 1
+        if [ "${BRIGHT_ENSURE_VALIDATION:-1}" = "1" ]; then
+            exit 1
+        else
+            log_warn "BRIGHT_ENSURE_VALIDATION=0: continuing despite validation failure"
+        fi
     elif [ "${VALIDATION_STATUS}" -eq 2 ]; then
         log_warn "ISO validation was INCONCLUSIVE (some tools missing)."
         log_warn "The ISO was built but could not be fully validated."
