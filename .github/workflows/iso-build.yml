@@ -200,15 +200,15 @@ jobs:
               isoinfo -d -i "$iso_dir/$ISO_NAME" 2>&1 | head -20 || true
               echo ""
               echo "=== Generating ISO listing (isoinfo -f: full paths one per line) ==="
-              isoinfo -i "$iso_dir/$ISO_NAME" -f 2>/dev/null | sed 's/;[0-9]*$//' > "$BUILD_ROOT/iso-listing.txt" || true
-              LISTING_LINES=$(wc -l < "$BUILD_ROOT/iso-listing.txt")
+              isoinfo -i "$iso_dir/$ISO_NAME" -f 2>/dev/null | sed 's/;[0-9]*$//' > "$BUILD_ROOT/iso-paths.txt" || true
+              LISTING_LINES=$(wc -l < "$BUILD_ROOT/iso-paths.txt")
               echo "Listing has $LISTING_LINES lines"
               echo ""
               echo "--- First 100 paths of ISO ---"
-              head -100 "$BUILD_ROOT/iso-listing.txt"
+              head -100 "$BUILD_ROOT/iso-paths.txt"
               echo ""
               echo "--- Paths matching live/boot/EFI/squash/vmlinuz/initrd/grub ---"
-              grep -iE "^/live|^/boot|^/efi|\\.squashfs|vmlinuz|initrd|grub|isolinux" "$BUILD_ROOT/iso-listing.txt" | head -80 || echo "(no matches)"
+              grep -iE "^/live|^/boot|^/efi|\\.squashfs|vmlinuz|initrd|grub|isolinux" "$BUILD_ROOT/iso-paths.txt" | head -80 || echo "(no matches)"
               break
             fi
           done
@@ -225,7 +225,7 @@ jobs:
           echo ""
           echo "=== Copying artifacts to workspace ==="
           cp -a "$BUILD_ROOT/build.log" "$OUTPUT_ROOT/" 2>/dev/null || true
-          cp -a "$BUILD_ROOT/iso-listing.txt" "$OUTPUT_ROOT/" 2>/dev/null || true
+          cp -a "$BUILD_ROOT/iso-paths.txt" "$OUTPUT_ROOT/iso-paths.txt" 2>/dev/null || true
           cp -a "$BUILD_SUBDIR/build.log" "$OUTPUT_ROOT/lb-build.log" 2>/dev/null || true
           for iso_dir in "$BUILD_SUBDIR" "$BUILD_ROOT"; do
             if [ -f "$iso_dir/$ISO_NAME" ]; then
@@ -234,13 +234,22 @@ jobs:
               break
             fi
           done
-          # Also copy the inner lb binary config for diagnostics
-          mkdir -p "$OUTPUT_ROOT/lb-config"
-          for f in config/binary config/bootstrap config/common config/chroot; do
-            if [ -f "$BUILD_SUBDIR/$f" ]; then
-              cp -a "$BUILD_SUBDIR/$f" "$OUTPUT_ROOT/lb-config/" 2>/dev/null || true
+          # Copy the squashfs directly from the build tree (faster than xorriso)
+          echo "Looking for built squashfs in build tree..."
+          for sq in "$BUILD_SUBDIR/binary/live/"filesystem.squashfs \
+                    "$BUILD_SUBDIR/binary/live/"FILESYSTEM.SQUASHFS \
+                    "$BUILD_SUBDIR/chroot/binary/live/"filesystem.squashfs \
+                    "$BUILD_SUBDIR/chroot/binary/live/"FILESYSTEM.SQUASHFS; do
+            if [ -f "$sq" ]; then
+              echo "Found squashfs at $sq ($(stat -c%s "$sq") bytes)"
+              cp -a "$sq" "$OUTPUT_ROOT/filesystem.squashfs"
+              break
             fi
           done
+          if [ ! -f "$OUTPUT_ROOT/filesystem.squashfs" ]; then
+            echo "Searching build tree for squashfs..."
+            find "$BUILD_SUBDIR" -name "*filesystem.squashfs" -o -name "*FILESYSTEM.SQUASHFS" 2>/dev/null | head -5
+          fi
           cd "$GITHUB_WORKSPACE"
 
           # Record outputs
@@ -328,10 +337,10 @@ jobs:
             ls -la
           fi
           cd "$GITHUB_WORKSPACE"
-          if [ -f "build/output/${BRIGHT_EDITION}/iso-listing.txt" ]; then
+          if [ -f "build/output/${BRIGHT_EDITION}/iso-paths.txt" ]; then
             echo ""
-            echo "=== Saved iso-listing.txt (first 100 lines) ==="
-            head -100 "build/output/${BRIGHT_EDITION}/iso-listing.txt"
+            echo "=== Saved iso-paths.txt (first 100 lines) ==="
+            head -100 "build/output/${BRIGHT_EDITION}/iso-paths.txt"
           fi
 
       - name: Run extended ISO validation
@@ -373,23 +382,13 @@ jobs:
           # Now do in-squashfs content checks (packages inside the live system)
           echo ""
           echo "=== In-squashfs content checks ==="
-          SQUASHFS_RAW=$(isoinfo -i "${{ steps.build.outputs.iso_name }}" -f 2>/dev/null | grep -iE '\.squashfs(;[0-9]*)?$' | head -1)
-          SQUASHFS_PATH=$(echo "$SQUASHFS_RAW" | sed 's/;[0-9]*$//')
-          echo "SQUASHFS_RAW=$SQUASHFS_RAW"
-          echo "SQUASHFS_PATH=$SQUASHFS_PATH"
-          if [ -n "$SQUASHFS_PATH" ]; then
-            echo "Extracting squashfs for content inspection..."
+          # Use the squashfs copied from the build tree (OUTPUT_ROOT), not extracted from ISO
+          SQ_FILE="${{ steps.build.outputs.iso_dir }}/filesystem.squashfs"
+          if [ -s "$SQ_FILE" ]; then
+            echo "Using build-tree squashfs: $SQ_FILE ($(stat -c%s "$SQ_FILE") bytes)"
             mkdir -p /tmp/sq-inspect
-            # xorriso needs Rock-Ridge enabled; try both -o (lowercase) and -x
-            xorriso -osirrox on -indev "${{ steps.build.outputs.iso_name }}" \
-              -extract "/LIVE/FILESYSTEM.SQUASHFS" /tmp/sq-inspect/filesystem.squashfs 2>&1 | tail -10
-            if [ ! -s /tmp/sq-inspect/filesystem.squashfs ]; then
-              echo "First attempt failed; trying with version suffix..."
-              xorriso -osirrox on -indev "${{ steps.build.outputs.iso_name }}" \
-                -extract "/LIVE/FILESYSTEM.SQUASHFS;1" /tmp/sq-inspect/filesystem.squashfs 2>&1 | tail -10
-            fi
+            cp "$SQ_FILE" /tmp/sq-inspect/filesystem.squashfs
             if [ -s /tmp/sq-inspect/filesystem.squashfs ]; then
-              echo "Squashfs extracted OK: $(stat -c%s /tmp/sq-inspect/filesystem.squashfs) bytes"
               # Use unsquashfs -ll to list files without extracting
               unsquashfs -ll /tmp/sq-inspect/filesystem.squashfs 2>/dev/null > /tmp/sq-inspect/filelist.txt || true
               SLINES=$(wc -l < /tmp/sq-inspect/filelist.txt)
@@ -440,22 +439,10 @@ jobs:
           set +e
           cd "${{ steps.build.outputs.iso_dir }}"
           mkdir -p manifest
-          # Find the actual squashfs path and extract it
-          echo "Looking for squashfs in ISO..."
-          isoinfo -i "${{ steps.build.outputs.iso_name }}" -f 2>/dev/null | sed 's/;[0-9]*$//' | grep -iE "squashfs|^/live" | head -20
-          SQUASHFS_RAW=$(isoinfo -i "${{ steps.build.outputs.iso_name }}" -f 2>/dev/null | grep -iE '\.squashfs(;[0-9]*)?$' | head -1)
-          echo "SQUASHFS_RAW=$SQUASHFS_RAW"
-          # Try multiple path variants for xorriso (with/without ;1, lowercase)
-          for try_path in "/LIVE/FILESYSTEM.SQUASHFS" "/LIVE/FILESYSTEM.SQUASHFS;1" "/live/filesystem.squashfs" "/live/filesystem.squashfs;1" "$SQUASHFS_RAW"; do
-            [ -z "$try_path" ] && continue
-            echo "Trying xorriso extract of: $try_path"
-            rm -f ./filesystem.squashfs
-            xorriso -osirrox on -indev "${{ steps.build.outputs.iso_name }}" \
-              -extract "$try_path" ./filesystem.squashfs 2>&1 | tail -3
-            [ -s ./filesystem.squashfs ] && echo "SUCCESS with $try_path ($(stat -c%s ./filesystem.squashfs) bytes)" && break
-          done
+          # Use the squashfs copied from the build tree (already in OUTPUT_ROOT)
           if [ ! -s ./filesystem.squashfs ]; then
-            echo "::warning::filesystem.squashfs could not be extracted; skipping manifest."
+            echo "::warning::filesystem.squashfs not available from build tree; skipping manifest."
+            ls -la
             exit 0
           fi
           echo "Squashfs size: $(stat -c%s ./filesystem.squashfs) bytes"
@@ -489,10 +476,9 @@ jobs:
           path: |
             build/output/${{ env.BRIGHT_EDITION }}/build.log
             build/output/${{ env.BRIGHT_EDITION }}/lb-build.log
-            build/output/${{ env.BRIGHT_EDITION }}/iso-listing.txt
+            build/output/${{ env.BRIGHT_EDITION }}/iso-paths.txt
             build/output/${{ env.BRIGHT_EDITION }}/validation.log
             build/output/${{ env.BRIGHT_EDITION }}/build-measurement.json
             build/output/${{ env.BRIGHT_EDITION }}/manifest/packages.txt
-            build/output/${{ env.BRIGHT_EDITION }}/lb-config/*
           if-no-files-found: warn
           retention-days: 30
