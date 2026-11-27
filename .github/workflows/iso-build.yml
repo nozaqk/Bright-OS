@@ -199,16 +199,16 @@ jobs:
               echo "=== ISO volume descriptor ==="
               isoinfo -d -i "$iso_dir/$ISO_NAME" 2>&1 | head -20 || true
               echo ""
-              echo "=== Generating ISO listing ==="
-              isoinfo -i "$iso_dir/$ISO_NAME" -lR > "$BUILD_ROOT/iso-listing.txt" 2>&1 || true
+              echo "=== Generating ISO listing (isoinfo -f: full paths one per line) ==="
+              isoinfo -i "$iso_dir/$ISO_NAME" -f > "$BUILD_ROOT/iso-listing.txt" 2>&1 || true
               LISTING_LINES=$(wc -l < "$BUILD_ROOT/iso-listing.txt")
               echo "Listing has $LISTING_LINES lines"
               echo ""
-              echo "--- First 150 lines of ISO listing ---"
-              head -150 "$BUILD_ROOT/iso-listing.txt"
+              echo "--- First 100 paths of ISO ---"
+              head -100 "$BUILD_ROOT/iso-listing.txt"
               echo ""
               echo "--- Paths matching live/boot/EFI/squash/vmlinuz/initrd/grub ---"
-              grep -E "live/|/live$|/boot|EFI|efi|\\.squashfs|vmlinuz|initrd|grub|isolinux|dists/|pool/" "$BUILD_ROOT/iso-listing.txt" | head -80 || echo "(no matches)"
+              grep -E "^/live/|^/boot|^/EFI|\\.squashfs|^/live$|vmlinuz|initrd|grub|isolinux" "$BUILD_ROOT/iso-listing.txt" | head -80 || echo "(no matches)"
               break
             fi
           done
@@ -274,20 +274,35 @@ jobs:
         run: |
           set +e
           LOG="build/output/${BRIGHT_EDITION}/build.log"
+          LB_LOG="build/output/${BRIGHT_EDITION}/lb-build.log"
           echo "=== Build log size: $(wc -c < "$LOG" 2>/dev/null || echo 0) bytes ==="
           if [ -f "$LOG" ]; then
-            echo "--- Last 100 lines of build.log ---"
-            tail -100 "$LOG"
+            echo "--- Last 80 lines of build.log ---"
+            tail -80 "$LOG"
             echo ""
             echo "--- Key E: / ERROR / FAIL lines ---"
-            grep -nE "E: |ERROR|FAIL|error:|failed|unrecognized|Unknown|not found|invalid|cannot" "$LOG" | tail -40 || echo "(no error lines found)"
+            grep -nE "E: |ERROR|FAIL|error:|failed|unrecognized|Unknown|not found|invalid|cannot" "$LOG" | tail -30 || echo "(no error lines found)"
           else
             echo "(no build.log found)"
           fi
+          if [ -f "$LB_LOG" ]; then
+            echo ""
+            echo "--- Last 80 lines of lb-build.log ---"
+            tail -80 "$LB_LOG"
+            echo ""
+            echo "--- Key E: lines from lb-build.log ---"
+            grep -nE "^E: |^P: |^W: |ERROR|FAIL|failed|unrecognized|not found" "$LB_LOG" | tail -40 || echo "(none)"
+          fi
           if [ -f "build/output/${BRIGHT_EDITION}/iso-listing.txt" ]; then
             echo ""
-            echo "=== Full ISO listing (first 200 lines) ==="
-            head -200 "build/output/${BRIGHT_EDITION}/iso-listing.txt"
+            echo "=== Full ISO listing (first 300 lines) ==="
+            head -300 "build/output/${BRIGHT_EDITION}/iso-listing.txt"
+            echo ""
+            echo "=== All /live paths in ISO ==="
+            grep -E "live/|/live$" "build/output/${BRIGHT_EDITION}/iso-listing.txt" | head -40 || echo "(none)"
+            echo ""
+            echo "=== All paths with 'boot' or 'grub' or 'EFI' ==="
+            grep -iE "boot/|grub|efi|isolinux" "build/output/${BRIGHT_EDITION}/iso-listing.txt" | head -40 || echo "(none)"
           fi
 
       - name: Run extended ISO validation
@@ -303,7 +318,10 @@ jobs:
           echo ""
           echo "=== Content checks (extended) ==="
           LISTING=$(mktemp)
-          isoinfo -i "${{ steps.build.outputs.iso_name }}" -lR > "$LISTING" 2>&1 || true
+          # Use isoinfo -f (full paths, one per line) for reliable grep matching
+          isoinfo -i "${{ steps.build.outputs.iso_name }}" -f > "$LISTING" 2>&1 || true
+          echo "--- ISO path listing (first 80 lines) ---"
+          head -80 "$LISTING"
           failures=0
           check() {
             local pat="$1" desc="$2" req="${3:-1}"
@@ -350,12 +368,20 @@ jobs:
           set +e
           cd "${{ steps.build.outputs.iso_dir }}"
           mkdir -p manifest
+          # Find the actual squashfs path in the ISO (it might have a numbered prefix)
+          SQUASHFS_PATH=$(isoinfo -i "${{ steps.build.outputs.iso_name }}" -f 2>/dev/null | grep -E '\.squashfs$' | head -1)
+          if [ -z "$SQUASHFS_PATH" ]; then
+            echo "::warning::No .squashfs found in ISO; skipping manifest."
+            exit 0
+          fi
+          echo "Extracting $SQUASHFS_PATH from ISO..."
           xorriso -osirrox on -indev "${{ steps.build.outputs.iso_name }}" \
-            -extract /live/filesystem.squashfs ./filesystem.squashfs 2>&1 | tail -3
+            -extract "$SQUASHFS_PATH" ./filesystem.squashfs 2>&1 | tail -5
           if [ ! -s ./filesystem.squashfs ]; then
             echo "::warning::filesystem.squashfs could not be extracted; skipping manifest."
             exit 0
           fi
+          echo "Squashfs size: $(stat -c%s ./filesystem.squashfs) bytes"
           unsquashfs -d ./squashfs-root -e /var/lib/dpkg/status ./filesystem.squashfs \
             >/dev/null 2>&1 || true
           STATUS_FILE=./squashfs-root/var/lib/dpkg/status
@@ -364,6 +390,7 @@ jobs:
               "$STATUS_FILE" ./manifest
           else
             echo "::warning::dpkg/status not found in squashfs; skipping manifest."
+            ls -la ./squashfs-root/ 2>&1 | head
           fi
 
       - name: Upload ISO artifact

@@ -173,44 +173,46 @@ if $HAVE_ISOINFO; then
 
         # Get full listing
         ISO_LISTING=$(mktemp /tmp/bright-iso-list-XXXXXX.txt)
-        if isoinfo -i "$ISO_PATH" -lR 2>/dev/null > "$ISO_LISTING"; then
-            # Check for kernel
-            if grep -qE '/live/vmlinuz($|[^a-zA-Z])' "$ISO_LISTING" || grep -q 'live/vmlinuz$' "$ISO_LISTING"; then
+        # Use isoinfo -f (full-path listing, one per line) rather than -lR
+        # (human-readable directory format) for reliable grep matching.
+        if isoinfo -i "$ISO_PATH" -f 2>/dev/null > "$ISO_LISTING"; then
+            # Check for kernel (vmlinuz or vmlinuz-* in /live/)
+            if grep -qE '^/live/vmlinuz' "$ISO_LISTING"; then
                 pass "Kernel (live/vmlinuz) found"
             else
                 fail "Kernel (live/vmlinuz) not found in ISO"
             fi
 
-            # Check for initrd
-            if grep -qE '/live/initrd' "$ISO_LISTING" || grep -q 'live/initrd' "$ISO_LISTING"; then
+            # Check for initrd (initrd.img or initrd.img-* in /live/)
+            if grep -qE '^/live/initrd' "$ISO_LISTING"; then
                 pass "Initrd (live/initrd*) found"
             else
                 fail "Initrd not found in ISO"
             fi
 
-            # Check for squashfs
-            if grep -qE '/live/filesystem\.squashfs' "$ISO_LISTING"; then
-                pass "Squashfs root filesystem present (live/filesystem.squashfs)"
+            # Check for squashfs (filesystem.squashfs or NNN-filesystem.squashfs)
+            if grep -qE '^/live/.*\.squashfs' "$ISO_LISTING"; then
+                pass "Squashfs root filesystem present (live/*.squashfs)"
             else
                 fail "filesystem.squashfs not found — ISO has no live system"
             fi
 
-            # Check for EFI boot
-            if grep -qiE 'efi\.img|EFI/BOOT/BOOTX64|EFI/boot/bootx64' "$ISO_LISTING"; then
+            # Check for EFI boot (efi.img or EFI/BOOT/BOOTX64.EFI)
+            if grep -qiE 'efi\.img$|EFI/BOOT/BOOTX64\.EFI$' "$ISO_LISTING"; then
                 pass "EFI boot files detected (UEFI boot support)"
             else
                 fail "EFI boot files not detected — ISO may not boot on UEFI systems"
             fi
 
             # Check for GRUB
-            if grep -qi 'boot/grub/' "$ISO_LISTING"; then
+            if grep -qiE '/boot/grub/' "$ISO_LISTING"; then
                 pass "GRUB bootloader files present"
             else
                 warn "GRUB files not found"
             fi
 
             # Check for isolinux (BIOS boot)
-            if grep -qi 'isolinux/' "$ISO_LISTING"; then
+            if grep -qiE '/isolinux/' "$ISO_LISTING"; then
                 pass "ISOLINUX present (BIOS boot via isolinux)"
             else
                 warn "ISOLINUX not found (BIOS boot may rely solely on GRUB)"
