@@ -785,6 +785,16 @@ fi
 log_info "Generating SHA256 checksum..."
 sha256sum "${ISO_NAME}" > "${ISO_NAME}.sha256"
 
+# --- Debug: list build directory contents and ISO root ---
+log_info "Build directory contents after lb build:"
+ls -la
+echo ""
+if command -v isoinfo >/dev/null 2>&1; then
+    log_info "ISO root directory listing (isoinfo -l):"
+    isoinfo -i "${ISO_NAME}" -l 2>&1 | head -80 || true
+    echo ""
+fi
+
 # --- Automatic ISO validation ---
 # Run validate-iso.sh automatically.
 # This checks ISO9660 filesystem, kernel, initrd, squashfs, BIOS/UEFI boot
