@@ -230,8 +230,35 @@ jobs:
           if [ "$BUILD_EXIT" -ne 0 ]; then
             echo "::error::build.sh exited with code $BUILD_EXIT"
             if [ -f "$LOG" ]; then
-              echo "--- Last 100 lines of build log ---"
-              tail -100 "$LOG"
+              echo "--- Last 150 lines of build log ---"
+              tail -150 "$LOG"
+              echo ""
+              echo "--- All E:/ERROR/FAIL/404 lines ---"
+              ERRS=$(grep -nE "E: |ERROR|FAIL|error:|failed|404|unrecognized|Unknown|not found|invalid|cannot" "$LOG" | tail -30) || true
+              echo "$ERRS"
+              echo ""
+              echo "--- Key errors as annotations ---"
+              echo "$ERRS" | head -10 | while IFS= read -r line; do
+                echo "::error::$line" | head -c 1000
+                echo ""
+              done
+              # Add to job summary
+              {
+                echo "## ❌ Build failed (exit $BUILD_EXIT)"
+                echo ""
+                echo "### Last 80 lines of build.log"
+                echo '```'
+                tail -80 "$LOG"
+                echo '```'
+                echo ""
+                echo "### Key error lines"
+                echo '```'
+                echo "$ERRS"
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo "(no build log)"
+              ls -la "$BUILD_ROOT"
             fi
             exit "$BUILD_EXIT"
           fi
