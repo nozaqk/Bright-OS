@@ -331,8 +331,14 @@ jobs:
             echo "::notice::Built: $ISO_PATH ($ISO_SIZE_HUMAN)"
             echo "::notice::SHA256: $ISO_SHA"
             echo "::notice::ISO file type: $(file "$ISO_PATH" 2>&1 || echo unknown)"
-            echo "::notice::=== ISO root directory ==="
-            isoinfo -i "$ISO_PATH" -l 2>&1 | head -40 | while IFS= read -r ln; do echo "::notice::  $ln"; done
+            echo "::notice::=== Full ISO recursive listing (isoinfo -lR) ==="
+            # Use xargs-style approach to avoid SIGPIPE from head closing
+            isoinfo -i "$ISO_PATH" -lR 2>&1 > /tmp/iso-listing.txt || true
+            lines=$(wc -l < /tmp/iso-listing.txt)
+            echo "::notice::  (listing has $lines lines; showing first 200)"
+            head -200 /tmp/iso-listing.txt | while IFS= read -r ln; do echo "::notice::  $ln"; done
+            echo "::notice::=== All paths matching live/boot/efi (grep) ==="
+            grep -E "live/|boot/|efi|EFI|vmlinuz|initrd|squash|dists|pool" /tmp/iso-listing.txt | head -50 | while IFS= read -r ln; do echo "::notice::  $ln"; done
           fi
 
       - name: Dump tail of build log (for debugging)
