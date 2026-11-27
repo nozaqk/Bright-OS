@@ -163,60 +163,19 @@ jobs:
         run: |
           set -eu -o pipefail
           export BRIGHT_EDITION BRIGHT_VERSION BRIGHT_DEBIAN_CODENAME
+          echo "PWD: $(pwd)"
+          echo "GITHUB_WORKSPACE: ${GITHUB_WORKSPACE}"
+          ls -la
           ISO_DIR="${GITHUB_WORKSPACE}/build/output/${BRIGHT_EDITION}"
+          echo "ISO_DIR: $ISO_DIR"
           mkdir -p "$ISO_DIR"
+          echo "mkdir OK"
+          ls -la "$ISO_DIR"
           LOG="$ISO_DIR/build.log"
-          on_error() {
-            local ec=$?
-            echo ""
-            echo "=============================================="
-            echo "BUILD FAILED (exit $ec); tail of build.log:"
-            echo "=============================================="
-            # Collect error summary
-            if [ -f "$LOG" ]; then
-              echo "--- Last 200 lines of build.log ---"
-              tail -200 "$LOG"
-              echo ""
-              echo "--- All E: / ERROR / FAIL lines ---"
-              ERRLINES=$(grep -nE "E: |ERROR|FAIL|error:|failed|invalid|unrecognized|Unknown|404" "$LOG" | tail -80) || true
-              echo "$ERRLINES"
-              # Capture a few key errors as ::error annotations so they show up in the UI
-              echo "$ERRLINES" | head -10 | while IFS= read -r line; do
-                echo "::error::$line" | head -c 500
-                echo ""
-              done
-              echo ""
-              echo "--- Context around first error ---"
-              FIRST_ERR=$(echo "$ERRLINES" | head -1 | cut -d: -f1)
-              if [ -n "$FIRST_ERR" ] && [ "$FIRST_ERR" -gt 0 ] 2>/dev/null; then
-                START=$((FIRST_ERR - 10)); [ "$START" -lt 1 ] && START=1
-                END=$((FIRST_ERR + 30))
-                sed -n "${START},${END}p" "$LOG"
-              fi
-              # Write last 60 lines to GITHUB_STEP_SUMMARY
-              {
-                echo "## ❌ Build ISO failed (exit code $ec)"
-                echo ""
-                echo "### Last 60 lines of build.log"
-                echo '```'
-                tail -60 "$LOG"
-                echo '```'
-                echo ""
-                echo "### Key error lines"
-                echo '```'
-                echo "$ERRLINES" | head -20
-                echo '```'
-              } >> "$GITHUB_STEP_SUMMARY"
-            else
-              echo "(no build.log file found at $LOG)"
-              ls -la "$ISO_DIR/" 2>&1 || echo "(ISO dir empty/missing)"
-            fi
-            echo "=============================================="
-            echo "END OF ERROR DUMP"
-            echo "=============================================="
-            exit 1
-          }
-          trap on_error ERR
+          echo "LOG: $LOG"
+          # Test that we can write to the log
+          echo "test line" > "$LOG"
+          echo "write to log OK; size: $(wc -c < "$LOG")"
           echo "Running as: $(id)"
           echo "Free disk in project root: $(df -h "${GITHUB_WORKSPACE}" | tail -1)"
           echo "lb version: $(lb --version 2>&1 | head -1)"
