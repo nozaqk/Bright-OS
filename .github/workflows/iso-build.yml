@@ -313,25 +313,43 @@ jobs:
             # Save full listing (strip ISO9660 ;1 version suffixes for readability)
             isoinfo -f -i "$ISO_NAME" 2>/dev/null | sed 's/;[0-9]*$//' > iso-paths.txt
             TOTAL_PATHS=$(wc -l < iso-paths.txt)
-            echo "::notice::Total paths in ISO: $TOTAL_PATHS"
+            echo "Total paths in ISO: $TOTAL_PATHS"
             echo ""
-            echo "::notice::=== First 60 paths ==="
-            head -60 iso-paths.txt | while IFS= read -r ln; do echo "::notice::  $ln"; done
+            echo "=== All /LIVE paths (these are what matters for booting) ==="
+            grep -iE "^/live/" iso-paths.txt
             echo ""
-            echo "::notice::=== All paths under /LIVE ==="
-            grep -iE "^/live/" iso-paths.txt | head -40 | while IFS= read -r ln; do echo "::notice::  $ln"; done
+            echo "=== All /BOOT paths ==="
+            grep -iE "^/boot/" iso-paths.txt
             echo ""
-            echo "::notice::=== All paths under /BOOT ==="
-            grep -iE "^/boot/" iso-paths.txt | head -40 | while IFS= read -r ln; do echo "::notice::  $ln"; done
+            echo "=== /EFI paths ==="
+            grep -iE "^/efi" iso-paths.txt
             echo ""
-            echo "::notice::=== All paths with squashfs/vmlinuz/initrd ==="
-            grep -iE "squashfs|vmlinuz|initrd" iso-paths.txt | head -20 | while IFS= read -r ln; do echo "::notice::  $ln"; done
+            echo "=== squashfs/vmlinuz/initrd paths ==="
+            grep -iE "squashfs|vmlinuz|initrd|vmlinu" iso-paths.txt
             echo ""
-            echo "::notice::=== Paths with boot/grub/EFI/isolinux ==="
-            grep -iE "^/boot|grub|efi|isolinux" iso-paths.txt | head -20 | while IFS= read -r ln; do echo "::notice::  $ln"; done
-            echo ""
-            echo "::notice::=== Paths with labwc/greetd/cage/aura/calamares/polkit ==="
-            grep -iE "labwc|greetd|cage|aura|calamares|polkit|dbus-1|bright-desktop-shell|bright-os" iso-paths.txt | head -30 | while IFS= read -r ln; do echo "::notice::  $ln"; done
+            # Write key info to GITHUB_STEP_SUMMARY (visible in the UI Summary page)
+            {
+              echo "## ISO built successfully"
+              echo "- File: \`$ISO_NAME\`"
+              echo "- SHA256: \`$(sha256sum "$ISO_NAME" | cut -d' ' -f1)\`"
+              echo "- Size: \`$(stat -c%s "$ISO_NAME" | numfmt --to=iec-i --suffix=B)\`"
+              echo "- Total ISO paths: $TOTAL_PATHS"
+              echo ""
+              echo "### /LIVE directory contents (boot-critical)"
+              echo '```'
+              grep -iE "^/live/" iso-paths.txt
+              echo '```'
+              echo ""
+              echo "### /BOOT directory contents"
+              echo '```'
+              grep -iE "^/boot/" iso-paths.txt | head -40
+              echo '```'
+              echo ""
+              echo "### /EFI paths"
+              echo '```'
+              grep -iE "^/efi" iso-paths.txt
+              echo '```'
+            } >> $GITHUB_STEP_SUMMARY
           else
             echo "(no ISO file found)"
             ls -la
@@ -446,9 +464,13 @@ jobs:
             exit 0
           fi
           echo "Squashfs size: $(stat -c%s ./filesystem.squashfs) bytes"
-          unsquashfs -d ./squashfs-root -e /var/lib/dpkg/status ./filesystem.squashfs \
+          # unsquashfs -e takes relative paths (no leading /)
+          rm -rf ./squashfs-root
+          unsquashfs -d ./squashfs-root -e var/lib/dpkg/status ./filesystem.squashfs \
             >/dev/null 2>&1 || true
           STATUS_FILE=./squashfs-root/var/lib/dpkg/status
+          echo "Looking for dpkg/status at $STATUS_FILE"
+          ls -la ./squashfs-root/var/lib/dpkg/ 2>/dev/null || echo "(no var/lib/dpkg dir)"
           if [ -f "$STATUS_FILE" ]; then
             python3 "${GITHUB_WORKSPACE}/tools/ci/extract_manifest.py" \
               "$STATUS_FILE" ./manifest
