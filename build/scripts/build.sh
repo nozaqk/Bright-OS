@@ -789,9 +789,23 @@ sha256sum "${ISO_NAME}" > "${ISO_NAME}.sha256"
 log_info "Build directory contents after lb build:"
 ls -la
 echo ""
+echo "=== [DEBUG] Recursive listing of chroot/ and binary/ dirs ==="
+for d in chroot/binary/live chroot/binary/boot chroot/live chroot/boot binary/live binary/boot 2>/dev/null; do
+  if [ -e "$d" ]; then
+    echo "--- $d ---"
+    ls -la "$d" 2>&1 | head -20
+  fi
+done
+echo ""
+echo "=== [DEBUG] Finding any vmlinuz/initrd/squashfs in build tree ==="
+find . -name "vmlinuz*" -o -name "initrd*" -o -name "*.squashfs" -o -name "*.iso" 2>/dev/null | head -30
+echo ""
 if command -v isoinfo >/dev/null 2>&1; then
     log_info "ISO root directory listing (isoinfo -l):"
-    isoinfo -i "${ISO_NAME}" -l 2>&1 | head -80 || true
+    isoinfo -i "${ISO_NAME}" -l 2>&1 | head -200 || true
+    echo ""
+    echo "=== [DEBUG] ISO listing (isoinfo -f - all paths) ==="
+    isoinfo -i "${ISO_NAME}" -f 2>&1 | head -100 || true
     echo ""
 fi
 

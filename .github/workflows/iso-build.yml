@@ -212,18 +212,25 @@ jobs:
           echo "Build script exited with code: $BUILD_EXIT"
 
           # Copy logs and artifacts back to workspace regardless of success.
-          # After build, the ISO ends up in BUILD_ROOT/<ISO_NAME> because
-          # build.sh cd's into BUILD_DIR and writes the ISO there, then renames
-          # it to the project root (which is now $BUILD_ROOT).
+          # After build, the ISO ends up in BUILD_ROOT/build/output/<edition>/
+          # because build.sh cd's into BUILD_DIR and writes/moves the ISO there.
           echo "=== Copying artifacts to workspace ==="
           ISO_NAME="bright-os-${BRIGHT_VERSION}-${BRIGHT_EDITION}-amd64.iso"
+          BUILD_SUBDIR="$BUILD_ROOT/build/output/${BRIGHT_EDITION}"
           echo "Build root contents:"
           ls -la "$BUILD_ROOT" | head -30
+          echo "Build subdir ($BUILD_SUBDIR) contents:"
+          ls -la "$BUILD_SUBDIR" 2>&1 | head -50 || true
           cp -a "$BUILD_ROOT/build.log" "$OUTPUT_ROOT/" 2>/dev/null || true
-          if [ -f "$BUILD_ROOT/$ISO_NAME" ]; then
-            cp -a "$BUILD_ROOT/$ISO_NAME" "$OUTPUT_ROOT/"
-            cp -a "$BUILD_ROOT/${ISO_NAME}.sha256" "$OUTPUT_ROOT/" 2>/dev/null || true
-          fi
+          # Try multiple possible ISO locations
+          for iso_dir in "$BUILD_SUBDIR" "$BUILD_ROOT"; do
+            if [ -f "$iso_dir/$ISO_NAME" ]; then
+              echo "Found ISO at $iso_dir/$ISO_NAME"
+              cp -a "$iso_dir/$ISO_NAME" "$OUTPUT_ROOT/"
+              cp -a "$iso_dir/${ISO_NAME}.sha256" "$OUTPUT_ROOT/" 2>/dev/null || true
+              break
+            fi
+          done
           # Back to workspace for later steps
           cd "$GITHUB_WORKSPACE"
 
