@@ -33,7 +33,7 @@ firmware-realtek
 firmware-iwlwifi
 firmware-atheros
 firmware-brcm80211
-firmware-intelwimax
+# firmware-intelwimax removed in Trixie (Intel WiMAX EOL; hardware no longer supported)
 initramfs-tools
 cryptsetup-initramfs
 
@@ -58,9 +58,10 @@ keyboard-configuration
 console-setup
 console-setup-linux
 sudo
-policykit-1
-policykit-1-gnome
+polkitd
+pkexec
 polkit-kde-agent-1
+# policykit-1 meta + policykit-1-gnome removed in Trixie; polkit-kde-agent-1 is our graphical agent
 pciutils
 usbutils
 kmod
@@ -263,6 +264,8 @@ grub-efi-amd64-bin
 grub-common
 
 # --- Additional essentials ---
-software-properties-common
+# software-properties-common removed from Trixie (Debian bug #1038747);
+# add-apt-repository is no longer shipped. Our repos are configured via
+# bright-repo (sources.list drop-ins) which doesn't depend on it.
 desktop-file-utils
 shared-mime-info

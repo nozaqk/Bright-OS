@@ -11,7 +11,17 @@
 # =============================================================================
 set -e
 
-echo "I: Installing AURA subsystem..." | systemd-cat -t bright-os-aura -p info
+# systemd-cat is not available inside the live-build chroot (no systemd init),
+# so fall back to plain stdout in that case.
+_log() {
+    if [ -d /run/systemd/system ]; then
+        echo "$@" | systemd-cat -t bright-os-aura -p info 2>/dev/null || echo "$@"
+    else
+        echo "$@"
+    fi
+}
+
+_log "I: Installing AURA subsystem..."
 
 AURA_USER="aura"
 AURA_SRC="/usr/lib/aura"
@@ -28,7 +38,7 @@ fi
 
 # Fallback: create user manually if sysusers didn't run (e.g. host lacks systemd)
 if ! id "$AURA_USER" >/dev/null 2>&1; then
-    echo "I: Creating aura system user via useradd (fallback)..." | systemd-cat -t bright-os-aura -p info
+    _log "I: Creating aura system user via useradd (fallback)..."
     useradd --system \
             --no-create-home \
             --home-dir /var/lib/aura \
@@ -58,25 +68,17 @@ touch "$AURA_SRC/__init__.py" 2>/dev/null || true
 chmod +x /usr/bin/aura-core-service 2>/dev/null || true
 
 # --- Install D-Bus and Polkit configs ---
-# The dbus policy file ships in /etc/dbus-1/system.d/ via includes.chroot.
-# Reload dbus config if running in a build chroot (dbus may not be active
-# here; ignore failures).
 if [ -d /etc/dbus-1/system.d ]; then
-    # Files already in place via includes.chroot; nothing to copy.
     true
 fi
-# Polkit policy ships in /usr/share/polkit-1/actions/ via includes.chroot.
 if [ -d /usr/share/polkit-1/actions ]; then
-    : # already in place
+    :
 fi
 
 # --- Keep the service OFF at boot (on-demand only) ---
-# AURA starts when requested: via D-Bus activation of org.bright_os.AURA or
-# `systemctl start aura-core.service`. Remove any leftover enable link so an
-# older image or manual enable cannot make it start at boot.
 if [ -d /etc/systemd/system ]; then
     systemctl disable aura-core.service 2>/dev/null || true
-    echo "I: aura-core.service left disabled (on-demand start)" | systemd-cat -t bright-os-aura -p info
+    _log "I: aura-core.service left disabled (on-demand start)"
 fi
 
-echo "I: AURA subsystem installation complete." | systemd-cat -t bright-os-aura -p info
+_log "I: AURA subsystem installation complete."

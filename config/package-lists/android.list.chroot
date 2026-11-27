@@ -2,24 +2,22 @@
 # Bright OS — Android Application Support (Bright Android)
 #
 # Waydroid-based Android runtime. Activation is session-based (started by the
-# user from bright-android, NOT at boot). linux-headers-amd64 is required to
-# build the binder_linux DKMS module; pull it in here so waydroid works
-# out-of-the-box on the Home/Developer ISOs.
+# user from bright-android, NOT at boot).
 # Target: Debian 13 (Trixie) amd64
+#
+# Notes on Trixie package availability (Phase 6.3 corrective):
+#   - Trixie kernel 6.12 ships CONFIG_ANDROID_BINDER_IPC=y (built-in), so
+#     binder-linux-module-dkms is no longer needed.
+#   - waydroid is NOT in Debian Trixie main as of Trixie release; it must be
+#     installed from the Waydroid repo by the user via bright-android init.
+#     We keep adb/fastboot/wl-clipboard so CLI tooling is present; the
+#     bright-android wrapper will offer to install waydroid from its repo
+#     on first run.
 # =============================================================================
-
-# Kernel headers (needed for binder-linux-module-dkms to build)
-linux-headers-amd64
-
-# Waydroid runtime (pulls in lxc, python3, etc. as deps)
-waydroid
-
-# Binder kernel module (DKMS) for kernels without CONFIG_ANDROID_BINDER_IPC
-binder-linux-module-dkms
 
 # ADB / fastboot
 adb
 fastboot
 
-# Clipboard integration for Wayland
+# Clipboard integration for Wayland (used by Waydroid clipboard sync)
 wl-clipboard

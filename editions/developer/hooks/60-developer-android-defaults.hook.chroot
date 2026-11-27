@@ -48,5 +48,8 @@ if [ -f /etc/bright-android/config.ini ]; then
     cp /usr/share/bright-android/config.ini.default /etc/bright-android/config.ini
 fi
 
-echo "I: Developer Android defaults applied (ADB+logs enabled by default)" \
-    | systemd-cat -t bright-os-developer -p info
+if [ -d /run/systemd/system ]; then
+    echo "I: Developer Android defaults applied (ADB+logs enabled by default)" \
+        | systemd-cat -t bright-os-developer -p info 2>/dev/null || true
+fi
+echo "I: Developer Android defaults applied (ADB+logs enabled by default)"
