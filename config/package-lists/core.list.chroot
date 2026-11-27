@@ -60,8 +60,8 @@ console-setup-linux
 sudo
 polkitd
 pkexec
-polkitd-pkla
 polkit-kde-agent-1
+# polkitd-pkla removed in Trixie; .pkla compat replaced by JavaScript rules.d
 # policykit-1-gnome removed in Trixie; polkit-kde-agent-1 is our graphical agent
 pciutils
 usbutils
