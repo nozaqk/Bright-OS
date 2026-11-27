@@ -309,8 +309,14 @@ jobs:
             echo "::notice::=== First 60 paths ==="
             head -60 iso-paths.txt | while IFS= read -r ln; do echo "::notice::  $ln"; done
             echo ""
-            echo "::notice::=== Paths with live/squash/vmlinuz/initrd ==="
-            grep -iE "squashfs|vmlinuz|initrd|^/live" iso-paths.txt | head -20 | while IFS= read -r ln; do echo "::notice::  $ln"; done
+            echo "::notice::=== All paths under /LIVE ==="
+            grep -iE "^/live/" iso-paths.txt | head -40 | while IFS= read -r ln; do echo "::notice::  $ln"; done
+            echo ""
+            echo "::notice::=== All paths under /BOOT ==="
+            grep -iE "^/boot/" iso-paths.txt | head -40 | while IFS= read -r ln; do echo "::notice::  $ln"; done
+            echo ""
+            echo "::notice::=== All paths with squashfs/vmlinuz/initrd ==="
+            grep -iE "squashfs|vmlinuz|initrd" iso-paths.txt | head -20 | while IFS= read -r ln; do echo "::notice::  $ln"; done
             echo ""
             echo "::notice::=== Paths with boot/grub/EFI/isolinux ==="
             grep -iE "^/boot|grub|efi|isolinux" iso-paths.txt | head -20 | while IFS= read -r ln; do echo "::notice::  $ln"; done
@@ -369,12 +375,21 @@ jobs:
           echo "=== In-squashfs content checks ==="
           SQUASHFS_RAW=$(isoinfo -i "${{ steps.build.outputs.iso_name }}" -f 2>/dev/null | grep -iE '\.squashfs(;[0-9]*)?$' | head -1)
           SQUASHFS_PATH=$(echo "$SQUASHFS_RAW" | sed 's/;[0-9]*$//')
+          echo "SQUASHFS_RAW=$SQUASHFS_RAW"
+          echo "SQUASHFS_PATH=$SQUASHFS_PATH"
           if [ -n "$SQUASHFS_PATH" ]; then
             echo "Extracting squashfs for content inspection..."
             mkdir -p /tmp/sq-inspect
+            # xorriso needs Rock-Ridge enabled; try both -o (lowercase) and -x
             xorriso -osirrox on -indev "${{ steps.build.outputs.iso_name }}" \
-              -extract "$SQUASHFS_PATH" /tmp/sq-inspect/filesystem.squashfs 2>&1 | tail -3
+              -extract "/LIVE/FILESYSTEM.SQUASHFS" /tmp/sq-inspect/filesystem.squashfs 2>&1 | tail -10
+            if [ ! -s /tmp/sq-inspect/filesystem.squashfs ]; then
+              echo "First attempt failed; trying with version suffix..."
+              xorriso -osirrox on -indev "${{ steps.build.outputs.iso_name }}" \
+                -extract "/LIVE/FILESYSTEM.SQUASHFS;1" /tmp/sq-inspect/filesystem.squashfs 2>&1 | tail -10
+            fi
             if [ -s /tmp/sq-inspect/filesystem.squashfs ]; then
+              echo "Squashfs extracted OK: $(stat -c%s /tmp/sq-inspect/filesystem.squashfs) bytes"
               # Use unsquashfs -ll to list files without extracting
               unsquashfs -ll /tmp/sq-inspect/filesystem.squashfs 2>/dev/null > /tmp/sq-inspect/filelist.txt || true
               SLINES=$(wc -l < /tmp/sq-inspect/filelist.txt)
@@ -425,18 +440,20 @@ jobs:
           set +e
           cd "${{ steps.build.outputs.iso_dir }}"
           mkdir -p manifest
-          # Find the actual squashfs path in the ISO (case-insensitive; keep ;1 for xorriso)
+          # Find the actual squashfs path and extract it
+          echo "Looking for squashfs in ISO..."
+          isoinfo -i "${{ steps.build.outputs.iso_name }}" -f 2>/dev/null | sed 's/;[0-9]*$//' | grep -iE "squashfs|^/live" | head -20
           SQUASHFS_RAW=$(isoinfo -i "${{ steps.build.outputs.iso_name }}" -f 2>/dev/null | grep -iE '\.squashfs(;[0-9]*)?$' | head -1)
-          SQUASHFS_PATH=$(echo "$SQUASHFS_RAW" | sed 's/;[0-9]*$//')
-          if [ -z "$SQUASHFS_PATH" ]; then
-            echo "::warning::No .squashfs found in ISO; skipping manifest."
-            echo "::warning::Available paths under LIVE/:"
-            isoinfo -i "${{ steps.build.outputs.iso_name }}" -f 2>/dev/null | sed 's/;[0-9]*$//' | grep -iE "^/live/" | head -20
-            exit 0
-          fi
-          echo "Extracting $SQUASHFS_RAW (-> $SQUASHFS_PATH) from ISO..."
-          xorriso -osirrox on -indev "${{ steps.build.outputs.iso_name }}" \
-            -extract "$SQUASHFS_PATH" ./filesystem.squashfs 2>&1 | tail -5
+          echo "SQUASHFS_RAW=$SQUASHFS_RAW"
+          # Try multiple path variants for xorriso (with/without ;1, lowercase)
+          for try_path in "/LIVE/FILESYSTEM.SQUASHFS" "/LIVE/FILESYSTEM.SQUASHFS;1" "/live/filesystem.squashfs" "/live/filesystem.squashfs;1" "$SQUASHFS_RAW"; do
+            [ -z "$try_path" ] && continue
+            echo "Trying xorriso extract of: $try_path"
+            rm -f ./filesystem.squashfs
+            xorriso -osirrox on -indev "${{ steps.build.outputs.iso_name }}" \
+              -extract "$try_path" ./filesystem.squashfs 2>&1 | tail -3
+            [ -s ./filesystem.squashfs ] && echo "SUCCESS with $try_path ($(stat -c%s ./filesystem.squashfs) bytes)" && break
+          done
           if [ ! -s ./filesystem.squashfs ]; then
             echo "::warning::filesystem.squashfs could not be extracted; skipping manifest."
             exit 0
