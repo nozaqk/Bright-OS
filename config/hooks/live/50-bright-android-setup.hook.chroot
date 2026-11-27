@@ -6,7 +6,15 @@
 # =============================================================================
 set -e
 
-echo "I: Installing Bright Android subsystem..." | systemd-cat -t bright-os-android -p info
+_log() {
+    if [ -d /run/systemd/system ]; then
+        echo "$@" | systemd-cat -t bright-os-android -p info 2>/dev/null || echo "$@"
+    else
+        echo "$@"
+    fi
+}
+
+_log "I: Installing Bright Android subsystem..."
 
 BA_DIR="/usr/lib/bright-android"
 BA_BIN="/usr/bin/bright-android"
@@ -37,4 +45,4 @@ mkdir -p /etc/dbus-1/system.d 2>/dev/null || true
 mkdir -p /usr/lib/systemd/user-preset
 echo "enable bright-android.service" > /usr/lib/systemd/user-preset/10-bright-android.preset 2>/dev/null || true
 
-echo "I: Bright Android subsystem installation complete." | systemd-cat -t bright-os-android -p info
+_log "I: Bright Android subsystem installation complete."

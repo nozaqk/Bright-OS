@@ -16,5 +16,8 @@ EOF
 mkdir -p /usr/lib/systemd/user-preset
 echo "disable bright-android.service" > /usr/lib/systemd/user-preset/10-bright-android.preset 2>/dev/null || true
 
-echo "I: Lite edition: Android support disabled (optional, manual install)" \
-    | systemd-cat -t bright-os-lite -p info
+if [ -d /run/systemd/system ]; then
+    echo "I: Lite edition: Android support disabled (optional, manual install)" \
+        | systemd-cat -t bright-os-lite -p info 2>/dev/null || true
+fi
+echo "I: Lite edition: Android support disabled (optional, manual install)"

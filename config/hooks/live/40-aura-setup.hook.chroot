@@ -11,7 +11,17 @@
 # =============================================================================
 set -e
 
-echo "I: Installing AURA subsystem..." | systemd-cat -t bright-os-aura -p info
+# systemd-cat is not available inside the live-build chroot (no systemd init),
+# so fall back to plain stdout in that case.
+_log() {
+    if [ -S /run/systemd/journal/syslog ] || [ -d /run/systemd/system ]; then
+        echo "$@" | systemd-cat -t bright-os-aura -p info || echo "$@"
+    else
+        echo "$@"
+    fi
+}
+
+_log "I: Installing AURA subsystem..."
 
 AURA_USER="aura"
 AURA_SRC="/usr/lib/aura"
@@ -28,7 +38,7 @@ fi
 
 # Fallback: create user manually if sysusers didn't run (e.g. host lacks systemd)
 if ! id "$AURA_USER" >/dev/null 2>&1; then
-    echo "I: Creating aura system user via useradd (fallback)..." | systemd-cat -t bright-os-aura -p info
+    _log "I: Creating aura system user via useradd (fallback)..."
     useradd --system \
             --no-create-home \
             --home-dir /var/lib/aura \
@@ -76,7 +86,7 @@ fi
 # older image or manual enable cannot make it start at boot.
 if [ -d /etc/systemd/system ]; then
     systemctl disable aura-core.service 2>/dev/null || true
-    echo "I: aura-core.service left disabled (on-demand start)" | systemd-cat -t bright-os-aura -p info
+    _log "I: aura-core.service left disabled (on-demand start)"
 fi
 
-echo "I: AURA subsystem installation complete." | systemd-cat -t bright-os-aura -p info
+_log "I: AURA subsystem installation complete."
