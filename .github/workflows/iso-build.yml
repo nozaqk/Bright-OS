@@ -364,22 +364,56 @@ jobs:
           check '/boot/grub/'                  'GRUB bootloader'
           check 'efi\.img$|efi/boot/bootx64\.efi' 'UEFI boot binary'
           check '/isolinux/'                  'ISOLINUX (BIOS)' 0
-          check 'calamares'                   'Calamares installer files'
-          check 'branding/bright-os'          'Bright OS installer branding'
-          check 'bin/labwc'                   'labwc compositor (Phase 6.3 default)'
-          check 'bin/greetd'                  'greetd display manager'
-          check 'bin/cage'                    'cage (kiosk compositor for greeter)'
-          check 'bright-desktop-shell'        'Bright shell launcher'
-          check 'wayland-sessions/bright\.desktop' 'Bright wayland-session'
-          check 'lib/aura'                    'AURA service'
-          check 'lib/bright-android'          'Bright Android' 0
-          check 'polkit-1/actions/org\.bright_os' 'Bright OS Polkit policy'
-          check 'dbus-1/system\.d/org\.bright_os' 'Bright OS D-Bus policy'
+          # Now do in-squashfs content checks (packages inside the live system)
+          echo ""
+          echo "=== In-squashfs content checks ==="
+          SQUASHFS_RAW=$(isoinfo -i "${{ steps.build.outputs.iso_name }}" -f 2>/dev/null | grep -iE '\.squashfs(;[0-9]*)?$' | head -1)
+          SQUASHFS_PATH=$(echo "$SQUASHFS_RAW" | sed 's/;[0-9]*$//')
+          if [ -n "$SQUASHFS_PATH" ]; then
+            echo "Extracting squashfs for content inspection..."
+            mkdir -p /tmp/sq-inspect
+            xorriso -osirrox on -indev "${{ steps.build.outputs.iso_name }}" \
+              -extract "$SQUASHFS_PATH" /tmp/sq-inspect/filesystem.squashfs 2>&1 | tail -3
+            if [ -s /tmp/sq-inspect/filesystem.squashfs ]; then
+              # Use unsquashfs -ll to list files without extracting
+              unsquashfs -ll /tmp/sq-inspect/filesystem.squashfs 2>/dev/null > /tmp/sq-inspect/filelist.txt || true
+              SLINES=$(wc -l < /tmp/sq-inspect/filelist.txt)
+              echo "Squashfs file list: $SLINES entries"
+              check_sq() {
+                local pat="$1" desc="$2" req="${3:-1}"
+                if grep -qiE "$pat" /tmp/sq-inspect/filelist.txt; then
+                  echo "  [PASS] $desc (in squashfs)"
+                else
+                  if [ "$req" = "1" ]; then
+                    echo "  [FAIL] $desc"; failures=$((failures+1))
+                  else
+                    echo "  [WARN] $desc (optional, not found)"
+                  fi
+                fi
+              }
+              check_sq 'bin/labwc'                   'labwc compositor (Phase 6.3 default)'
+              check_sq 'bin/greetd'                  'greetd display manager'
+              check_sq 'bin/cage'                    'cage (kiosk compositor for greeter)'
+              check_sq 'bright-desktop-shell'        'Bright shell launcher'
+              check_sq 'wayland-sessions/bright\.desktop' 'Bright wayland-session'
+              check_sq 'lib/aura'                    'AURA service'
+              check_sq 'lib/bright-android'          'Bright Android' 0
+              check_sq 'polkit-1/actions/org\.bright_os' 'Bright OS Polkit policy'
+              check_sq 'dbus-1/system\.d/org\.bright_os' 'Bright OS D-Bus policy'
+              check_sq 'bin/calamares'               'Calamares installer'
+              check_sq 'branding/bright-os'          'Bright OS installer branding'
+              check_sq 'share/grub|lib/grub'         'GRUB inside squashfs' 0
+              rm -rf /tmp/sq-inspect
+            else
+              echo "::warning::squashfs extracted empty; skipping in-squashfs checks"
+            fi
+          else
+            echo "::warning::no squashfs found; skipping in-squashfs checks"
+          fi
+
           if [ "$failures" -gt 0 ]; then
             echo ""
-            echo "::warning::$failures extended content check(s) failed; continuing for diagnostics."
-            echo "--- Paths containing live/boot/EFI/squash ---"
-            grep -E "live/|/live$|/boot|EFI|efi|\\.squashfs|vmlinuz|initrd|grub" "$LISTING" | head -40 || echo "(none)"
+            echo "::warning::$failures extended content check(s) failed; see above."
           else
             echo "Extended content checks passed."
           fi
