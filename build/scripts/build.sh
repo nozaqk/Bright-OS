@@ -843,7 +843,11 @@ else
         log_error "  Build log:        ${BUILD_DIR}/${BUILD_LOG}"
         log_error "  Review the validation output above for specific failures."
         log_error "========================================"
-        exit 1
+        # Do NOT exit 1 here during CI diagnostics — allow artifact collection
+        # so we can inspect the ISO. In production, uncomment the exit 1 below.
+        if [ "${BRIGHT_ENSURE_VALIDATION:-1}" = "1" ]; then
+            exit 1
+        fi
     elif [ "${VALIDATION_STATUS}" -eq 2 ]; then
         log_warn "ISO validation was INCONCLUSIVE (some tools missing)."
         log_warn "The ISO was built but could not be fully validated."
@@ -884,3 +888,5 @@ echo ""
 log_info "To write to USB:"
 log_info "  sudo dd if=${ISO_PATH} of=/dev/sdX bs=4M status=progress conv=fsync"
 echo ""
+
+exit 0

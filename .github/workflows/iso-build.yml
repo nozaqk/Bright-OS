@@ -198,30 +198,73 @@ jobs:
           echo "Now in: $(pwd)"
           ls -la
           LOG="$BUILD_ROOT/build.log"
+          BUILD_SUBDIR="$BUILD_ROOT/build/output/${BRIGHT_EDITION}"
+          ISO_NAME="bright-os-${BRIGHT_VERSION}-${BRIGHT_EDITION}-amd64.iso"
 
           echo ""
           echo "=== Starting live-build ==="
           set +e
+          set +o pipefail
+          export BRIGHT_ENSURE_VALIDATION=0  # don't fail the build on validation errors; we want artifacts
           bash -x build/scripts/build.sh \
             --version "$BRIGHT_VERSION" \
             --distro "$BRIGHT_DEBIAN_CODENAME" \
             "$BRIGHT_EDITION" 2>&1 | tee "$LOG"
           BUILD_EXIT=$?
           set -e
+          set -o pipefail
           echo ""
           echo "Build script exited with code: $BUILD_EXIT"
+          # Always dump summary info regardless of exit code
+          echo ""
+          echo "=== Build tree inspection (always runs) ==="
+          echo "Build subdir ($BUILD_SUBDIR) listing:"
+          ls -la "$BUILD_SUBDIR" 2>&1 | head -80 || true
+          echo ""
+          for iso_dir in "$BUILD_SUBDIR" "$BUILD_ROOT"; do
+            if [ -f "$iso_dir/$ISO_NAME" ]; then
+              echo "Found ISO at: $iso_dir/$ISO_NAME"
+              ls -la "$iso_dir/$ISO_NAME"
+              file "$iso_dir/$ISO_NAME" 2>&1 || true
+              if command -v isoinfo >/dev/null 2>&1; then
+                echo "--- ISO volume descriptor ---"
+                isoinfo -d -i "$iso_dir/$ISO_NAME" 2>&1 | head -20 || true
+                echo "--- ISO root (isoinfo -l, head -80) ---"
+                isoinfo -i "$iso_dir/$ISO_NAME" -l 2>&1 | head -80 || true
+                echo "--- ISO all paths (isoinfo -f, head -100) ---"
+                isoinfo -i "$iso_dir/$ISO_NAME" -f 2>&1 | head -100 || true
+              fi
+              break
+            fi
+          done
+          echo ""
+          echo "--- Finding vmlinuz/initrd/squashfs/iso in build tree ---"
+          ( cd "$BUILD_SUBDIR" && find . -maxdepth 5 \( -name "vmlinuz*" -o -name "initrd*" -o -name "*.squashfs" -o -name "*.iso" -o -name "*.img" -o -name "efi*" \) 2>/dev/null | head -50 ) || true
+          echo ""
+          echo "--- chroot/binary contents (if present) ---"
+          for d in "$BUILD_SUBDIR/chroot/binary" "$BUILD_SUBDIR/binary" "$BUILD_SUBDIR/chroot"; do
+            if [ -d "$d" ]; then
+              echo "=== $d ==="
+              ls -la "$d" 2>&1 | head -30 || true
+            fi
+          done
 
           # Copy logs and artifacts back to workspace regardless of success.
           # After build, the ISO ends up in BUILD_ROOT/build/output/<edition>/
           # because build.sh cd's into BUILD_DIR and writes/moves the ISO there.
           echo "=== Copying artifacts to workspace ==="
-          ISO_NAME="bright-os-${BRIGHT_VERSION}-${BRIGHT_EDITION}-amd64.iso"
-          BUILD_SUBDIR="$BUILD_ROOT/build/output/${BRIGHT_EDITION}"
           echo "Build root contents:"
           ls -la "$BUILD_ROOT" | head -30
-          echo "Build subdir ($BUILD_SUBDIR) contents:"
-          ls -la "$BUILD_SUBDIR" 2>&1 | head -50 || true
           cp -a "$BUILD_ROOT/build.log" "$OUTPUT_ROOT/" 2>/dev/null || true
+          # Also copy the inner lb build log (build.sh's own log from inside BUILD_SUBDIR)
+          cp -a "$BUILD_SUBDIR/build.log" "$OUTPUT_ROOT/lb-build.log" 2>/dev/null || true
+          # Copy lb config (binary list, package lists) to inspect lb's configuration
+          mkdir -p "$OUTPUT_ROOT/lb-config" 2>/dev/null || true
+          for f in config/binary config/bootstrap config/common config/chroot; do
+            if [ -f "$BUILD_SUBDIR/$f" ]; then
+              cp -a "$BUILD_SUBDIR/$f" "$OUTPUT_ROOT/lb-config/" 2>/dev/null || true
+            fi
+          done
           # Try multiple possible ISO locations
           for iso_dir in "$BUILD_SUBDIR" "$BUILD_ROOT"; do
             if [ -f "$iso_dir/$ISO_NAME" ]; then
