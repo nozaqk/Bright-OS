@@ -314,18 +314,26 @@ jobs:
           fi
 
           ISO_PATH="$OUTPUT_ROOT/$ISO_NAME"
-          test -s "$ISO_PATH" || { echo "::error::ISO not produced at $ISO_PATH"; ls -la "$BUILD_ROOT" "$OUTPUT_ROOT"; exit 1; }
-          ISO_SIZE=$(stat -c%s "$ISO_PATH")
-          ISO_SHA=$(cut -d' ' -f1 "${ISO_PATH}.sha256")
-          ISO_SIZE_HUMAN=$(numfmt --to=iec-i --suffix=B "$ISO_SIZE")
-          echo "iso_name=$ISO_NAME"           >> "$GITHUB_OUTPUT"
-          echo "iso_dir=$OUTPUT_ROOT"         >> "$GITHUB_OUTPUT"
-          echo "iso_path=$ISO_PATH"           >> "$GITHUB_OUTPUT"
-          echo "iso_size=$ISO_SIZE"           >> "$GITHUB_OUTPUT"
-          echo "iso_size_human=$ISO_SIZE_HUMAN" >> "$GITHUB_OUTPUT"
-          echo "iso_sha256=$ISO_SHA"          >> "$GITHUB_OUTPUT"
-          echo "Built: $ISO_PATH ($ISO_SIZE_HUMAN)"
-          echo "SHA256: $ISO_SHA"
+          if [ ! -s "$ISO_PATH" ]; then
+            echo "::error::ISO not produced at $ISO_PATH"
+            ls -la "$BUILD_ROOT" "$OUTPUT_ROOT"
+            # Don't exit 1 here — let's keep going to see the extended info
+          else
+            ISO_SIZE=$(stat -c%s "$ISO_PATH")
+            ISO_SHA=$(cut -d' ' -f1 "${ISO_PATH}.sha256" 2>/dev/null || echo "no-sha256")
+            ISO_SIZE_HUMAN=$(numfmt --to=iec-i --suffix=B "$ISO_SIZE")
+            echo "iso_name=$ISO_NAME"           >> "$GITHUB_OUTPUT"
+            echo "iso_dir=$OUTPUT_ROOT"         >> "$GITHUB_OUTPUT"
+            echo "iso_path=$ISO_PATH"           >> "$GITHUB_OUTPUT"
+            echo "iso_size=$ISO_SIZE"           >> "$GITHUB_OUTPUT"
+            echo "iso_size_human=$ISO_SIZE_HUMAN" >> "$GITHUB_OUTPUT"
+            echo "iso_sha256=$ISO_SHA"          >> "$GITHUB_OUTPUT"
+            echo "::notice::Built: $ISO_PATH ($ISO_SIZE_HUMAN)"
+            echo "::notice::SHA256: $ISO_SHA"
+            echo "::notice::ISO file type: $(file "$ISO_PATH" 2>&1 || echo unknown)"
+            echo "::notice::=== ISO root directory ==="
+            isoinfo -i "$ISO_PATH" -l 2>&1 | head -40 | while IFS= read -r ln; do echo "::notice::  $ln"; done
+          fi
 
       - name: Dump tail of build log (for debugging)
         if: always()
@@ -387,6 +395,14 @@ jobs:
           check 'dbus-1/system\.d/org\.bright_os' 'Bright OS D-Bus policy'
           if [ "$failures" -gt 0 ]; then
             echo "::error::$failures extended content check(s) failed."
+            # Print ISO info + top-level directory listing to help diagnose
+            echo "::warning::ISO size: $(ls -la "${{ steps.build.outputs.iso_name }}" | awk '{print $5}') bytes"
+            echo "::warning::ISO file type:"
+            file "${{ steps.build.outputs.iso_name }}" | while IFS= read -r ln; do echo "::warning::  $ln"; done
+            echo "::warning::=== Top-level ISO directory listing ==="
+            isoinfo -i "${{ steps.build.outputs.iso_name }}" -l 2>&1 | head -60 | while IFS= read -r ln; do echo "::warning::  $ln"; done
+            echo "::warning::=== Looking for live/ directory paths ==="
+            isoinfo -i "${{ steps.build.outputs.iso_name }}" -f 2>&1 | grep -i "live\|boot\|efi\|vmlinuz\|initrd\|squash" | head -30 | while IFS= read -r ln; do echo "::warning::  $ln"; done
             exit 1
           fi
           rm -f "$LISTING"
