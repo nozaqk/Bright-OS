@@ -9,7 +9,8 @@ sddm-theme-debian-breeze
 kwin-wayland
 kde-config-gtk-style
 kde-config-gtk-style-preview
-breeze-gtk
+breeze-gtk-theme
+# breeze-gtk binary package dropped in Trixie; replaced by breeze-gtk-theme
 powerdevil
 xdg-desktop-portal-kde
 pavucontrol-qt
