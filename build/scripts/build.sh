@@ -786,28 +786,32 @@ log_info "Generating SHA256 checksum..."
 sha256sum "${ISO_NAME}" > "${ISO_NAME}.sha256"
 
 # --- Debug: list build directory contents and ISO root ---
+set +o pipefail  # avoid SIGPIPE from head closing pipes killing us under set -e
 log_info "Build directory contents after lb build:"
-ls -la
+ls -la || true
 echo ""
 echo "=== [DEBUG] Recursive listing of chroot/ and binary/ dirs ==="
 for d in chroot/binary/live chroot/binary/boot chroot/live chroot/boot binary/live binary/boot 2>/dev/null; do
   if [ -e "$d" ]; then
     echo "--- $d ---"
-    ls -la "$d" 2>&1 | head -20
+    ls -la "$d" 2>&1 | head -20 || true
+  else
+    echo "--- $d does not exist ---"
   fi
 done
 echo ""
 echo "=== [DEBUG] Finding any vmlinuz/initrd/squashfs in build tree ==="
-find . -name "vmlinuz*" -o -name "initrd*" -o -name "*.squashfs" -o -name "*.iso" 2>/dev/null | head -30
+( find . -name "vmlinuz*" -o -name "initrd*" -o -name "*.squashfs" -o -name "*.iso" 2>/dev/null || true ) | head -30 || true
 echo ""
 if command -v isoinfo >/dev/null 2>&1; then
     log_info "ISO root directory listing (isoinfo -l):"
     isoinfo -i "${ISO_NAME}" -l 2>&1 | head -200 || true
     echo ""
-    echo "=== [DEBUG] ISO listing (isoinfo -f - all paths) ==="
+    echo "=== [DEBUG] ISO listing (isoinfo -f - all paths, first 100) ==="
     isoinfo -i "${ISO_NAME}" -f 2>&1 | head -100 || true
     echo ""
 fi
+set -o pipefail
 
 # --- Automatic ISO validation ---
 # Run validate-iso.sh automatically.
