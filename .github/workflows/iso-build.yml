@@ -200,7 +200,7 @@ jobs:
               isoinfo -d -i "$iso_dir/$ISO_NAME" 2>&1 | head -20 || true
               echo ""
               echo "=== Generating ISO listing (isoinfo -f: full paths one per line) ==="
-              isoinfo -i "$iso_dir/$ISO_NAME" -f > "$BUILD_ROOT/iso-listing.txt" 2>&1 || true
+              isoinfo -i "$iso_dir/$ISO_NAME" -f 2>/dev/null | sed 's/;[0-9]*$//' > "$BUILD_ROOT/iso-listing.txt" || true
               LISTING_LINES=$(wc -l < "$BUILD_ROOT/iso-listing.txt")
               echo "Listing has $LISTING_LINES lines"
               echo ""
@@ -208,7 +208,7 @@ jobs:
               head -100 "$BUILD_ROOT/iso-listing.txt"
               echo ""
               echo "--- Paths matching live/boot/EFI/squash/vmlinuz/initrd/grub ---"
-              grep -E "^/live/|^/boot|^/EFI|\\.squashfs|^/live$|vmlinuz|initrd|grub|isolinux" "$BUILD_ROOT/iso-listing.txt" | head -80 || echo "(no matches)"
+              grep -iE "^/live|^/boot|^/efi|\\.squashfs|vmlinuz|initrd|grub|isolinux" "$BUILD_ROOT/iso-listing.txt" | head -80 || echo "(no matches)"
               break
             fi
           done
@@ -301,8 +301,8 @@ jobs:
             echo "--- file command on ISO ---"
             file "$ISO_NAME"
             echo ""
-            # Save full listing
-            isoinfo -f -i "$ISO_NAME" > iso-paths.txt 2>&1
+            # Save full listing (strip ISO9660 ;1 version suffixes for readability)
+            isoinfo -f -i "$ISO_NAME" 2>/dev/null | sed 's/;[0-9]*$//' > iso-paths.txt
             TOTAL_PATHS=$(wc -l < iso-paths.txt)
             echo "::notice::Total paths in ISO: $TOTAL_PATHS"
             echo ""
@@ -310,10 +310,13 @@ jobs:
             head -60 iso-paths.txt | while IFS= read -r ln; do echo "::notice::  $ln"; done
             echo ""
             echo "::notice::=== Paths with live/squash/vmlinuz/initrd ==="
-            grep -iE "squashfs|vmlinuz|initrd|live" iso-paths.txt | head -20 | while IFS= read -r ln; do echo "::notice::  $ln"; done
+            grep -iE "squashfs|vmlinuz|initrd|^/live" iso-paths.txt | head -20 | while IFS= read -r ln; do echo "::notice::  $ln"; done
             echo ""
             echo "::notice::=== Paths with boot/grub/EFI/isolinux ==="
-            grep -iE "boot|grub|efi|isolinux" iso-paths.txt | head -20 | while IFS= read -r ln; do echo "::notice::  $ln"; done
+            grep -iE "^/boot|grub|efi|isolinux" iso-paths.txt | head -20 | while IFS= read -r ln; do echo "::notice::  $ln"; done
+            echo ""
+            echo "::notice::=== Paths with labwc/greetd/cage/aura/calamares/polkit ==="
+            grep -iE "labwc|greetd|cage|aura|calamares|polkit|dbus-1|bright-desktop-shell|bright-os" iso-paths.txt | head -30 | while IFS= read -r ln; do echo "::notice::  $ln"; done
           else
             echo "(no ISO file found)"
             ls -la
@@ -338,14 +341,14 @@ jobs:
           echo ""
           echo "=== Content checks (extended) ==="
           LISTING=$(mktemp)
-          # Use isoinfo -f (full paths, one per line) for reliable grep matching
-          isoinfo -i "${{ steps.build.outputs.iso_name }}" -f > "$LISTING" 2>&1 || true
-          echo "--- ISO path listing (first 80 lines) ---"
-          head -80 "$LISTING"
+          # Use isoinfo -f and strip ISO9660 version suffixes (;1); case-insensitive
+          isoinfo -i "${{ steps.build.outputs.iso_name }}" -f 2>/dev/null | sed 's/;[0-9]*$//' > "$LISTING" || true
+          echo "--- ISO paths (first 50 lines, normalized) ---"
+          head -50 "$LISTING"
           failures=0
           check() {
             local pat="$1" desc="$2" req="${3:-1}"
-            if grep -qE "$pat" "$LISTING"; then
+            if grep -qiE "$pat" "$LISTING"; then
               echo "  [PASS] $desc"
             else
               if [ "$req" = "1" ]; then
@@ -355,23 +358,23 @@ jobs:
               fi
             fi
           }
-          check '/live/vmlinuz'                'Linux kernel'
-          check '/live/initrd'                'initrd'
-          check '/live/filesystem\\.squashfs'  'Root filesystem (squashfs)'
-          check 'boot/grub/'                  'GRUB bootloader'
-          check 'EFI/boot/bootx64\\.efi|efi\\.img' 'UEFI boot binary'
-          check 'isolinux/'                   'ISOLINUX (BIOS)' 0
+          check '^/live/vmlinuz'              'Linux kernel'
+          check '^/live/initrd'               'initrd'
+          check '^/live/.*\.squashfs'         'Root filesystem (squashfs)'
+          check '/boot/grub/'                  'GRUB bootloader'
+          check 'efi\.img$|efi/boot/bootx64\.efi' 'UEFI boot binary'
+          check '/isolinux/'                  'ISOLINUX (BIOS)' 0
           check 'calamares'                   'Calamares installer files'
           check 'branding/bright-os'          'Bright OS installer branding'
           check 'bin/labwc'                   'labwc compositor (Phase 6.3 default)'
           check 'bin/greetd'                  'greetd display manager'
           check 'bin/cage'                    'cage (kiosk compositor for greeter)'
           check 'bright-desktop-shell'        'Bright shell launcher'
-          check 'wayland-sessions/bright\\.desktop' 'Bright wayland-session'
+          check 'wayland-sessions/bright\.desktop' 'Bright wayland-session'
           check 'lib/aura'                    'AURA service'
           check 'lib/bright-android'          'Bright Android' 0
-          check 'polkit-1/actions/org\\.bright_os' 'Bright OS Polkit policy'
-          check 'dbus-1/system\\.d/org\\.bright_os' 'Bright OS D-Bus policy'
+          check 'polkit-1/actions/org\.bright_os' 'Bright OS Polkit policy'
+          check 'dbus-1/system\.d/org\.bright_os' 'Bright OS D-Bus policy'
           if [ "$failures" -gt 0 ]; then
             echo ""
             echo "::warning::$failures extended content check(s) failed; continuing for diagnostics."
@@ -388,13 +391,16 @@ jobs:
           set +e
           cd "${{ steps.build.outputs.iso_dir }}"
           mkdir -p manifest
-          # Find the actual squashfs path in the ISO (it might have a numbered prefix)
-          SQUASHFS_PATH=$(isoinfo -i "${{ steps.build.outputs.iso_name }}" -f 2>/dev/null | grep -E '\.squashfs$' | head -1)
+          # Find the actual squashfs path in the ISO (case-insensitive; keep ;1 for xorriso)
+          SQUASHFS_RAW=$(isoinfo -i "${{ steps.build.outputs.iso_name }}" -f 2>/dev/null | grep -iE '\.squashfs(;[0-9]*)?$' | head -1)
+          SQUASHFS_PATH=$(echo "$SQUASHFS_RAW" | sed 's/;[0-9]*$//')
           if [ -z "$SQUASHFS_PATH" ]; then
             echo "::warning::No .squashfs found in ISO; skipping manifest."
+            echo "::warning::Available paths under LIVE/:"
+            isoinfo -i "${{ steps.build.outputs.iso_name }}" -f 2>/dev/null | sed 's/;[0-9]*$//' | grep -iE "^/live/" | head -20
             exit 0
           fi
-          echo "Extracting $SQUASHFS_PATH from ISO..."
+          echo "Extracting $SQUASHFS_RAW (-> $SQUASHFS_PATH) from ISO..."
           xorriso -osirrox on -indev "${{ steps.build.outputs.iso_name }}" \
             -extract "$SQUASHFS_PATH" ./filesystem.squashfs 2>&1 | tail -5
           if [ ! -s ./filesystem.squashfs ]; then
