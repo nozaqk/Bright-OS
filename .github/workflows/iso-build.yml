@@ -127,7 +127,7 @@ jobs:
             grub-pc-bin grub-efi-amd64-bin shim-signed grub-common \
             file coreutils cpio qemu-utils qemu-system-x86 ovmf \
             python3 python3-pip ca-certificates wget sudo \
-            build-essential git
+            build-essential git rsync
           lb --version
           debootstrap --version
           for t in lb debootstrap mksquashfs xorriso isoinfo file grub-mkstandalone unsquashfs; do
@@ -163,37 +163,44 @@ jobs:
         run: |
           set -eu -o pipefail
           export BRIGHT_EDITION BRIGHT_VERSION BRIGHT_DEBIAN_CODENAME
+          echo "=== Build environment ==="
           echo "PWD: $(pwd)"
-          echo "GITHUB_WORKSPACE: ${GITHUB_WORKSPACE}"
-          ls -la
-          ISO_DIR="${GITHUB_WORKSPACE}/build/output/${BRIGHT_EDITION}"
-          echo "ISO_DIR: $ISO_DIR"
-          mkdir -p "$ISO_DIR"
-          echo "mkdir OK"
-          ls -la "$ISO_DIR"
-          LOG="$ISO_DIR/build.log"
-          echo "LOG: $LOG"
-          # Test that we can write to the log
-          echo "test line" > "$LOG"
-          echo "write to log OK; size: $(wc -c < "$LOG")"
           echo "Running as: $(id)"
-          echo "Free disk in project root: $(df -h "${GITHUB_WORKSPACE}" | tail -1)"
+          echo "GITHUB_WORKSPACE: ${GITHUB_WORKSPACE}"
           echo "lb version: $(lb --version 2>&1 | head -1)"
           echo "debootstrap version: $(debootstrap --version 2>&1 | head -1)"
           echo "Key package versions:"
           dpkg-query -W -f='${Package}=${Version}\n' live-build debootstrap debian-archive-keyring \
             grub-pc-bin grub-efi-amd64-bin isolinux syslinux-common shim-signed 2>&1 || true
+          mount | head -10
+          # Test mount capabilities (needed for chroot binds)
+          mkdir -p /tmp/mnt-test && mount --bind /tmp /tmp/mnt-test && umount /tmp/mnt-test && rmdir /tmp/mnt-test \
+            && echo "mount --bind works" || { echo "::error::mount --bind fails; cannot build"; exit 1; }
+
           echo ""
-          echo "=== Sanity checks before build ==="
-          ls -la build/scripts/build.sh
+          echo "=== Sanity checks ==="
           test -x build/scripts/build.sh || chmod +x build/scripts/build.sh
-          test -d build/live-build/auto || { echo "::error::missing build/live-build/auto"; ls -la build/live-build/; exit 1; }
           test -f build/live-build/auto/config || { echo "::error::missing auto/config"; exit 1; }
-          mount | head -5
+
+          # Build on the container's native filesystem (/bright-build) because
+          # the bind-mounted GITHUB_WORKSPACE (from the runner's Docker) may
+          # not support the overlay/bind mounts that live-build needs inside
+          # the chroot. Copy the entire source tree there, build, then copy
+          # artifacts back to the workspace.
+          BUILD_ROOT=/bright-build
+          OUTPUT_ROOT="${GITHUB_WORKSPACE}/build/output/${BRIGHT_EDITION}"
+          rm -rf "$BUILD_ROOT"
+          mkdir -p "$BUILD_ROOT" "$OUTPUT_ROOT"
+          echo "Copying source tree to $BUILD_ROOT ..."
+          # Copy everything except .git and any build/ directory to save time
+          rsync -a --exclude='.git' --exclude='build/output' ./ "$BUILD_ROOT/"
+          cd "$BUILD_ROOT"
+          echo "Now in: $(pwd)"
+          ls -la
+          LOG="$BUILD_ROOT/build.log"
+
           echo ""
           echo "=== Starting live-build ==="
-          # Run build as root (we are already root in the container). bash -x for trace.
-          # Use a pipeline with explicit exit-code capture (same as build.sh's own logic)
           set +e
           bash -x build/scripts/build.sh \
             --version "$BRIGHT_VERSION" \
@@ -203,25 +210,39 @@ jobs:
           set -e
           echo ""
           echo "Build script exited with code: $BUILD_EXIT"
+
+          # Copy logs and artifacts back to workspace regardless of success.
+          # After build, the ISO ends up in BUILD_ROOT/<ISO_NAME> because
+          # build.sh cd's into BUILD_DIR and writes the ISO there, then renames
+          # it to the project root (which is now $BUILD_ROOT).
+          echo "=== Copying artifacts to workspace ==="
+          ISO_NAME="bright-os-${BRIGHT_VERSION}-${BRIGHT_EDITION}-amd64.iso"
+          echo "Build root contents:"
+          ls -la "$BUILD_ROOT" | head -30
+          cp -a "$BUILD_ROOT/build.log" "$OUTPUT_ROOT/" 2>/dev/null || true
+          if [ -f "$BUILD_ROOT/$ISO_NAME" ]; then
+            cp -a "$BUILD_ROOT/$ISO_NAME" "$OUTPUT_ROOT/"
+            cp -a "$BUILD_ROOT/${ISO_NAME}.sha256" "$OUTPUT_ROOT/" 2>/dev/null || true
+          fi
+          # Back to workspace for later steps
+          cd "$GITHUB_WORKSPACE"
+
           if [ "$BUILD_EXIT" -ne 0 ]; then
             echo "::error::build.sh exited with code $BUILD_EXIT"
             if [ -f "$LOG" ]; then
               echo "--- Last 100 lines of build log ---"
               tail -100 "$LOG"
-            else
-              echo "(no build log produced)"
-              ls -la build/output/ 2>&1 || true
             fi
             exit "$BUILD_EXIT"
           fi
-          ISO_NAME="bright-os-${BRIGHT_VERSION}-${BRIGHT_EDITION}-amd64.iso"
-          ISO_PATH="$ISO_DIR/$ISO_NAME"
-          test -s "$ISO_PATH" || { echo "::error::ISO not produced at $ISO_PATH"; ls -la "$ISO_DIR"; exit 1; }
+
+          ISO_PATH="$OUTPUT_ROOT/$ISO_NAME"
+          test -s "$ISO_PATH" || { echo "::error::ISO not produced at $ISO_PATH"; ls -la "$BUILD_ROOT" "$OUTPUT_ROOT"; exit 1; }
           ISO_SIZE=$(stat -c%s "$ISO_PATH")
           ISO_SHA=$(cut -d' ' -f1 "${ISO_PATH}.sha256")
           ISO_SIZE_HUMAN=$(numfmt --to=iec-i --suffix=B "$ISO_SIZE")
           echo "iso_name=$ISO_NAME"           >> "$GITHUB_OUTPUT"
-          echo "iso_dir=$ISO_DIR"             >> "$GITHUB_OUTPUT"
+          echo "iso_dir=$OUTPUT_ROOT"         >> "$GITHUB_OUTPUT"
           echo "iso_path=$ISO_PATH"           >> "$GITHUB_OUTPUT"
           echo "iso_size=$ISO_SIZE"           >> "$GITHUB_OUTPUT"
           echo "iso_size_human=$ISO_SIZE_HUMAN" >> "$GITHUB_OUTPUT"
