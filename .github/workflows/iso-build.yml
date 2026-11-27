@@ -298,20 +298,22 @@ jobs:
           echo ""
           echo "=== Direct isoinfo inspection of $ISO_NAME ==="
           if [ -f "$ISO_NAME" ]; then
-            echo "--- isoinfo -d (volume descriptor) ---"
-            isoinfo -d -i "$ISO_NAME" 2>&1 | head -20
-            echo ""
-            echo "--- isoinfo -f (first 100 paths) ---"
-            isoinfo -f -i "$ISO_NAME" 2>&1 | head -100
-            echo ""
-            echo "--- Paths matching squashfs/vmlinuz/initrd ---"
-            isoinfo -f -i "$ISO_NAME" 2>&1 | grep -iE "squashfs|vmlinuz|initrd|live" | head -30
-            echo ""
-            echo "--- Paths matching boot/grub/EFI/isolinux ---"
-            isoinfo -f -i "$ISO_NAME" 2>&1 | grep -iE "boot|grub|efi|isolinux" | head -30
-            echo ""
             echo "--- file command on ISO ---"
             file "$ISO_NAME"
+            echo ""
+            # Save full listing
+            isoinfo -f -i "$ISO_NAME" > iso-paths.txt 2>&1
+            TOTAL_PATHS=$(wc -l < iso-paths.txt)
+            echo "::notice::Total paths in ISO: $TOTAL_PATHS"
+            echo ""
+            echo "::notice::=== First 60 paths ==="
+            head -60 iso-paths.txt | while IFS= read -r ln; do echo "::notice::  $ln"; done
+            echo ""
+            echo "::notice::=== Paths with live/squash/vmlinuz/initrd ==="
+            grep -iE "squashfs|vmlinuz|initrd|live" iso-paths.txt | head -20 | while IFS= read -r ln; do echo "::notice::  $ln"; done
+            echo ""
+            echo "::notice::=== Paths with boot/grub/EFI/isolinux ==="
+            grep -iE "boot|grub|efi|isolinux" iso-paths.txt | head -20 | while IFS= read -r ln; do echo "::notice::  $ln"; done
           else
             echo "(no ISO file found)"
             ls -la
