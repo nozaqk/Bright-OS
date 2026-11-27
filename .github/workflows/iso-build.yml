@@ -21,6 +21,7 @@ on:
   push:
     branches:
       - 'arena/phase6-2-iso-build'
+      - 'arena/phase6-3-iso-build-fix'
   pull_request:
     branches:
       - main
@@ -63,6 +64,18 @@ jobs:
   build-iso:
     name: Build ISO (${{ inputs.edition || 'home' }} / ${{ inputs.distro || 'trixie' }})
     runs-on: ubuntu-24.04
+    # Run in a Debian Trixie container so that debootstrap and live-build are
+    # native Trixie versions (with correct trixie-security suite naming and
+    # trixie debootstrap scripts). Ubuntu 24.04's live-build 1:20230502 and
+    # debootstrap 1.0.132ubuntu generate legacy "<codename>/updates" URLs that
+    # return 404 against the current Debian 13 mirrors.
+    container:
+      image: debian:trixie
+      # live-build needs chroot + mount (bind, proc, sysfs, devtmpfs), which
+      # require CAP_SYS_ADMIN and Docker's default seccomp/AppArmor profiles
+      # to be loosened. --privileged is the simplest reliable option for CI
+      # (the build runs as root inside a clean ephemeral container).
+      options: --privileged
     timeout-minutes: 360
     outputs:
       iso_name: ${{ steps.build.outputs.iso_name }}
@@ -85,36 +98,38 @@ jobs:
             echo "BRIGHT_QEMU_SMOKE=1" >> "$GITHUB_ENV"
           fi
 
-      - name: Record runner environment
+      - name: Record runner/container environment
         run: |
           echo "Runner:      $(uname -a)"
           echo "Distro:      $(. /etc/os-release && echo "$PRETTY_NAME")"
+          echo "Container:   ${HOSTNAME}"
           echo "Free disk:   $(df -h / | tail -1 | awk '{print $4}')"
           echo "RAM:         $(free -h | awk '/Mem:/ {print $2}')"
           echo "CPU cores:   $(nproc)"
           echo "KVM present: $([ -e /dev/kvm ] && echo yes || echo no)"
+          echo "User:        $(id)"
 
-      - name: Free disk space
-        run: |
-          set -eu
-          echo "Before: $(df -h / | tail -1 | awk '{print $4}')"
-          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache \
-                    /usr/local/share/boost /usr/lib/jvm /usr/local/.ghcup 2>/dev/null || true
-          sudo apt-get clean
-          sudo rm -rf /var/lib/apt/lists/*
-          echo "After:  $(df -h / | tail -1 | awk '{print $4}')"
-
-      - name: Install live-build and build dependencies
+      - name: Install live-build and build dependencies (Debian Trixie)
         run: |
           set -eux
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
+          # We run as root in the debian:trixie container; no sudo needed.
+          export DEBIAN_FRONTEND=noninteractive
+          # Ensure Debian sources include non-free-firmware (trixie container ships minimal sources)
+          cat > /etc/apt/sources.list <<'EOF'
+          deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware
+          deb http://deb.debian.org/debian trixie-updates main contrib non-free non-free-firmware
+          deb http://security.debian.org/debian-security trixie-security main contrib non-free non-free-firmware
+          EOF
+          apt-get update -qq
+          apt-get install -y --no-install-recommends \
             live-build debootstrap debian-archive-keyring squashfs-tools xorriso \
             isolinux syslinux-common syslinux-efi mtools dosfstools genisoimage \
-            grub-pc-bin grub-efi-amd64-bin grub-efi-amd64-signed shim-signed grub-common \
+            grub-pc-bin grub-efi-amd64-bin shim-signed grub-common \
             file coreutils cpio qemu-utils qemu-system-x86 ovmf \
-            python3 python3-pip ca-certificates
+            python3 python3-pip ca-certificates wget sudo \
+            build-essential git
           lb --version
+          debootstrap --version
           for t in lb debootstrap mksquashfs xorriso isoinfo file grub-mkstandalone unsquashfs; do
             command -v "$t" >/dev/null || { echo "::error::missing tool: $t"; exit 1; }
           done
@@ -157,16 +172,13 @@ jobs:
             echo "=============================================="
             echo "BUILD FAILED (exit $ec); tail of build.log:"
             echo "=============================================="
-            sudo chown -R "$(id -u):$(id -g)" "${GITHUB_WORKSPACE}/build" 2>/dev/null || true
             # Collect error summary
-            ERR_SUMMARY=""
-            LAST_ERR_LINES=""
             if [ -f "$LOG" ]; then
               echo "--- Last 200 lines of build.log ---"
               tail -200 "$LOG"
               echo ""
               echo "--- All E: / ERROR / FAIL lines ---"
-              ERRLINES=$(grep -nE "E: |ERROR|FAIL|error:|failed|invalid|unrecognized|Unknown" "$LOG" | tail -80) || true
+              ERRLINES=$(grep -nE "E: |ERROR|FAIL|error:|failed|invalid|unrecognized|Unknown|404" "$LOG" | tail -80) || true
               echo "$ERRLINES"
               # Capture a few key errors as ::error annotations so they show up in the UI
               echo "$ERRLINES" | head -10 | while IFS= read -r line; do
@@ -210,17 +222,15 @@ jobs:
           echo "lb version: $(lb --version 2>&1 | head -1)"
           echo "debootstrap version: $(debootstrap --version 2>&1 | head -1)"
           echo "Key package versions:"
-          dpkg-query -W -f='${Package}=${Version}\n' live-build debian-archive-keyring \
-            grub-pc-bin grub-efi-amd64-bin isolinux syslinux-common syslinux-efi shim-signed 2>&1 || true
+          dpkg-query -W -f='${Package}=${Version}\n' live-build debootstrap debian-archive-keyring \
+            grub-pc-bin grub-efi-amd64-bin isolinux syslinux-common shim-signed 2>&1 || true
           echo ""
           echo "=== Starting live-build ==="
-          # lb build needs root for chroot/mount; use -E to preserve env. bash -x for trace.
-          sudo -E bash -x build/scripts/build.sh \
+          # Run build as root (we are already root in the container). bash -x for trace.
+          bash -x build/scripts/build.sh \
             --version "$BRIGHT_VERSION" \
             --distro "$BRIGHT_DEBIAN_CODENAME" \
             "$BRIGHT_EDITION" 2>&1 | tee "$LOG"
-          # Fix ownership so later steps (runner user) can read build artifacts.
-          sudo chown -R "$(id -u):$(id -g)" "${GITHUB_WORKSPACE}/build"
           ISO_NAME="bright-os-${BRIGHT_VERSION}-${BRIGHT_EDITION}-amd64.iso"
           ISO_PATH="$ISO_DIR/$ISO_NAME"
           test -s "$ISO_PATH" || { echo "::error::ISO not produced at $ISO_PATH"; ls -la "$ISO_DIR"; exit 1; }
@@ -240,7 +250,6 @@ jobs:
         if: always()
         run: |
           LOG="build/output/${BRIGHT_EDITION}/build.log"
-          sudo chown -R "$(id -u):$(id -g)" "${GITHUB_WORKSPACE}/build" 2>/dev/null || true
           echo "=== Build log size: $(wc -c < "$LOG" 2>/dev/null || echo 0) bytes ==="
           if [ -f "$LOG" ]; then
             echo "--- Last 150 lines of build.log ---"
@@ -286,10 +295,11 @@ jobs:
           check 'isolinux/'                   'ISOLINUX (BIOS)' 0
           check 'calamares'                   'Calamares installer files'
           check 'branding/bright-os'          'Bright OS installer branding'
-          check 'bin/kwin_wayland'            'kwin_wayland compositor (default)'
+          check 'bin/labwc'                   'labwc compositor (Phase 6.3 default)'
+          check 'bin/greetd'                  'greetd display manager'
+          check 'bin/cage'                    'cage (kiosk compositor for greeter)'
           check 'bright-desktop-shell'        'Bright shell launcher'
           check 'wayland-sessions/bright\.desktop' 'Bright wayland-session'
-          check 'plasma'                      'KDE Plasma desktop' 0
           check 'lib/aura'                    'AURA service'
           check 'lib/bright-android|waydroid' 'Bright Android / Waydroid' 0
           check 'polkit-1/actions/org\.bright_os' 'Bright OS Polkit policy'

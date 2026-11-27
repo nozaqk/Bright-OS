@@ -149,16 +149,29 @@ if has_option "--security"; then
     LB_HAS_SECURITY_TOGGLE=true
 fi
 
-if [ "$LB_HAS_SECURITY_TOGGLE" = "true" ] && [ "${CODENAME}" != "bullseye" ] && [ "${CODENAME}" != "buster" ]; then
+# Only apply the workaround if we are NOT already on Debian ${CODENAME}
+# (i.e. cross-building from Ubuntu / older Debian). When building on a
+# native Debian ${CODENAME} system with matching live-build, the default
+# security suite is correct and we don't want to duplicate sources.
+HOST_CODENAME=""
+if [ -f /etc/os-release ]; then
+    HOST_CODENAME=$(. /etc/os-release && echo "${VERSION_CODENAME:-}")
+fi
+
+if [ "$LB_HAS_SECURITY_TOGGLE" = "true" ] \
+   && [ "${CODENAME}" != "bullseye" ] \
+   && [ "${CODENAME}" != "buster" ] \
+   && [ "${HOST_CODENAME}" != "${CODENAME}" ]; then
     set -- "$@" --security false
-    echo "  (--security false: writing manual trixie-security source via config/archives/)"
+    echo "  (cross-build detected: host=${HOST_CODENAME}, target=${CODENAME})"
+    echo "  (--security false: writing manual ${CODENAME}-security source via config/archives/)"
     mkdir -p config/archives
     cat > config/archives/bright-security.list.chroot <<EOF
 deb ${SECURITY_URL} ${CODENAME}-security main contrib non-free non-free-firmware
 EOF
     cp config/archives/bright-security.list.chroot config/archives/bright-security.list.binary
 else
-    echo "  (security: using live-build default)"
+    echo "  (security: using live-build default [host=${HOST_CODENAME}, target=${CODENAME}])"
 fi
 
 # Conditionally add options
