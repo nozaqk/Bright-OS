@@ -225,12 +225,36 @@ jobs:
           dpkg-query -W -f='${Package}=${Version}\n' live-build debootstrap debian-archive-keyring \
             grub-pc-bin grub-efi-amd64-bin isolinux syslinux-common shim-signed 2>&1 || true
           echo ""
+          echo "=== Sanity checks before build ==="
+          ls -la build/scripts/build.sh
+          test -x build/scripts/build.sh || chmod +x build/scripts/build.sh
+          test -d build/live-build/auto || { echo "::error::missing build/live-build/auto"; ls -la build/live-build/; exit 1; }
+          test -f build/live-build/auto/config || { echo "::error::missing auto/config"; exit 1; }
+          mount | head -5
+          echo ""
           echo "=== Starting live-build ==="
           # Run build as root (we are already root in the container). bash -x for trace.
+          # Use a pipeline with explicit exit-code capture (same as build.sh's own logic)
+          set +e
           bash -x build/scripts/build.sh \
             --version "$BRIGHT_VERSION" \
             --distro "$BRIGHT_DEBIAN_CODENAME" \
             "$BRIGHT_EDITION" 2>&1 | tee "$LOG"
+          BUILD_EXIT=$?
+          set -e
+          echo ""
+          echo "Build script exited with code: $BUILD_EXIT"
+          if [ "$BUILD_EXIT" -ne 0 ]; then
+            echo "::error::build.sh exited with code $BUILD_EXIT"
+            if [ -f "$LOG" ]; then
+              echo "--- Last 100 lines of build log ---"
+              tail -100 "$LOG"
+            else
+              echo "(no build log produced)"
+              ls -la build/output/ 2>&1 || true
+            fi
+            exit "$BUILD_EXIT"
+          fi
           ISO_NAME="bright-os-${BRIGHT_VERSION}-${BRIGHT_EDITION}-amd64.iso"
           ISO_PATH="$ISO_DIR/$ISO_NAME"
           test -s "$ISO_PATH" || { echo "::error::ISO not produced at $ISO_PATH"; ls -la "$ISO_DIR"; exit 1; }
