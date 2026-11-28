@@ -200,15 +200,15 @@ jobs:
               isoinfo -d -i "$iso_dir/$ISO_NAME" 2>&1 | head -20 || true
               echo ""
               echo "=== Generating ISO listing (isoinfo -f: full paths one per line) ==="
-              isoinfo -i "$iso_dir/$ISO_NAME" -f > "$BUILD_ROOT/iso-listing.txt" 2>&1 || true
-              LISTING_LINES=$(wc -l < "$BUILD_ROOT/iso-listing.txt")
+              isoinfo -i "$iso_dir/$ISO_NAME" -f 2>/dev/null | sed 's/;[0-9]*$//' > "$BUILD_ROOT/iso-paths.txt" || true
+              LISTING_LINES=$(wc -l < "$BUILD_ROOT/iso-paths.txt")
               echo "Listing has $LISTING_LINES lines"
               echo ""
               echo "--- First 100 paths of ISO ---"
-              head -100 "$BUILD_ROOT/iso-listing.txt"
+              head -100 "$BUILD_ROOT/iso-paths.txt"
               echo ""
               echo "--- Paths matching live/boot/EFI/squash/vmlinuz/initrd/grub ---"
-              grep -E "^/live/|^/boot|^/EFI|\\.squashfs|^/live$|vmlinuz|initrd|grub|isolinux" "$BUILD_ROOT/iso-listing.txt" | head -80 || echo "(no matches)"
+              grep -iE "^/live|^/boot|^/efi|\\.squashfs|vmlinuz|initrd|grub|isolinux" "$BUILD_ROOT/iso-paths.txt" | head -80 || echo "(no matches)"
               break
             fi
           done
@@ -225,7 +225,7 @@ jobs:
           echo ""
           echo "=== Copying artifacts to workspace ==="
           cp -a "$BUILD_ROOT/build.log" "$OUTPUT_ROOT/" 2>/dev/null || true
-          cp -a "$BUILD_ROOT/iso-listing.txt" "$OUTPUT_ROOT/" 2>/dev/null || true
+          cp -a "$BUILD_ROOT/iso-paths.txt" "$OUTPUT_ROOT/iso-paths.txt" 2>/dev/null || true
           cp -a "$BUILD_SUBDIR/build.log" "$OUTPUT_ROOT/lb-build.log" 2>/dev/null || true
           for iso_dir in "$BUILD_SUBDIR" "$BUILD_ROOT"; do
             if [ -f "$iso_dir/$ISO_NAME" ]; then
@@ -234,13 +234,22 @@ jobs:
               break
             fi
           done
-          # Also copy the inner lb binary config for diagnostics
-          mkdir -p "$OUTPUT_ROOT/lb-config"
-          for f in config/binary config/bootstrap config/common config/chroot; do
-            if [ -f "$BUILD_SUBDIR/$f" ]; then
-              cp -a "$BUILD_SUBDIR/$f" "$OUTPUT_ROOT/lb-config/" 2>/dev/null || true
+          # Copy the squashfs directly from the build tree (faster than xorriso)
+          echo "Looking for built squashfs in build tree..."
+          for sq in "$BUILD_SUBDIR/binary/live/"filesystem.squashfs \
+                    "$BUILD_SUBDIR/binary/live/"FILESYSTEM.SQUASHFS \
+                    "$BUILD_SUBDIR/chroot/binary/live/"filesystem.squashfs \
+                    "$BUILD_SUBDIR/chroot/binary/live/"FILESYSTEM.SQUASHFS; do
+            if [ -f "$sq" ]; then
+              echo "Found squashfs at $sq ($(stat -c%s "$sq") bytes)"
+              cp -a "$sq" "$OUTPUT_ROOT/filesystem.squashfs"
+              break
             fi
           done
+          if [ ! -f "$OUTPUT_ROOT/filesystem.squashfs" ]; then
+            echo "Searching build tree for squashfs..."
+            find "$BUILD_SUBDIR" -name "*filesystem.squashfs" -o -name "*FILESYSTEM.SQUASHFS" 2>/dev/null | head -5
+          fi
           cd "$GITHUB_WORKSPACE"
 
           # Record outputs
@@ -301,28 +310,55 @@ jobs:
             echo "--- file command on ISO ---"
             file "$ISO_NAME"
             echo ""
-            # Save full listing
-            isoinfo -f -i "$ISO_NAME" > iso-paths.txt 2>&1
+            # Save full listing (strip ISO9660 ;1 version suffixes for readability)
+            isoinfo -f -i "$ISO_NAME" 2>/dev/null | sed 's/;[0-9]*$//' > iso-paths.txt
             TOTAL_PATHS=$(wc -l < iso-paths.txt)
-            echo "::notice::Total paths in ISO: $TOTAL_PATHS"
+            echo "Total paths in ISO: $TOTAL_PATHS"
             echo ""
-            echo "::notice::=== First 60 paths ==="
-            head -60 iso-paths.txt | while IFS= read -r ln; do echo "::notice::  $ln"; done
+            echo "=== All /LIVE paths (these are what matters for booting) ==="
+            grep -iE "^/live/" iso-paths.txt
             echo ""
-            echo "::notice::=== Paths with live/squash/vmlinuz/initrd ==="
-            grep -iE "squashfs|vmlinuz|initrd|live" iso-paths.txt | head -20 | while IFS= read -r ln; do echo "::notice::  $ln"; done
+            echo "=== All /BOOT paths ==="
+            grep -iE "^/boot/" iso-paths.txt
             echo ""
-            echo "::notice::=== Paths with boot/grub/EFI/isolinux ==="
-            grep -iE "boot|grub|efi|isolinux" iso-paths.txt | head -20 | while IFS= read -r ln; do echo "::notice::  $ln"; done
+            echo "=== /EFI paths ==="
+            grep -iE "^/efi" iso-paths.txt
+            echo ""
+            echo "=== squashfs/vmlinuz/initrd paths ==="
+            grep -iE "squashfs|vmlinuz|initrd|vmlinu" iso-paths.txt
+            echo ""
+            # Write key info to GITHUB_STEP_SUMMARY (visible in the UI Summary page)
+            {
+              echo "## ISO built successfully"
+              echo "- File: \`$ISO_NAME\`"
+              echo "- SHA256: \`$(sha256sum "$ISO_NAME" | cut -d' ' -f1)\`"
+              echo "- Size: \`$(stat -c%s "$ISO_NAME" | numfmt --to=iec-i --suffix=B)\`"
+              echo "- Total ISO paths: $TOTAL_PATHS"
+              echo ""
+              echo "### /LIVE directory contents (boot-critical)"
+              echo '```'
+              grep -iE "^/live/" iso-paths.txt
+              echo '```'
+              echo ""
+              echo "### /BOOT directory contents"
+              echo '```'
+              grep -iE "^/boot/" iso-paths.txt | head -40
+              echo '```'
+              echo ""
+              echo "### /EFI paths"
+              echo '```'
+              grep -iE "^/efi" iso-paths.txt
+              echo '```'
+            } >> $GITHUB_STEP_SUMMARY
           else
             echo "(no ISO file found)"
             ls -la
           fi
           cd "$GITHUB_WORKSPACE"
-          if [ -f "build/output/${BRIGHT_EDITION}/iso-listing.txt" ]; then
+          if [ -f "build/output/${BRIGHT_EDITION}/iso-paths.txt" ]; then
             echo ""
-            echo "=== Saved iso-listing.txt (first 100 lines) ==="
-            head -100 "build/output/${BRIGHT_EDITION}/iso-listing.txt"
+            echo "=== Saved iso-paths.txt (first 100 lines) ==="
+            head -100 "build/output/${BRIGHT_EDITION}/iso-paths.txt"
           fi
 
       - name: Run extended ISO validation
@@ -338,14 +374,14 @@ jobs:
           echo ""
           echo "=== Content checks (extended) ==="
           LISTING=$(mktemp)
-          # Use isoinfo -f (full paths, one per line) for reliable grep matching
-          isoinfo -i "${{ steps.build.outputs.iso_name }}" -f > "$LISTING" 2>&1 || true
-          echo "--- ISO path listing (first 80 lines) ---"
-          head -80 "$LISTING"
+          # Use isoinfo -f and strip ISO9660 version suffixes (;1); case-insensitive
+          isoinfo -i "${{ steps.build.outputs.iso_name }}" -f 2>/dev/null | sed 's/;[0-9]*$//' > "$LISTING" || true
+          echo "--- ISO paths (first 50 lines, normalized) ---"
+          head -50 "$LISTING"
           failures=0
           check() {
             local pat="$1" desc="$2" req="${3:-1}"
-            if grep -qE "$pat" "$LISTING"; then
+            if grep -qiE "$pat" "$LISTING"; then
               echo "  [PASS] $desc"
             else
               if [ "$req" = "1" ]; then
@@ -355,28 +391,61 @@ jobs:
               fi
             fi
           }
-          check '/live/vmlinuz'                'Linux kernel'
-          check '/live/initrd'                'initrd'
-          check '/live/filesystem\\.squashfs'  'Root filesystem (squashfs)'
-          check 'boot/grub/'                  'GRUB bootloader'
-          check 'EFI/boot/bootx64\\.efi|efi\\.img' 'UEFI boot binary'
-          check 'isolinux/'                   'ISOLINUX (BIOS)' 0
-          check 'calamares'                   'Calamares installer files'
-          check 'branding/bright-os'          'Bright OS installer branding'
-          check 'bin/labwc'                   'labwc compositor (Phase 6.3 default)'
-          check 'bin/greetd'                  'greetd display manager'
-          check 'bin/cage'                    'cage (kiosk compositor for greeter)'
-          check 'bright-desktop-shell'        'Bright shell launcher'
-          check 'wayland-sessions/bright\\.desktop' 'Bright wayland-session'
-          check 'lib/aura'                    'AURA service'
-          check 'lib/bright-android'          'Bright Android' 0
-          check 'polkit-1/actions/org\\.bright_os' 'Bright OS Polkit policy'
-          check 'dbus-1/system\\.d/org\\.bright_os' 'Bright OS D-Bus policy'
+          check '^/live/vmlinuz'              'Linux kernel'
+          check '^/live/initrd'               'initrd'
+          check '^/live/.*\.squashfs'         'Root filesystem (squashfs)'
+          check '/boot/grub/'                  'GRUB bootloader'
+          check 'efi\.img$|efi/boot/bootx64\.efi' 'UEFI boot binary'
+          check '/isolinux/'                  'ISOLINUX (BIOS)' 0
+          # Now do in-squashfs content checks (packages inside the live system)
+          echo ""
+          echo "=== In-squashfs content checks ==="
+          # Use the squashfs copied from the build tree (OUTPUT_ROOT), not extracted from ISO
+          SQ_FILE="${{ steps.build.outputs.iso_dir }}/filesystem.squashfs"
+          if [ -s "$SQ_FILE" ]; then
+            echo "Using build-tree squashfs: $SQ_FILE ($(stat -c%s "$SQ_FILE") bytes)"
+            mkdir -p /tmp/sq-inspect
+            cp "$SQ_FILE" /tmp/sq-inspect/filesystem.squashfs
+            if [ -s /tmp/sq-inspect/filesystem.squashfs ]; then
+              # Use unsquashfs -ll to list files without extracting
+              unsquashfs -ll /tmp/sq-inspect/filesystem.squashfs 2>/dev/null > /tmp/sq-inspect/filelist.txt || true
+              SLINES=$(wc -l < /tmp/sq-inspect/filelist.txt)
+              echo "Squashfs file list: $SLINES entries"
+              check_sq() {
+                local pat="$1" desc="$2" req="${3:-1}"
+                if grep -qiE "$pat" /tmp/sq-inspect/filelist.txt; then
+                  echo "  [PASS] $desc (in squashfs)"
+                else
+                  if [ "$req" = "1" ]; then
+                    echo "  [FAIL] $desc"; failures=$((failures+1))
+                  else
+                    echo "  [WARN] $desc (optional, not found)"
+                  fi
+                fi
+              }
+              check_sq 'bin/labwc'                   'labwc compositor (Phase 6.3 default)'
+              check_sq 'bin/greetd'                  'greetd display manager'
+              check_sq 'bin/cage'                    'cage (kiosk compositor for greeter)'
+              check_sq 'bright-desktop-shell'        'Bright shell launcher'
+              check_sq 'wayland-sessions/bright\.desktop' 'Bright wayland-session'
+              check_sq 'lib/aura'                    'AURA service'
+              check_sq 'lib/bright-android'          'Bright Android' 0
+              check_sq 'polkit-1/actions/org\.bright_os' 'Bright OS Polkit policy'
+              check_sq 'dbus-1/system\.d/org\.bright_os' 'Bright OS D-Bus policy'
+              check_sq 'bin/calamares'               'Calamares installer'
+              check_sq 'branding/bright-os'          'Bright OS installer branding'
+              check_sq 'share/grub|lib/grub'         'GRUB inside squashfs' 0
+              rm -rf /tmp/sq-inspect
+            else
+              echo "::warning::squashfs extracted empty; skipping in-squashfs checks"
+            fi
+          else
+            echo "::warning::no squashfs found; skipping in-squashfs checks"
+          fi
+
           if [ "$failures" -gt 0 ]; then
             echo ""
-            echo "::warning::$failures extended content check(s) failed; continuing for diagnostics."
-            echo "--- Paths containing live/boot/EFI/squash ---"
-            grep -E "live/|/live$|/boot|EFI|efi|\\.squashfs|vmlinuz|initrd|grub" "$LISTING" | head -40 || echo "(none)"
+            echo "::warning::$failures extended content check(s) failed; see above."
           else
             echo "Extended content checks passed."
           fi
@@ -388,23 +457,20 @@ jobs:
           set +e
           cd "${{ steps.build.outputs.iso_dir }}"
           mkdir -p manifest
-          # Find the actual squashfs path in the ISO (it might have a numbered prefix)
-          SQUASHFS_PATH=$(isoinfo -i "${{ steps.build.outputs.iso_name }}" -f 2>/dev/null | grep -E '\.squashfs$' | head -1)
-          if [ -z "$SQUASHFS_PATH" ]; then
-            echo "::warning::No .squashfs found in ISO; skipping manifest."
-            exit 0
-          fi
-          echo "Extracting $SQUASHFS_PATH from ISO..."
-          xorriso -osirrox on -indev "${{ steps.build.outputs.iso_name }}" \
-            -extract "$SQUASHFS_PATH" ./filesystem.squashfs 2>&1 | tail -5
+          # Use the squashfs copied from the build tree (already in OUTPUT_ROOT)
           if [ ! -s ./filesystem.squashfs ]; then
-            echo "::warning::filesystem.squashfs could not be extracted; skipping manifest."
+            echo "::warning::filesystem.squashfs not available from build tree; skipping manifest."
+            ls -la
             exit 0
           fi
           echo "Squashfs size: $(stat -c%s ./filesystem.squashfs) bytes"
-          unsquashfs -d ./squashfs-root -e /var/lib/dpkg/status ./filesystem.squashfs \
+          # unsquashfs -e takes relative paths (no leading /)
+          rm -rf ./squashfs-root
+          unsquashfs -d ./squashfs-root -e var/lib/dpkg/status ./filesystem.squashfs \
             >/dev/null 2>&1 || true
           STATUS_FILE=./squashfs-root/var/lib/dpkg/status
+          echo "Looking for dpkg/status at $STATUS_FILE"
+          ls -la ./squashfs-root/var/lib/dpkg/ 2>/dev/null || echo "(no var/lib/dpkg dir)"
           if [ -f "$STATUS_FILE" ]; then
             python3 "${GITHUB_WORKSPACE}/tools/ci/extract_manifest.py" \
               "$STATUS_FILE" ./manifest
@@ -432,10 +498,9 @@ jobs:
           path: |
             build/output/${{ env.BRIGHT_EDITION }}/build.log
             build/output/${{ env.BRIGHT_EDITION }}/lb-build.log
-            build/output/${{ env.BRIGHT_EDITION }}/iso-listing.txt
+            build/output/${{ env.BRIGHT_EDITION }}/iso-paths.txt
             build/output/${{ env.BRIGHT_EDITION }}/validation.log
             build/output/${{ env.BRIGHT_EDITION }}/build-measurement.json
             build/output/${{ env.BRIGHT_EDITION }}/manifest/packages.txt
-            build/output/${{ env.BRIGHT_EDITION }}/lb-config/*
           if-no-files-found: warn
           retention-days: 30
