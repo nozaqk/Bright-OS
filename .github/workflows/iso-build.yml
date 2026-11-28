@@ -397,8 +397,11 @@ jobs:
           ACCEL=tcg
           [ -w /dev/kvm ] && ACCEL=kvm
           echo "Booting $ISO with accelerator: $ACCEL"
+          MON="${RUNNER_TEMP:-/tmp}/qemu-mon.sock"
+          rm -f "$MON"
           qemu-system-x86_64 -machine "q35,accel=$ACCEL" -m 2048 -smp 2 \
             -cdrom "$ISO" -boot d -display none -serial "file:$SERIAL" \
+            -monitor "unix:$MON,server,nowait" \
             -no-reboot -netdev user,id=n0 -device e1000,netdev=n0 &
           QPID=$!
           RESULT="timeout"
@@ -410,6 +413,12 @@ jobs:
             if grep -q "Kernel panic" "$SERIAL" 2>/dev/null; then RESULT="kernel-panic"; break; fi
             kill -0 "$QPID" 2>/dev/null || { RESULT="qemu-exited"; break; }
           done
+          # Diagnostic only: on failure, capture the screen via the QEMU monitor.
+          if [ "$RESULT" != "login-prompt" ] && [ -S "$MON" ]; then
+            python3 tools/ci/qemu_screendump.py "$MON" "${RUNNER_TEMP:-/tmp}/screen.ppm" \
+              "build/output/${{ env.BRIGHT_EDITION }}/boot-screen.png" \
+              || echo "::warning::screendump failed"
+          fi
           kill "$QPID" 2>/dev/null; wait "$QPID" 2>/dev/null
           cp "$SERIAL" "build/output/${{ env.BRIGHT_EDITION }}/boot-serial.log" 2>/dev/null
           echo "Boot result: $RESULT (serial log: $(wc -l < "$SERIAL" 2>/dev/null || echo 0) lines)"
@@ -474,6 +483,7 @@ jobs:
             build/output/${{ env.BRIGHT_EDITION }}/iso-listing.txt
             build/output/${{ env.BRIGHT_EDITION }}/validation.log
             build/output/${{ env.BRIGHT_EDITION }}/boot-serial.log
+            build/output/${{ env.BRIGHT_EDITION }}/boot-screen.png
             build/output/${{ env.BRIGHT_EDITION }}/build-measurement.json
             build/output/${{ env.BRIGHT_EDITION }}/manifest/packages.txt
             build/output/${{ env.BRIGHT_EDITION }}/lb-config/*
