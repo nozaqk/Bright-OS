@@ -32,6 +32,38 @@ def chunk(tag, body):
     return struct.pack(">I", len(body)) + tag + body + struct.pack(">I", crc)
 
 
+def read_vga_text(mon):
+    """Read the 80x25 text buffer at physical 0xB8000 through the monitor.
+
+    Returns 25 lines, or None if the monitor did not answer as expected.
+    Only meaningful while the VGA card is in text mode (BIOS/GRUB text menu).
+    """
+    sock = socket.socket(socket.AF_UNIX)
+    sock.settimeout(10)
+    try:
+        sock.connect(mon)
+        drain(sock)
+        sock.sendall(b"xp /4000b 0xb8000\n")
+        out = drain(sock).decode(errors="replace")
+    except OSError:
+        return None
+    finally:
+        sock.close()
+    raw = []
+    for line in out.splitlines():
+        m = re.match(r"^[0-9a-fA-F]+:\s+((?:0x[0-9a-fA-F]{2}\s*)+)", line)
+        if m:
+            raw.extend(int(v, 16) for v in m.group(1).split())
+    if len(raw) < 4000:
+        return None
+    chars = raw[0:4000:2]
+    rows = []
+    for r in range(25):
+        row = chars[r * 80:(r + 1) * 80]
+        rows.append("".join(chr(c) if 32 <= c < 127 else " " for c in row).rstrip())
+    return rows
+
+
 def main():
     mon, ppm, png = sys.argv[1], sys.argv[2], sys.argv[3]
     sock = socket.socket(socket.AF_UNIX)
@@ -42,6 +74,12 @@ def main():
     drain(sock)
     time.sleep(1)
     sock.close()
+
+    text = read_vga_text(mon)
+    if text:
+        print("VGA text buffer (80x25, text mode only):")
+        for line in text:
+            print("| " + line)
 
     data = open(ppm, "rb").read()
     m = re.match(rb"P6\s+(\d+)\s+(\d+)\s+255\s", data)
