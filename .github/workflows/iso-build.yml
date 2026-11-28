@@ -151,7 +151,6 @@ jobs:
           set +e
           set +o pipefail
           export BRIGHT_EDITION BRIGHT_VERSION BRIGHT_DEBIAN_CODENAME
-          export BRIGHT_ENSURE_VALIDATION=0  # let build.sh exit 0 so artifacts get saved
           OUTPUT_ROOT="${GITHUB_WORKSPACE}/build/output/${BRIGHT_EDITION}"
           BUILD_ROOT=/bright-build
           mkdir -p "$BUILD_ROOT" "$OUTPUT_ROOT"
@@ -171,12 +170,15 @@ jobs:
           # Ensure build scripts are executable (rsync may not preserve perms)
           chmod +x build/scripts/*.sh build/live-build/auto/* config/hooks/live/*.chroot editions/*/hooks/*.chroot 2>/dev/null || true
           # Redirect build to log file directly (no tee/grep to avoid SIGPIPE)
+          # The boot test needs kernel output on the serial port (see build.sh)
+          if [ "${BRIGHT_QEMU_SMOKE:-0}" = "1" ]; then export BRIGHT_SERIAL_CONSOLE=1; fi
           bash -x build/scripts/build.sh \
             --version "$BRIGHT_VERSION" \
             --distro "$BRIGHT_DEBIAN_CODENAME" \
             "$BRIGHT_EDITION" > "$LOG" 2>&1
           BUILD_EXIT=$?
           echo "Build script exited with code: $BUILD_EXIT"
+          echo "build_exit=$BUILD_EXIT" >> "$GITHUB_OUTPUT"
 
           # Post-build inspection
           echo ""
@@ -326,15 +328,18 @@ jobs:
           fi
 
       - name: Run extended ISO validation
+        id: validate
         if: steps.build.outputs.iso_path
+        shell: bash  # PIPESTATUS below is bash-only; the default shell here is sh
         run: |
           set +e
           cd "${{ steps.build.outputs.iso_dir }}"
           echo "=== validate-iso.sh output ==="
           bash "${GITHUB_WORKSPACE}/build/scripts/validate-iso.sh" \
             "${{ steps.build.outputs.iso_name }}" 2>&1 | tee validation.log
-          VAL_EXIT=$?
+          VAL_EXIT=${PIPESTATUS[0]}  # validate-iso.sh's status, not tee's
           echo "validate-iso.sh exit: $VAL_EXIT"
+          echo "validation_exit=$VAL_EXIT" >> "$GITHUB_OUTPUT"
           echo ""
           echo "=== Content checks (extended) ==="
           LISTING=$(mktemp)
@@ -373,6 +378,58 @@ jobs:
           fi
           rm -f "$LISTING"
 
+      - name: Boot smoke test (QEMU, serial console)
+        id: boot
+        if: always() && steps.build.outputs.iso_path && env.BRIGHT_QEMU_SMOKE == '1'
+        shell: bash
+        run: |
+          set +e
+          SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
+          $SUDO apt-get update -qq >/dev/null 2>&1
+          if ! $SUDO apt-get install -y -qq qemu-system-x86 >/dev/null 2>&1; then
+            echo "::error::qemu-system-x86 could not be installed"
+            echo "boot_exit=2" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          ISO="${{ steps.build.outputs.iso_path }}"
+          SERIAL="${RUNNER_TEMP:-/tmp}/boot-serial.log"
+          rm -f "$SERIAL"
+          ACCEL=tcg
+          [ -w /dev/kvm ] && ACCEL=kvm
+          echo "Booting $ISO with accelerator: $ACCEL"
+          MON="${RUNNER_TEMP:-/tmp}/qemu-mon.sock"
+          rm -f "$MON"
+          qemu-system-x86_64 -machine "q35,accel=$ACCEL" -m 2048 -smp 2 \
+            -cdrom "$ISO" -boot d -display none -serial "file:$SERIAL" \
+            -monitor "unix:$MON,server,nowait" \
+            -no-reboot -netdev user,id=n0 -device e1000,netdev=n0 &
+          QPID=$!
+          RESULT="timeout"
+          # Up to 20 minutes. "login:" appears only once getty or greetd is
+          # reachable on the serial console; GRUB menu text does not match it.
+          for i in $(seq 1 120); do
+            sleep 10
+            if grep -q "login:" "$SERIAL" 2>/dev/null; then RESULT="login-prompt"; break; fi
+            if grep -q "Kernel panic" "$SERIAL" 2>/dev/null; then RESULT="kernel-panic"; break; fi
+            kill -0 "$QPID" 2>/dev/null || { RESULT="qemu-exited"; break; }
+          done
+          # Diagnostic only: on failure, capture the screen via the QEMU monitor.
+          if [ "$RESULT" != "login-prompt" ] && [ -S "$MON" ]; then
+            python3 tools/ci/qemu_screendump.py "$MON" "${RUNNER_TEMP:-/tmp}/screen.ppm" \
+              "build/output/${{ env.BRIGHT_EDITION }}/boot-screen.png" \
+              || echo "::warning::screendump failed"
+          fi
+          kill "$QPID" 2>/dev/null; wait "$QPID" 2>/dev/null
+          cp "$SERIAL" "build/output/${{ env.BRIGHT_EDITION }}/boot-serial.log" 2>/dev/null
+          echo "Boot result: $RESULT (serial log: $(wc -l < "$SERIAL" 2>/dev/null || echo 0) lines)"
+          tail -40 "$SERIAL" 2>/dev/null
+          if [ "$RESULT" = "login-prompt" ]; then
+            echo "boot_exit=0" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Boot smoke test failed: $RESULT"
+            echo "boot_exit=1" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Extract package manifest from squashfs
         if: steps.build.outputs.iso_path
         run: |
@@ -380,7 +437,7 @@ jobs:
           cd "${{ steps.build.outputs.iso_dir }}"
           mkdir -p manifest
           # Find the actual squashfs path in the ISO (it might have a numbered prefix)
-          SQUASHFS_PATH=$(isoinfo -i "${{ steps.build.outputs.iso_name }}" -f 2>/dev/null | grep -E '\.squashfs$' | head -1)
+          SQUASHFS_PATH=$(isoinfo -R -i "${{ steps.build.outputs.iso_name }}" -f 2>/dev/null | grep -iE '\.squashfs(;1)?$' | head -1)
           if [ -z "$SQUASHFS_PATH" ]; then
             echo "::warning::No .squashfs found in ISO; skipping manifest."
             exit 0
@@ -425,8 +482,29 @@ jobs:
             build/output/${{ env.BRIGHT_EDITION }}/lb-build.log
             build/output/${{ env.BRIGHT_EDITION }}/iso-listing.txt
             build/output/${{ env.BRIGHT_EDITION }}/validation.log
+            build/output/${{ env.BRIGHT_EDITION }}/boot-serial.log
+            build/output/${{ env.BRIGHT_EDITION }}/boot-screen.png
             build/output/${{ env.BRIGHT_EDITION }}/build-measurement.json
             build/output/${{ env.BRIGHT_EDITION }}/manifest/packages.txt
             build/output/${{ env.BRIGHT_EDITION }}/lb-config/*
           if-no-files-found: warn
           retention-days: 30
+
+      - name: Fail job if the build, validation or boot test failed
+        if: always()
+        shell: bash
+        env:
+          BUILD_EXIT: ${{ steps.build.outputs.build_exit }}
+          ISO_PATH: ${{ steps.build.outputs.iso_path }}
+          VAL_EXIT: ${{ steps.validate.outputs.validation_exit }}
+          BOOT_EXIT: ${{ steps.boot.outputs.boot_exit }}
+          BOOT_REQUESTED: ${{ env.BRIGHT_QEMU_SMOKE }}
+        run: |
+          fail=0
+          if [ -z "$BUILD_EXIT" ]; then echo "::error::build step did not report an exit code"; fail=1
+          elif [ "$BUILD_EXIT" -ne 0 ]; then echo "::error::build.sh exited with $BUILD_EXIT"; fail=1; fi
+          if [ -z "$ISO_PATH" ]; then echo "::error::no ISO was produced"; fail=1; fi
+          if [ -n "$ISO_PATH" ] && [ "${VAL_EXIT:-1}" -ne 0 ]; then echo "::error::ISO validation failed (exit ${VAL_EXIT:-missing})"; fail=1; fi
+          if [ "$BOOT_REQUESTED" = "1" ] && [ "${BOOT_EXIT:-1}" -ne 0 ]; then echo "::error::boot smoke test failed (exit ${BOOT_EXIT:-missing})"; fail=1; fi
+          if [ "$fail" -eq 0 ]; then echo "All requested checks passed."; fi
+          exit "$fail"

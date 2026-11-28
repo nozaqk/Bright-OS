@@ -469,6 +469,14 @@ fi
 rm -rf config
 cp -r "${CONFIG_DIR}" ./config
 
+# Opt-in serial console for the QEMU boot smoke test (CI only). Shipped
+# images are unchanged unless BRIGHT_SERIAL_CONSOLE=1 is set.
+if [ "${BRIGHT_SERIAL_CONSOLE:-0}" = "1" ]; then
+    log_info "Serial console enabled: adding console=ttyS0 to GRUB kernel lines"
+    sed -i -E 's|^([[:space:]]*linux /live/vmlinuz boot=live)|\1 console=ttyS0,115200|' \
+        config/includes.binary/boot/grub/grub.cfg
+fi
+
 # --- Select desktop environment package list ---
 # Home and Developer use full KDE Plasma; Lite uses lightweight LXQt/Openbox
 DESKTOP_PKGS="${CONFIG_DIR}/package-lists/desktop.list.chroot"
