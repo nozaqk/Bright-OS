@@ -345,7 +345,7 @@ jobs:
           failures=0
           check() {
             local pat="$1" desc="$2" req="${3:-1}"
-            if grep -qE "$pat" "$LISTING"; then
+            if grep -qiE "$pat" "$LISTING"; then  # ISO 9660 names are upper case
               echo "  [PASS] $desc"
             else
               if [ "$req" = "1" ]; then
