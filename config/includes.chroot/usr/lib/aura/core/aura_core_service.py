@@ -15,6 +15,7 @@ import logging
 import os
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -69,62 +70,88 @@ def _dbus_error(name: str, message: str):
     return cls(message)
 
 
-def _check_polkit(sender, action_id, bus=None):
-    """Check whether `sender` is authorized for `action_id`.
+POLKIT_CHECK_TIMEOUT_SECONDS = 60
 
-    Returns (allowed, reason). If Polkit is unavailable, falls back to
-    root-only (UID 0 on the bus). Fail closed if caller identity cannot
-    be obtained or verified.
+
+def _polkit_consult(pid: int, action_id: str):
+    """Ask Polkit whether process `pid` may perform `action_id`.
+
+    Returns (allowed, reason). Any exception, timeout or response that is not
+    an explicit authorization denies. The call runs in a helper thread so a
+    hung Polkit daemon cannot block the caller past the timeout. A timed-out
+    thread keeps running until the native call returns, but its result is
+    discarded.
     """
-    if not HAS_DBUS or bus is None:
-        # Headless/test mode with no D-Bus — only local code can call us,
-        # so allow. In any real service path bus is always set.
-        return True, ""
-    if sender is None:
+    outcome = {}
+
+    def _work():
+        try:
+            authority = Polkit.Authority.get_sync(None)
+            subject = Polkit.UnixProcess.new(pid)
+            result = authority.check_authorization_sync(
+                subject, action_id, None,
+                Polkit.CheckAuthorizationFlags.ALLOW_USER_INTERACTION, None)
+            authorized = result.get_is_authorized()
+            challenge = result.get_is_challenge()
+            if not isinstance(authorized, bool) or not isinstance(challenge, bool):
+                outcome["result"] = (False, "invalid polkit response")
+            elif authorized is True:
+                outcome["result"] = (True, "")
+            elif challenge:
+                outcome["result"] = (False, "authentication required")
+            else:
+                outcome["result"] = (False, "not authorized")
+        except Exception as e:  # any failure denies
+            logger.warning("Polkit check failed for %s pid=%d: %s", action_id, pid, e)
+            outcome["result"] = (False, f"polkit error: {e}")
+
+    worker = threading.Thread(target=_work, name="aura-polkit", daemon=True)
+    worker.start()
+    worker.join(POLKIT_CHECK_TIMEOUT_SECONDS)
+    if worker.is_alive():
+        logger.warning("Polkit check timed out for %s pid=%d", action_id, pid)
+        return False, "polkit check timed out"
+    return outcome.get("result", (False, "polkit returned no result"))
+
+
+def _check_polkit(sender, action_id, bus=None):
+    """Check whether the D-Bus caller `sender` may perform `action_id`.
+
+    Returns (allowed, reason). Every missing input, failed lookup or
+    unexpected response denies. There is no fallback path: a call without a
+    D-Bus connection is refused, not allowed.
+
+    Root (UID 0) is allowed without Polkit, but only after the sender and its
+    PID/UID have been validated the same way as any other caller.
+    """
+    if not HAS_DBUS:
+        return False, "D-Bus unavailable"
+    if bus is None:
+        return False, "no D-Bus connection"
+    if not isinstance(sender, str) or not sender:
         return False, "no sender identity"
     try:
         # The bus daemon answers credential queries for a unique name.
         daemon = bus.get_object("org.freedesktop.DBus", "/org/freedesktop/DBus")
         pid = daemon.GetConnectionUnixProcessID(sender, dbus_interface="org.freedesktop.DBus")
         uid = daemon.GetConnectionUnixUser(sender, dbus_interface="org.freedesktop.DBus")
-    except (dbus.DBusException, AttributeError) as e:
+    except Exception as e:
         logger.warning("Polkit: could not determine caller identity: %s", e)
         return False, f"could not determine caller identity: {e}"
 
-    # Validate PID/UID before using them.
-    if not isinstance(pid, int) or pid <= 0:
+    # Validate PID/UID before using them. bool is a subclass of int, so reject it.
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
         return False, "invalid caller pid"
-    if not isinstance(uid, int) or uid < 0:
+    if isinstance(uid, bool) or not isinstance(uid, int) or uid < 0:
         return False, "invalid caller uid"
 
-    # Root (UID 0) is always authorized for any action.
     if uid == 0:
         return True, ""
 
     if not HAS_POLKIT:
         return False, "polkit unavailable; only root may perform this action"
 
-    try:
-        # get_sync replaces the deprecated get(); a failure raises and is
-        # handled below (fail closed).
-        authority = Polkit.Authority.get_sync(None)
-        # Polkit.UnixProcess.new(pid) takes a single int PID. Polkit
-        # internally reads /proc/<pid>/status to verify the UID, so a
-        # stale/reused PID would not be confused with another user's
-        # process (the UID mismatch causes authorization to fail).
-        subject = Polkit.UnixProcess.new(pid)
-        result = authority.check_authorization_sync(
-            subject, action_id, None,
-            Polkit.CheckAuthorizationFlags.ALLOW_USER_INTERACTION, None)
-        if result.get_is_authorized():
-            return True, ""
-        if result.get_is_challenge():
-            return False, "authentication required"
-        return False, "not authorized"
-    except Exception as e:
-        logger.warning("Polkit check failed for %s pid=%d uid=%d: %s",
-                       action_id, pid, uid, e)
-        return False, f"polkit error: {e}"
+    return _polkit_consult(pid, action_id)
 
 
 class AuraStarterComponent(Component):
@@ -262,7 +289,7 @@ if HAS_DBUS:
         def Shutdown(self, sender=None):
             ok, reason = _check_polkit(
                 sender, "org.bright_os.AURA.shutdown",
-                bus=self._bus if hasattr(self, "_bus") else None)
+                bus=self._bus)
             if not ok:
                 logger.warning("Shutdown denied for %s: %s", sender, reason)
                 raise _dbus_error(
@@ -391,7 +418,7 @@ if HAS_DBUS:
             if granted:
                 ok, reason = _check_polkit(
                     sender, "org.bright_os.AURA.grant-cloud-consent",
-                    bus=self._bus if hasattr(self, "_bus") else None)
+                    bus=self._bus)
                 if not ok:
                     logger.warning("GrantCloudConsent denied for %s: %s",
                                    sender, reason)

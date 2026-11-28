@@ -130,11 +130,12 @@ class CheckPolkitUnitTests(unittest.TestCase):
         svc_mod.Polkit = fake_polkit
         return self._fake_authority
 
-    def test_headless_without_bus_allows(self):
-        """When called without a bus (headless mode), allow."""
+    def test_missing_bus_denies(self):
+        """Without a bus there is no caller identity, so deny (Phase 5)."""
         svc_mod.HAS_DBUS = True
         ok, reason = svc_mod._check_polkit(":1.0", "some.action", bus=None)
-        self.assertTrue(ok)
+        self.assertFalse(ok)
+        self.assertIn("no D-Bus connection", reason)
 
     def test_no_sender_fails_closed(self):
         """Sender=None must be denied."""
