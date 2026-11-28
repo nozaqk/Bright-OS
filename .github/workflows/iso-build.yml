@@ -328,6 +328,7 @@ jobs:
       - name: Run extended ISO validation
         id: validate
         if: steps.build.outputs.iso_path
+        shell: bash  # PIPESTATUS below is bash-only; the default shell here is sh
         run: |
           set +e
           cd "${{ steps.build.outputs.iso_dir }}"
@@ -377,7 +378,8 @@ jobs:
 
       - name: Boot smoke test (QEMU, serial console)
         id: boot
-        if: steps.build.outputs.iso_path && env.BRIGHT_QEMU_SMOKE == '1'
+        if: always() && steps.build.outputs.iso_path && env.BRIGHT_QEMU_SMOKE == '1'
+        shell: bash
         run: |
           set +e
           SUDO=""; [ "$(id -u)" -ne 0 ] && SUDO="sudo"
@@ -478,6 +480,7 @@ jobs:
 
       - name: Fail job if the build, validation or boot test failed
         if: always()
+        shell: bash
         env:
           BUILD_EXIT: ${{ steps.build.outputs.build_exit }}
           ISO_PATH: ${{ steps.build.outputs.iso_path }}
