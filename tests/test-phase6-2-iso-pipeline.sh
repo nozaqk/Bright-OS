@@ -55,10 +55,10 @@ def check(cond, msg):
 on_iso = wf_iso.get(True, wf_iso.get('on', {}))
 on_rel = wf_rel.get(True, wf_rel.get('on', {}))
 
-# iso-build must run on push to the phase6-2 branch
+# iso-build must run on push to an arena build branch (names change per arena run)
 push_branches_iso = (on_iso.get('push') or {}).get('branches', [])
-check(any('phase6-2' in str(b) for b in push_branches_iso),
-      "iso-build triggers on push to arena/phase6-2-iso-build")
+check(any(str(b).startswith('arena/') for b in push_branches_iso),
+      "iso-build triggers on push to an arena/* build branch")
 check(bool(on_iso.get('pull_request')), "iso-build runs on pull_request")
 check(bool(on_iso.get('workflow_dispatch') is not None), "iso-build supports workflow_dispatch")
 
