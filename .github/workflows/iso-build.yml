@@ -402,15 +402,16 @@ jobs:
             exit 0
           fi
           echo "Squashfs size: $(stat -c%s ./filesystem.squashfs) bytes"
-          unsquashfs -d ./squashfs-root -e /var/lib/dpkg/status ./filesystem.squashfs \
-            >/dev/null 2>&1 || true
-          STATUS_FILE=./squashfs-root/var/lib/dpkg/status
-          if [ -f "$STATUS_FILE" ]; then
+          # Write just the dpkg status file to disk with unsquashfs -cat. This
+          # avoids extracting the whole 3 GB tree. Errors stay in the log.
+          STATUS_FILE=./dpkg-status
+          if unsquashfs -cat ./filesystem.squashfs var/lib/dpkg/status > "$STATUS_FILE" \
+             && [ -s "$STATUS_FILE" ]; then
             python3 "${GITHUB_WORKSPACE}/tools/ci/extract_manifest.py" \
               "$STATUS_FILE" ./manifest
           else
             echo "::warning::dpkg/status not found in squashfs; skipping manifest."
-            ls -la ./squashfs-root/ 2>&1 | head
+            unsquashfs -ll ./filesystem.squashfs 2>&1 | grep -i 'dpkg/status' | head -5
           fi
 
       - name: Upload ISO artifact
