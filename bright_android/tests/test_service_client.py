@@ -157,11 +157,13 @@ class TimeoutTests(unittest.TestCase):
         self.assertEqual(self._timeout_for(lambda c: c.start_runtime())[2]["timeout"], sc.TIMEOUT_DEFAULT)
         self.assertEqual(self._timeout_for(lambda c: c.stop_runtime())[2]["timeout"], sc.TIMEOUT_DEFAULT)
 
-    def test_install_uses_install_timeout(self):
+    def test_install_queues_with_default_timeout(self):
+        # InstallApk only queues the job, so the D-Bus call itself is short.
+        # The long wait is for OperationComplete (InstallOperationTests).
         name, args, kw = self._timeout_for(lambda c: c.install_apk("/tmp/a.apk"))
         self.assertEqual(name, "InstallApk")
         self.assertEqual(args, ("/tmp/a.apk",))
-        self.assertEqual(kw["timeout"], sc.TIMEOUT_INSTALL)
+        self.assertEqual(kw["timeout"], sc.TIMEOUT_DEFAULT)
 
     def test_set_config_uses_admin_timeout(self):
         self.assertEqual(self._timeout_for(lambda c: c.set_config("runtime/auto_start", True))[2]["timeout"],
@@ -381,3 +383,64 @@ class BatchSettingsClientTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class InstallOperationTests(unittest.TestCase):
+    """InstallApk is asynchronous: the client queues it, then waits for completion."""
+
+    def _client(self, iface, waiter):
+        names = []
+        bus = object()
+
+        def waiter_factory(b, op):
+            names.append(op)
+            return waiter
+
+        client = sc.BrightAndroidClient(connection_factory=lambda: (iface, bus),
+                                        waiter_factory=waiter_factory)
+        return client, names
+
+    def test_install_waits_for_install_completion(self):
+        iface = FakeIface()
+        waiter = FakeWaiter(outcome=(True, "Installed: Example"))
+        client, names = self._client(iface, waiter)
+        client.install_apk("/home/u/example.apk")
+        self.assertEqual(names, ["install"])
+        self.assertEqual(iface.calls[0][0], "InstallApk")
+        self.assertEqual(iface.calls[0][1], ("/home/u/example.apk",))
+        self.assertEqual(waiter.waited_with[0], sc.TIMEOUT_INSTALL)
+        self.assertTrue(waiter.closed)
+
+    def test_failed_install_raises_service_message(self):
+        waiter = FakeWaiter(outcome=(False, "APK installation failed (exit 124): Timed out after 180s"))
+        client, _ = self._client(FakeIface(), waiter)
+        with self.assertRaises(sc.OperationFailed) as ctx:
+            client.install_apk("/home/u/example.apk")
+        self.assertIn("Timed out after 180s", str(ctx.exception))
+        self.assertTrue(waiter.closed)
+
+    def test_install_progress_is_forwarded(self):
+        seen = []
+
+        class ProgressWaiter(FakeWaiter):
+            def wait(self, timeout, progress_cb=None):
+                progress_cb("Installing example.apk...")
+                return (True, "")
+
+        client, _ = self._client(FakeIface(), ProgressWaiter())
+        client.install_apk("/home/u/example.apk", progress_cb=seen.append)
+        self.assertEqual(seen, ["Installing example.apk..."])
+
+    def test_busy_refusal_raises_without_waiting(self):
+        class BusyIface(FakeIface):
+            def InstallApk(self, *args, **kw):
+                raise sc._from_exception(
+                    type("E", (Exception,), {"get_dbus_name": lambda self: sc.ERR_BUSY,
+                                             "get_dbus_message": lambda self: "start is already in progress"})())
+
+        waiter = FakeWaiter()
+        client, _ = self._client(BusyIface(), waiter)
+        with self.assertRaises(sc.ServiceBusy):
+            client.install_apk("/home/u/example.apk")
+        self.assertIsNone(waiter.waited_with)
+

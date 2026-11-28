@@ -11,7 +11,7 @@ Environment:
   BA_PROJECT_ROOT   project root to import bright_android from
   HOME              temporary home, so the config file is isolated
   FAKE_DELAY        seconds each slow backend call takes (default 0.5)
-  FAKE_FAIL         comma list of: start, stop, init, install
+  FAKE_FAIL         comma list of: start, stop, init, install, install_timeout
   FAKE_DENY         "1" to deny every authorization check
   FAKE_LOG          file to append backend calls to, one per line
   FAKE_RUNNING      "1" to start with the runtime already running
@@ -79,6 +79,10 @@ def fake_install_apk(path, progress_cb=None):
     _slow("install_apk", progress_cb, ["Installing"])
     if "install" in FAIL:
         raise wm.WaydroidError("INSTALL_FAILED")
+    if "install_timeout" in FAIL:
+        # The real backend reports its 180 s subprocess timeout like this.
+        raise wm.WaydroidError("APK installation failed (exit 124): Timed out after 180s",
+                               exit_code=124)
     return {"package": "com.example.app", "label": "Example", "path": path}
 
 

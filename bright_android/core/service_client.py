@@ -32,7 +32,7 @@ ERR_WRITE_FAILED = "org.bright_os.BrightAndroid.WriteFailed"
 TIMEOUT_DEFAULT = 30     # quick calls (launch, uninstall, queueing an async operation)
 TIMEOUT_ADMIN = 120      # SetConfig / SetConfigs; may wait on a Polkit admin prompt
 TIMEOUT_START = 180      # waiting for a runtime start or stop to complete
-TIMEOUT_INSTALL = 300    # InstallApk (synchronous on the service)
+TIMEOUT_INSTALL = 300    # InstallApk (asynchronous; the backend caps one install at 180 s)
 TIMEOUT_INIT = 1800      # waiting for init to complete (downloads 400-700 MB)
 
 _UNAVAILABLE_ERRORS = frozenset({
@@ -239,12 +239,12 @@ class BrightAndroidClient:
             self._bus = None
             raise _from_exception(exc) from exc
 
-    def _run_operation(self, method: str, op_name: str, progress_cb, wait_timeout: float):
+    def _run_operation(self, method: str, op_name: str, progress_cb, wait_timeout: float, *args):
         """Start an asynchronous service operation and wait for its completion signal."""
         self._interface()
         waiter = self._waiter_factory(self._bus, op_name)
         try:
-            self._call(method, timeout=TIMEOUT_DEFAULT)
+            self._call(method, *args, timeout=TIMEOUT_DEFAULT)
             success, message = waiter.wait(wait_timeout, progress_cb)
         finally:
             waiter.close()
@@ -261,7 +261,8 @@ class BrightAndroidClient:
         self._run_operation("InitializeRuntime", "init", progress_cb, TIMEOUT_INIT)
 
     def install_apk(self, path: str, progress_cb=None) -> None:
-        self._call("InstallApk", path, timeout=TIMEOUT_INSTALL)
+        """Install an APK through the service and wait for the outcome."""
+        self._run_operation("InstallApk", "install", progress_cb, TIMEOUT_INSTALL, path)
 
     def uninstall_app(self, package: str, progress_cb=None) -> None:
         self._call("UninstallApp", package, timeout=TIMEOUT_DEFAULT)

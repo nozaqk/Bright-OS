@@ -139,7 +139,8 @@ class Collector:
         self.events = []
         self._bus = bus
         self._lock = threading.Lock()
-        for signal in ("OperationProgress", "OperationComplete", "RuntimeStateChanged"):
+        for signal in ("OperationProgress", "OperationComplete", "RuntimeStateChanged",
+                       "AppInstalled"):
             bus.add_signal_receiver(self._record(signal), signal_name=signal,
                                     dbus_interface=INTERFACE, bus_name=BUS_NAME,
                                     path=OBJECT_PATH)
@@ -414,3 +415,193 @@ class ConfigWriteFailureTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def _make_apk(directory: str, name: str = "example.apk") -> str:
+    path = os.path.join(directory, name)
+    with open(path, "wb") as f:
+        f.write(b"PK\x03\x04 test apk")
+    return path
+
+
+@unittest.skipUnless(AVAILABLE, SKIP_REASON)
+class InstallTests(unittest.TestCase):
+    """InstallApk is asynchronous and reports through the same operation signals."""
+
+    DELAY = 1.0
+
+    @classmethod
+    def setUpClass(cls):
+        cls.h = Harness(FAKE_DELAY=cls.DELAY)
+        cls.h.start()
+        cls.tmp = tempfile.mkdtemp(prefix="ba-apk-")
+        cls.apk = _make_apk(cls.tmp)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.h.stop()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def setUp(self):
+        self.bus = session_bus()
+        self.client = sc.BrightAndroidClient()
+
+    def _wait_install_done(self, collector):
+        pump(self.bus, lambda: collector.find("OperationComplete", "install"), timeout=20)
+
+    def test_install_call_returns_before_the_install_finishes(self):
+        collector = Collector(self.bus)
+        t0 = time.monotonic()
+        proxy(self.bus).InstallApk(self.apk)
+        elapsed = time.monotonic() - t0
+        self.assertLess(elapsed, self.DELAY / 2, f"InstallApk blocked for {elapsed:.2f}s")
+        self._wait_install_done(collector)
+        self.assertEqual(collector.find("OperationComplete", "install"),
+                         [("install", "Installed: Example", True)])
+
+    def test_signals_arrive_in_order_progress_then_app_installed_then_completion(self):
+        collector = Collector(self.bus)
+        proxy(self.bus).InstallApk(self.apk)
+        self._wait_install_done(collector)
+        names = [n for n, _ in collector.events]
+        self.assertIn("OperationProgress", names)
+        self.assertIn("AppInstalled", names)
+        self.assertLess(names.index("OperationProgress"), names.index("AppInstalled"))
+        self.assertLess(names.index("AppInstalled"), names.index("OperationComplete"))
+        package, _info = collector.find("AppInstalled")[0]
+        self.assertEqual(package, "com.example.app")
+
+    def test_status_query_is_not_blocked_during_install(self):
+        collector = Collector(self.bus)
+        proxy(self.bus).InstallApk(self.apk)
+        t0 = time.monotonic()
+        proxy(self.bus).GetStatus()
+        elapsed = time.monotonic() - t0
+        self.assertLess(elapsed, self.DELAY / 2, f"GetStatus waited {elapsed:.2f}s during install")
+        self._wait_install_done(collector)
+
+    def test_start_and_second_install_are_refused_while_install_runs(self):
+        import dbus
+        collector = Collector(self.bus)
+        proxy(self.bus).InstallApk(self.apk)
+        with self.assertRaises(dbus.exceptions.DBusException) as ctx:
+            proxy(self.bus).StartRuntime()
+        self.assertEqual(ctx.exception.get_dbus_name(), sc.ERR_BUSY)
+        with self.assertRaises(dbus.exceptions.DBusException) as ctx:
+            proxy(self.bus).InstallApk(self.apk)
+        self.assertEqual(ctx.exception.get_dbus_name(), sc.ERR_BUSY)
+        self._wait_install_done(collector)
+        # The refused calls did not disturb the running install.
+        self.assertEqual(collector.find("OperationComplete", "install"),
+                         [("install", "Installed: Example", True)])
+
+    def test_missing_apk_is_rejected_at_once_and_nothing_starts(self):
+        import dbus
+        calls_before = self.h.backend_calls()
+        with self.assertRaises(dbus.exceptions.DBusException) as ctx:
+            proxy(self.bus).InstallApk(os.path.join(self.tmp, "missing.apk"))
+        self.assertEqual(ctx.exception.get_dbus_name(), "org.bright_os.BrightAndroid.InvalidArgument")
+        self.assertEqual(self.h.backend_calls(), calls_before)
+
+    def test_non_apk_file_is_rejected(self):
+        import dbus
+        txt = os.path.join(self.tmp, "notes.txt")
+        with open(txt, "w") as f:
+            f.write("not an apk")
+        with self.assertRaises(dbus.exceptions.DBusException) as ctx:
+            proxy(self.bus).InstallApk(txt)
+        self.assertEqual(ctx.exception.get_dbus_name(), "org.bright_os.BrightAndroid.InvalidArgument")
+
+    def test_client_install_forwards_progress_and_returns_on_success(self):
+        seen = []
+        self.client.install_apk(self.apk, progress_cb=seen.append)
+        self.assertTrue(any(m.startswith("Installing") for m in seen), seen)
+
+    def test_install_after_completion_is_accepted(self):
+        # Completion clears the worker, so the next install is not refused.
+        before = self.h.backend_calls().count("install_apk")
+        self.client.install_apk(self.apk)
+        self.client.install_apk(self.apk)
+        self.assertEqual(self.h.backend_calls().count("install_apk") - before, 2)
+
+
+@unittest.skipUnless(AVAILABLE, SKIP_REASON)
+class InstallFailureTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.h = Harness(FAKE_DELAY="0.2", FAKE_FAIL="install")
+        cls.h.start()
+        cls.tmp = tempfile.mkdtemp(prefix="ba-apk-")
+        cls.apk = _make_apk(cls.tmp)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.h.stop()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_failed_install_reports_message_and_no_app_installed(self):
+        bus = session_bus()
+        collector = Collector(bus)
+        proxy(bus).InstallApk(self.apk)
+        pump(bus, lambda: collector.find("OperationComplete", "install"), timeout=20)
+        self.assertEqual(collector.find("OperationComplete", "install"),
+                         [("install", "INSTALL_FAILED", False)])
+        self.assertEqual(collector.find("AppInstalled"), [])
+
+    def test_client_raises_with_the_failure_message(self):
+        with self.assertRaises(sc.OperationFailed) as ctx:
+            sc.BrightAndroidClient().install_apk(self.apk)
+        self.assertIn("INSTALL_FAILED", str(ctx.exception))
+
+    def test_worker_is_idle_after_failed_install(self):
+        with self.assertRaises(sc.OperationFailed) as ctx:
+            sc.BrightAndroidClient().install_apk(self.apk)
+        self.assertNotIsInstance(ctx.exception, sc.ServiceBusy)
+
+
+@unittest.skipUnless(AVAILABLE, SKIP_REASON)
+class InstallTimeoutTests(unittest.TestCase):
+    """The backend's 180 s timeout is simulated at the backend boundary."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.h = Harness(FAKE_DELAY="0.2", FAKE_FAIL="install_timeout")
+        cls.h.start()
+        cls.tmp = tempfile.mkdtemp(prefix="ba-apk-")
+        cls.apk = _make_apk(cls.tmp)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.h.stop()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_backend_timeout_is_reported_as_failed_completion(self):
+        with self.assertRaises(sc.OperationFailed) as ctx:
+            sc.BrightAndroidClient().install_apk(self.apk)
+        self.assertIn("Timed out after 180s", str(ctx.exception))
+
+    def test_worker_is_idle_after_timeout(self):
+        with self.assertRaises(sc.OperationFailed) as ctx:
+            sc.BrightAndroidClient().install_apk(self.apk)
+        self.assertNotIsInstance(ctx.exception, sc.ServiceBusy)
+        self.assertFalse(bool(proxy().GetStatus()["running"]))
+
+
+@unittest.skipUnless(AVAILABLE, SKIP_REASON)
+class InstallDeniedTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.h = Harness(FAKE_DELAY="0.2", FAKE_DENY="1")
+        cls.h.start()
+        cls.tmp = tempfile.mkdtemp(prefix="ba-apk-")
+        cls.apk = _make_apk(cls.tmp)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.h.stop()
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_denied_install_never_reaches_the_backend(self):
+        with self.assertRaises(sc.AuthorizationDenied):
+            sc.BrightAndroidClient().install_apk(self.apk)
+        self.assertEqual(self.h.backend_calls(), [])

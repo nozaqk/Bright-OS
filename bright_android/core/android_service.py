@@ -455,10 +455,13 @@ class BackgroundWorker:
             self._emit("OperationProgress", op_name, str(msg))
 
         error = None
+        message = ""
         try:
             call_kwargs = dict(kwargs)
             call_kwargs["progress_cb"] = progress
-            func(*args, **call_kwargs)
+            result = func(*args, **call_kwargs)
+            if isinstance(result, str):
+                message = result
         except Exception as e:
             logger.error("[%s] failed: %s", op_name, e)
             error = str(e) or e.__class__.__name__
@@ -466,7 +469,8 @@ class BackgroundWorker:
         with self._lock:
             self.current_operation = None
         # Signature order: (operation, message, success).
-        self._emit("OperationComplete", op_name, "" if error is None else error,
+        self._emit("OperationComplete", op_name,
+                   error if error is not None else message,
                    error is None)
 
     def start(self, func, op_name: str, *args, **kwargs):
@@ -774,9 +778,9 @@ if HAS_DBUS:
                 )
             self._begin_operation("stop", self._job_stop)
 
-        def _begin_operation(self, op_name: str, job):
+        def _begin_operation(self, op_name: str, job, *args):
             try:
-                self._worker.start(job, op_name)
+                self._worker.start(job, op_name, *args)
             except OperationBusy as e:
                 raise _dbus_error(
                     "org.bright_os.BrightAndroid.Busy", str(e)
@@ -799,6 +803,12 @@ if HAS_DBUS:
 
         @method(INTERFACE, in_signature="s", out_signature="", sender_keyword="sender")
         def InstallApk(self, path: str, sender=None):
+            """Start an APK install. Returns at once.
+
+            Progress arrives as OperationProgress("install", ...). The result
+            arrives as AppInstalled (on success) followed by
+            OperationComplete("install", message, success).
+            """
             ok, reason = _check_authorization(sender, POLKIT_ACTION_INSTALL,
                                               bus=self._bus)
             if not ok:
@@ -806,17 +816,24 @@ if HAS_DBUS:
                     "org.bright_os.BrightAndroid.NotAuthorized",
                     f"APK install requires auth: {reason}"
                 )
-            try:
-                result = waydroid_manager.install_apk(path)
-                launcher_integration.sync_apps(waydroid_manager.list_apps())
-                self.AppInstalled(result["package"], dbus.Dictionary({
-                    "label": result.get("label", ""),
-                    "path": result.get("path", ""),
-                }, signature="sv"))
-            except Exception as e:
+            problem = apk_validator.validate_apk_path(path)
+            if problem:
                 raise _dbus_error(
-                    "org.bright_os.BrightAndroid.InstallFailed", str(e)
+                    "org.bright_os.BrightAndroid.InvalidArgument",
+                    f"Invalid APK: {problem}"
                 )
+            self._begin_operation("install", self._job_install, path)
+
+        def _job_install(self, path, progress_cb=None):
+            result = waydroid_manager.install_apk(path, progress_cb=progress_cb)
+            launcher_integration.sync_apps(waydroid_manager.list_apps())
+            # Queued on the main loop before OperationComplete, so the
+            # signals arrive in this order.
+            _on_main_loop(self.AppInstalled, result["package"], dbus.Dictionary({
+                "label": result.get("label", ""),
+                "path": result.get("path", ""),
+            }, signature="sv"))
+            return result.get("message") or f"Installed: {result.get('label', '')}"
 
         @method(INTERFACE, in_signature="s", out_signature="", sender_keyword="sender")
         def UninstallApp(self, package: str, sender=None):
