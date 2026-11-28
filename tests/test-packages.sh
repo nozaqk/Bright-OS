@@ -140,7 +140,9 @@ ALL_PKGS="$CORE $DESKTOP $DESKTOP_LITE $HOME $DEV $LITE"
 check_bad "compton" "renamed to picom in Trixie" "$ALL_PKGS"
 check_bad "code" "VS Code not in Debian repos" "$ALL_PKGS"
 check_bad "perf-tools-unstable" "not in Debian" "$ALL_PKGS"
-check_bad "polkitd" "incorrect name (should be policykit-1)" "$ALL_PKGS"
+# polkitd is the correct Trixie package name (core.list.chroot relies on it);
+# the old policykit-1 meta-package was removed in Trixie.
+check_bad "policykit-1" "meta-package removed in Trixie; use polkitd" "$ALL_PKGS"
 check_bad "snapd" "removed (unnecessary bloat)" "$ALL_PKGS"
 check_bad "docker-compose" "renamed to docker-compose-v2 in Trixie" "$ALL_PKGS"
 if [ $BAD_PKGS -eq 0 ]; then
