@@ -355,23 +355,14 @@ jobs:
               fi
             fi
           }
-          check '/live/vmlinuz'                'Linux kernel'
-          check '/live/initrd'                'initrd'
-          check '/live/filesystem\\.squashfs'  'Root filesystem (squashfs)'
-          check 'boot/grub/'                  'GRUB bootloader'
-          check 'EFI/boot/bootx64\\.efi|efi\\.img' 'UEFI boot binary'
-          check 'isolinux/'                   'ISOLINUX (BIOS)' 0
-          check 'calamares'                   'Calamares installer files'
-          check 'branding/bright-os'          'Bright OS installer branding'
-          check 'bin/labwc'                   'labwc compositor (Phase 6.3 default)'
-          check 'bin/greetd'                  'greetd display manager'
-          check 'bin/cage'                    'cage (kiosk compositor for greeter)'
-          check 'bright-desktop-shell'        'Bright shell launcher'
-          check 'wayland-sessions/bright\\.desktop' 'Bright wayland-session'
-          check 'lib/aura'                    'AURA service'
-          check 'lib/bright-android'          'Bright Android' 0
-          check 'polkit-1/actions/org\\.bright_os' 'Bright OS Polkit policy'
-          check 'dbus-1/system\\.d/org\\.bright_os' 'Bright OS D-Bus policy'
+          # ISO-level files only. Package contents inside filesystem.squashfs are
+          # checked by build.sh against the unpacked tree.
+          check '/live/vmlinuz'                 'Linux kernel'
+          check '/live/initrd'                  'initrd'
+          check '/live/filesystem\.squashfs'    'Root filesystem (squashfs)'
+          check 'boot/grub/'                    'GRUB bootloader'
+          check 'EFI/boot/bootx64\.efi|efi\.img' 'UEFI boot binary'
+          check 'isolinux/'                     'ISOLINUX (BIOS)' 0
           if [ "$failures" -gt 0 ]; then
             echo ""
             echo "::warning::$failures extended content check(s) failed; continuing for diagnostics."
