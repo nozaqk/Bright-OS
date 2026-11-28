@@ -170,6 +170,8 @@ jobs:
           # Ensure build scripts are executable (rsync may not preserve perms)
           chmod +x build/scripts/*.sh build/live-build/auto/* config/hooks/live/*.chroot editions/*/hooks/*.chroot 2>/dev/null || true
           # Redirect build to log file directly (no tee/grep to avoid SIGPIPE)
+          # The boot test needs kernel output on the serial port (see build.sh)
+          if [ "${BRIGHT_QEMU_SMOKE:-0}" = "1" ]; then export BRIGHT_SERIAL_CONSOLE=1; fi
           bash -x build/scripts/build.sh \
             --version "$BRIGHT_VERSION" \
             --distro "$BRIGHT_DEBIAN_CODENAME" \
@@ -426,7 +428,7 @@ jobs:
           cd "${{ steps.build.outputs.iso_dir }}"
           mkdir -p manifest
           # Find the actual squashfs path in the ISO (it might have a numbered prefix)
-          SQUASHFS_PATH=$(isoinfo -i "${{ steps.build.outputs.iso_name }}" -f 2>/dev/null | grep -E '\.squashfs$' | head -1)
+          SQUASHFS_PATH=$(isoinfo -R -i "${{ steps.build.outputs.iso_name }}" -f 2>/dev/null | grep -iE '\.squashfs(;1)?$' | head -1)
           if [ -z "$SQUASHFS_PATH" ]; then
             echo "::warning::No .squashfs found in ISO; skipping manifest."
             exit 0
